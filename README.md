@@ -8,12 +8,25 @@ Your MacBook has 32-48GB of RAM, but the best AI models need 100-200GB+. MLX-Fla
 
 Think of it like Netflix streaming: instead of downloading the entire movie before watching, you buffer what you need and stream the rest. MLX-Flash-Compress does this for AI model weights:
 
-```
-Your Mac's RAM (fast)     ← Keeps the most important 80% of model parts here
-         |
-    Smart Cache           ← Predicts what's needed next, loads it before you need it
-         |
-Your Mac's SSD (big)      ← Stores the full model (even 200GB+)
+```mermaid
+flowchart TB
+    subgraph RAM["Your Mac's RAM (fast)"]
+        HC[Hot Cache — 80% of active experts]
+        MP[Mixed Precision — hot 4-bit, cold 2-bit]
+    end
+    subgraph CACHE["Smart Cache Layer"]
+        LCP[LCP Eviction — keeps what matters]
+        PF[Async Prefetch — loads next before you need it]
+        MM[Memory Monitor — never harms your apps]
+    end
+    subgraph SSD["Your Mac's SSD (big)"]
+        FULL[Full model weights — even 200GB+]
+    end
+
+    SSD -->|stream on demand| CACHE
+    CACHE -->|cache hit: 0.08ms| RAM
+    CACHE -->|cache miss: 0.6ms| SSD
+    RAM -->|feed to GPU| GPU[MLX GPU Inference]
 ```
 
 **Result:** A 200GB AI model runs on your 48GB Mac at **2-3x faster** than naive SSD streaming.
@@ -99,6 +112,30 @@ It shows you the sweet spot — even dedicating just 10GB to caching gives you 5
 | `compression.py` | LZ4/ZSTD compression + Apple's native LZFSE |
 | `tier_optimizer.py` | Finds the perfect RAM/SSD balance for your specific Mac + model combo |
 | `mlx-flash-server/` | Rust sidecar: HTTP/SSE proxy, memory monitor, LCP cache, Unix socket |
+
+```mermaid
+graph LR
+    subgraph Clients
+        LS[LM Studio]
+        CU[Cursor]
+        CC[Claude Code]
+        SDK[OpenAI SDK]
+    end
+    subgraph Rust["Rust Sidecar :8080"]
+        AX[axum HTTP/SSE]
+        MEM[Memory Monitor<br/>mach2 0.1ms]
+        LCPC[LCP Cache<br/>DashMap lock-free]
+    end
+    subgraph Python["Python Worker :8081"]
+        MLX[MLX Inference<br/>95% of work]
+        GEN[generate&#40;&#41;]
+    end
+
+    Clients -->|OpenAI API| Rust
+    Rust -->|proxy| Python
+    Rust -.->|Unix socket| LCPC
+    LCPC -.->|expert weights| Python
+```
 
 ### Using It
 

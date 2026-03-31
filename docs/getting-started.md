@@ -74,6 +74,17 @@ python -m mlx_flash_compress.tier_optimizer \
 # Output: optimal RAM/SSD split, expected tok/s, cache hit rate
 ```
 
+```mermaid
+flowchart LR
+    A[Install] --> B[Check Hardware]
+    B --> C{Model fits?}
+    C -->|Yes, easily| D[python -m mlx_flash_compress.chat]
+    C -->|Barely fits| E[Enable mixed precision]
+    C -->|Too large| F[Enable SSD streaming]
+    E --> D
+    F --> G[python -m mlx_flash_compress.serve]
+```
+
 ## Configuration
 
 ### Quick: Environment variables

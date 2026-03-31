@@ -2,31 +2,25 @@
 
 ## How MLX-Flash-Compress Works
 
-```
-┌─────────────────────────────────────────────┐
-│  Your Application                           │
-│  model.generate("Hello")                    │
-└──────────────────┬──────────────────────────┘
-                   │
-┌──────────────────▼──────────────────────────┐
-│  Smart Cache Layer                          │
-│  ┌──────────┐ ┌──────────┐ ┌────────────┐  │
-│  │ LCP      │ │ Async    │ │ Mixed      │  │
-│  │ Eviction │ │ Prefetch │ │ Precision  │  │
-│  │ (2.93x)  │ │ (predict │ │ (1.8x      │  │
-│  │          │ │  next)   │ │  smaller)  │  │
-│  └──────────┘ └──────────┘ └────────────┘  │
-│                                             │
-│  C GCD Engine (5us dispatch) ← Apple-tuned  │
-└──────────────────┬──────────────────────────┘
-                   │
-       ┌───────────┼───────────┐
-       ▼                       ▼
-┌──────────────┐    ┌──────────────────┐
-│  RAM Cache   │    │  SSD Storage     │
-│  (fast,      │    │  (big, 200GB+)   │
-│   80% hits)  │    │  Protected reads │
-└──────────────┘    └──────────────────┘
+```mermaid
+flowchart TB
+    APP["Your Application\nmodel.generate('Hello')"]
+
+    subgraph CACHE["Smart Cache Layer"]
+        LCP[LCP Eviction<br/>2.93x speedup]
+        PF[Async Prefetch<br/>predict next]
+        MP[Mixed Precision<br/>1.8x smaller]
+        GCD[C GCD Engine<br/>5us dispatch — Apple-tuned]
+    end
+
+    subgraph STORAGE["Storage"]
+        RAM[RAM Cache<br/>fast — 80% hits]
+        SSD[SSD Storage<br/>big — 200GB+<br/>Protected reads]
+    end
+
+    APP --> CACHE
+    CACHE --> RAM
+    CACHE --> SSD
 ```
 
 ## Key Technologies
