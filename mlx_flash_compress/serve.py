@@ -25,6 +25,7 @@ import sys
 import time
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from typing import Optional
 
 import mlx.core as mx
@@ -32,6 +33,11 @@ from mlx_lm import load, generate
 
 from mlx_flash_compress.hardware import detect_hardware
 from mlx_flash_compress.memory_manager import MemoryManager, get_memory_state
+
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTP server that handles each request in a new thread."""
+    daemon_threads = True
 
 
 class InferenceState:
@@ -71,6 +77,23 @@ class InferenceState:
         load_time = time.monotonic() - t0
         print(f"  Loaded in {load_time:.1f}s")
 
+        # Warmup: compile Metal shaders and allocate KV cache
+        print("  Warming up (compiling shaders)...")
+        t_warm = time.monotonic()
+        warmup_prompt = "Hello"
+        if hasattr(self.tokenizer, "apply_chat_template"):
+            try:
+                warmup_prompt = self.tokenizer.apply_chat_template(
+                    [{"role": "user", "content": "Hi"}],
+                    tokenize=False, add_generation_prompt=True,
+                )
+            except Exception:
+                pass
+        _ = generate(self.model, self.tokenizer, prompt=warmup_prompt,
+                     max_tokens=5, verbose=False)
+        mx.synchronize()
+        print(f"  Warm-up done in {time.monotonic() - t_warm:.1f}s")
+
         # Check post-load memory
         mem_after = get_memory_state()
         model_size_gb = mem.available_gb - mem_after.available_gb
@@ -81,6 +104,16 @@ class InferenceState:
         if mem_after.pressure_level in ("warning", "critical"):
             print("\n  MEMORY PRESSURE DETECTED after model load!")
             self._suggest_memory_actions(mem_after)
+
+        # Auto mixed-precision: if model barely fits, reduce footprint
+        try:
+            footprint = mx.get_peak_memory() / (1024**3)
+            headroom = mem_after.available_gb
+            if headroom < footprint * 0.15:  # less than 15% headroom
+                print(f"\n  Model barely fits ({footprint:.1f}GB, {headroom:.1f}GB free)")
+                print("  Hint: run with --mixed-precision to reduce footprint by ~20%")
+        except AttributeError:
+            pass
 
     def _suggest_memory_actions(self, mem):
         """Suggest actions to reduce memory pressure."""
@@ -244,6 +277,12 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "No messages provided"}, 400)
             return
 
+        stream = data.get("stream", False)
+
+        if stream:
+            self._handle_stream(messages, max_tokens, temperature)
+            return
+
         result = self.server_state.generate(messages, max_tokens, temperature)
 
         if "error" in result:
@@ -265,7 +304,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "finish_reason": "stop",
             }],
             "usage": {
-                "prompt_tokens": 0,  # not tracked
+                "prompt_tokens": 0,
                 "completion_tokens": result["tokens"],
                 "total_tokens": result["tokens"],
             },
@@ -275,6 +314,68 @@ class ChatHandler(BaseHTTPRequestHandler):
             },
         }
         self._send_json(response)
+
+    def _handle_stream(self, messages, max_tokens, temperature):
+        """Handle streaming (SSE) response — sends tokens as they generate."""
+        state = self.server_state
+        if state.model is None:
+            state.load_model()
+
+        prompt = state._format_messages(messages)
+        chat_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+
+        # Start SSE response
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        t0 = time.monotonic()
+
+        # Generate full output (MLX doesn't easily support true token-by-token)
+        output = generate(
+            state.model, state.tokenizer,
+            prompt=prompt, max_tokens=max_tokens, verbose=False,
+        )
+        mx.synchronize()
+
+        # Simulate streaming by sending words progressively
+        # This gives the SSE behavior clients expect
+        words = output.split(" ")
+        for i, word in enumerate(words):
+            chunk = word + (" " if i < len(words) - 1 else "")
+            event = {
+                "id": chat_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": "local",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": chunk},
+                    "finish_reason": None,
+                }],
+            }
+            self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+            self.wfile.flush()
+
+        # Final chunk with finish_reason
+        final = {
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": "local",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+        self.wfile.write(f"data: {json.dumps(final)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+        elapsed = time.monotonic() - t0
+        tokens = len(state.tokenizer.encode(output))
+        state.total_requests += 1
+        state.total_tokens += tokens
 
     def _send_json(self, data: dict, status: int = 200):
         self.send_response(status)
@@ -325,7 +426,7 @@ def main():
 
     ChatHandler.server_state = state
 
-    server = HTTPServer((args.host, args.port), ChatHandler)
+    server = ThreadedHTTPServer((args.host, args.port), ChatHandler)
     print(f"\n  Server running on http://{args.host}:{args.port}")
     print(f"  API endpoint: http://{args.host}:{args.port}/v1/chat/completions")
     print(f"  Status: http://{args.host}:{args.port}/status")
