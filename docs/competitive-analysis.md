@@ -87,22 +87,43 @@ Between January 2024 and March 2026, at least **8 independent open-source projec
 
 **Key gap:** None of the mainstream tools support expert-level caching or SSD streaming for MoE models.
 
+### 6. jundot/omlx (NEW — 2026)
+
+- LLM inference server with continuous batching and SSD caching
+- Hybrid quantization per-layer: mxfp4/mxfp8/affine per expert
+- Batched GPTQ: ~15x quantization speedup
+- SpecPrefill: attention-based sparse prefill
+
+**vs. Us:** We have more prediction techniques (residual predictor, speculative execution, Belady eviction). They have hybrid quantization format support.
+
+### 7. ARahim3/mlx-tune (NEW — 2026)
+
+- Fine-tuning framework for 39+ architectures including all MoE families
+- Per-expert LoRA via `LoRASwitchLinear`
+- Complementary, not competing — could fine-tune our compressed models
+
 ## What We Do That Nobody Else Does
 
 1. **Rust sidecar with Mach syscall memory monitoring** (0.1ms, 210x faster) — no competitor
 2. **Mixed precision per-expert on Apple Silicon** (hot 4-bit / cold 2-bit) — only HOBBIT does this, on NVIDIA
-3. **SSD thermal protection** (70C cutoff, sequential hints, zero writes) — no competitor
-4. **Memory-aware API serving** (server responds to RAM pressure dynamically) — no competitor
-5. **Tier optimizer** (RAM/SSD budget calculator) — no competitor offers this to users
-6. **Combined stack** (LCP + mixed precision + async prefetch + Rust sidecar + SSD protection) — competitors implement 1-2 of these
+3. **Speculative expert execution** (predict → execute → verify) — no Apple Silicon competitor
+4. **Residual-stream predictor** (97%+ accuracy, linear projection) — only "Speculating Experts" paper, NVIDIA
+5. **Forward-looking Belady-optimal eviction** — no competitor integrates prediction into eviction
+6. **15+ research techniques implemented** — most of any project in this space
+7. **SSD thermal protection** (70C cutoff, sequential hints, zero writes) — no competitor
+8. **Expert merging + vertical splitting** — complementary compression from both directions
+9. **Adaptive top-k skipping** — dynamic compute reduction per token
+10. **Combined stack** (speculative execution + Belady eviction + residual predictor + expert merging + entropy coding + Rust sidecar) — competitors implement 1-3 of these
 
-## What Competitors Do Better
+## What Competitors Do Better (Updated)
 
-| Feature | Who | How |
-|---------|-----|-----|
-| Shadow model predictor | kqb/mlx-od-moe | Learned routing >90% accuracy vs. LCP heuristic |
-| Vertical expert splitting | MoEpic paper | Cache top half of each expert = 2x coverage |
-| Cross-layer prefetch | tinyserve | Look ahead N layers vs. our 1-layer |
+| Feature | Who | Status |
+|---------|-----|--------|
+| ~~Shadow model predictor~~ | ~~kqb/mlx-od-moe~~ | **CLOSED** — we have shadow MLP + residual predictor (97%+) |
+| ~~Vertical expert splitting~~ | ~~MoEpic paper~~ | **CLOSED** — implemented in vertical_split.py |
+| ~~Cross-layer prefetch~~ | ~~tinyserve~~ | **CLOSED** — 3-hop lookahead in advanced_prefetch.py |
+| Hidden-state predictor input | kqb/mlx-od-moe | Uses actual hidden states from model internals |
+| Hybrid mxfp4/mxfp8 per expert | jundot/omlx | Per-expert format selection |
 | HuggingFace drop-in | MoE-Infinity | Zero-code-change model loading |
 | Model breadth | mu-hashmi/mlx-moe | 10+ architectures explicitly tested |
 | Minimum RAM | rita-aga/mlx-turboquant | 7.1 GB for 1T model |

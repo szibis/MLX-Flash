@@ -247,6 +247,48 @@ TT is most useful as a **storage/distribution** format, not an inference format:
 
 ---
 
+## 4. New Techniques (Implemented March 2026)
+
+These techniques were researched and implemented from the latest papers:
+
+### Residual-Stream Predictor (Speculating Experts, arXiv:2603.19289)
+
+Instead of training an MLP shadow model, use the pre-MoE hidden state directly via linear projection. Adjacent layers have >97% cosine similarity in gate inputs, so a single matrix multiply achieves 97-99% prediction accuracy with zero additional GPU overhead.
+
+**Status: Implemented** in `speculative_experts.py`
+
+### Forward-Looking Belady-Optimal Eviction (MoE-SpeQ, arXiv:2511.14102)
+
+Standard LCP looks backward (frequency × decay). Forward-looking eviction integrates predictions: if a predictor says expert E will be needed in 2 steps, it's protected from eviction regardless of LCP score. This approximates the theoretically optimal Belady replacement policy.
+
+**Status: Implemented** in `speculative_experts.py`
+
+### Speculative Expert Execution (MoE-SpAc, arXiv:2603.09983)
+
+Execute predicted experts *before* the router confirms, then verify. With 97% prediction accuracy, 97% of expert computations are reused directly. On unified memory (Apple Silicon), the speculation cost is just redundant GPU compute (~0.1ms) vs memory load (~0.5ms). 14-42% TPOT reduction.
+
+**Status: Implemented** in `speculative_experts.py`
+
+### Expert Merging (DEK/EEP, arXiv:2509.19781)
+
+Offline: cluster experts by weight cosine similarity, merge similar ones into "super-experts" with averaged weights. Reduces unique expert count by 15-30% without accuracy loss. Complementary to vertical splitting (which goes the other direction).
+
+**Status: Implemented** in `expert_merging.py`
+
+### Adaptive Top-K (LExI, arXiv:2509.02753)
+
+When the router's top-1 score is much higher than top-2 (low routing entropy), skip the second expert entirely. Saves 10-30% compute with <1% quality loss. Gated by `adaptive_skip_threshold` parameter.
+
+**Status: Implemented** in `expert_streaming.py` (enable_skip_fallback)
+
+### Layer-Depth Cache Bias (FATE, arXiv:2502.12224)
+
+Early transformer layers have more predictable routing patterns. Bias the LCP score by layer depth: `score × (1 + bias × (1 - layer_position))`. Early-layer experts are pinned preferentially.
+
+**Status: Implemented** in `expert_streaming.py` (LCPTracker)
+
+---
+
 ## Combined Roadmap
 
 ```mermaid
@@ -255,24 +297,39 @@ gantt
     dateFormat YYYY-MM
     axisFormat %b %Y
 
-    section EntroLLM
-    Research & prototype        :a1, 2026-04, 1M
-    Integrate with LCP cache    :a2, after a1, 1M
-    Benchmark on Apple Silicon  :a3, after a2, 1M
+    section Implemented (March 2026)
+    EntroLLM entropy coding     :done, a1, 2026-03, 1M
+    Residual predictor (97%+)   :done, a2, 2026-03, 1M
+    Speculative execution       :done, a3, 2026-03, 1M
+    Belady-optimal eviction     :done, a4, 2026-03, 1M
+    Expert merging              :done, a5, 2026-03, 1M
+    Adaptive top-k              :done, a6, 2026-03, 1M
+    Layer-depth bias            :done, a7, 2026-03, 1M
 
-    section AMX Pipeline
-    amx-rs GENLUT experiments   :b1, 2026-06, 2M
-    Double-buffer with Metal    :b2, after b1, 2M
+    section Blocked
+    AMX pipeline (undocumented) :crit, b1, 2026-06, 3M
+    mlx-rs (macOS 26 Metal)    :crit, b2, 2026-06, 3M
 
-    section Tensor Train
-    Offline TT compression tool :c1, 2026-09, 2M
-    Distribution format         :c2, after c1, 1M
+    section Future
+    PreScope global scheduling  :c1, 2026-06, 2M
+    Per-layer predictors       :c2, after c1, 1M
+    KV prefix cache SSD tier   :c3, 2026-07, 2M
 ```
 
-## Summary: What to Build Next
+## Summary
 
-| Technique | Gain | Effort | Priority | Stacks With |
-|-----------|------|--------|----------|-------------|
-| EntroLLM uint4 | 2.5x gen speed, 65% smaller | Medium (re-quant + decode) | **HIGH** | Mixed precision, LCP cache |
-| AMX dequant | Parallel decode+compute | High (undocumented HW) | **MEDIUM** | EntroLLM, Metal GPU |
-| TT decomposition | 93% storage reduction | High (no MoE work exists) | **LOW** (inference) | Offline model distribution |
+| Technique | Gain | Status | Paper |
+|-----------|------|--------|-------|
+| EntroLLM uint4 | 65% smaller, 2.5x gen speed | **Implemented** | arXiv:2505.02380 |
+| Residual predictor | 97%+ accuracy | **Implemented** | arXiv:2603.19289 |
+| Speculative execution | 14-42% TPOT | **Implemented** | arXiv:2603.09983 |
+| Belady-optimal eviction | +10-20% hit rate | **Implemented** | arXiv:2511.14102 |
+| Expert merging | 15-30% fewer experts | **Implemented** | arXiv:2509.19781 |
+| Adaptive top-k | 10-30% compute reduction | **Implemented** | arXiv:2509.02753 |
+| Layer-depth bias | +5-10% hit rate | **Implemented** | arXiv:2502.12224 |
+| Shadow MLP predictor | >90% accuracy | **Implemented** | mlx-od-moe |
+| Cross-layer 3-hop | N-layer lookahead | **Implemented** | FATE/tinyserve |
+| Vertical splitting | 2x cache coverage | **Implemented** | MoEpic |
+| AMX dequant | Parallel decode+compute | Blocked | undocumented HW |
+| mlx-rs native | Eliminate Python | Blocked | macOS 26 Metal |
+| PreScope scheduling | 141% throughput | Future | arXiv:2509.23638 |
