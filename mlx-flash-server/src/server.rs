@@ -7,6 +7,7 @@ use axum::http::Method;
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::cache::LcpCache;
 use crate::memory;
 use crate::proxy;
 
@@ -17,6 +18,7 @@ pub struct AppState {
     pub start_time: Instant,
     pub request_count: Arc<AtomicU64>,
     pub tokens_generated: Arc<AtomicU64>,
+    pub cache: Option<Arc<LcpCache>>,
 }
 
 impl Default for AppState {
@@ -27,6 +29,7 @@ impl Default for AppState {
             start_time: Instant::now(),
             request_count: Arc::new(AtomicU64::new(0)),
             tokens_generated: Arc::new(AtomicU64::new(0)),
+            cache: None,
         }
     }
 }
@@ -44,6 +47,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/release", get(handle_release))
         .route("/v1/models", get(handle_models))
         .route("/v1/chat/completions", axum::routing::post(proxy::handle_chat))
+        .route("/cache/stats", get(handle_cache_stats))
         .with_state(state)
         .layer(cors)
 }
@@ -103,6 +107,14 @@ async fn handle_models(State(state): State<AppState>) -> axum::Json<Value> {
             }
         ]
     }))
+}
+
+async fn handle_cache_stats(State(state): State<AppState>) -> axum::Json<Value> {
+    if let Some(ref cache) = state.cache {
+        axum::Json(serde_json::to_value(cache.stats()).unwrap_or(json!({"error": "serialization failed"})))
+    } else {
+        axum::Json(json!({"error": "Cache not initialized", "hint": "Start with --expert-dir to enable expert caching"}))
+    }
 }
 
 #[cfg(test)]

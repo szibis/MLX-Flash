@@ -4,9 +4,11 @@ mod memory;
 mod protocol;
 mod proxy;
 mod server;
+mod socket_server;
 
 use clap::Parser;
 use std::process::{Child, Command};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 #[derive(Parser)]
@@ -24,6 +26,12 @@ struct Args {
     launch_worker: bool,
     #[arg(long, help = "Preload model in Python worker")]
     preload: bool,
+    #[arg(long, help = "Directory with expert weight files")]
+    expert_dir: Option<String>,
+    #[arg(long, default_value = "512", help = "Cache size in MB")]
+    cache_mb: u32,
+    #[arg(long, default_value = "/tmp/mlx-flash-cache.sock", help = "Unix socket path for expert cache")]
+    socket_path: String,
 }
 
 fn launch_python_worker(port: u16, model: &str, preload: bool) -> Option<Child> {
@@ -68,9 +76,25 @@ async fn main() {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     }
 
+    let cache_arc = if let Some(ref expert_dir) = args.expert_dir {
+        let cache = Arc::new(cache::LcpCache::new(args.cache_mb as usize * 1024 * 1024));
+        let store = Arc::new(expert_store::ExpertStore::new(std::path::PathBuf::from(expert_dir)));
+        let socket_cache = cache.clone();
+        let socket_store = store.clone();
+        let socket_path = args.socket_path.clone();
+        tokio::spawn(async move {
+            socket_server::run_socket_server(&socket_path, socket_cache, socket_store).await;
+        });
+        tracing::info!("Expert cache: {}MB, socket: {}", args.cache_mb, args.socket_path);
+        Some(cache)
+    } else {
+        None
+    };
+
     let state = server::AppState {
         python_port: args.python_port,
         model_name: args.model,
+        cache: cache_arc,
         ..Default::default()
     };
 
