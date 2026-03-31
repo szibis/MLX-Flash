@@ -1,3 +1,4 @@
+mod cache;
 mod memory;
 mod proxy;
 mod server;
