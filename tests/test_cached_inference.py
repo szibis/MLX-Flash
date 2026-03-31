@@ -2,7 +2,7 @@
 import pytest
 from collections import defaultdict
 from mlx_flash_compress.cached_inference import (
-    ExpertRouter, RoutingEvent, CacheSimState,
+    ExpertRouter, RoutingEvent, CacheSimState, RustCacheState,
 )
 
 

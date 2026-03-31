@@ -216,6 +216,65 @@ class CacheSimState:
             self.cached.discard(min_key)
 
 
+# ── Rust-backed cache state ──
+
+class RustCacheState:
+    """Cache state backed by the Rust expert cache server via Unix socket."""
+
+    def __init__(self, socket_path: str = "/tmp/mlx-flash-cache.sock"):
+        self.socket_path = socket_path
+        self._client = None
+        self.total_requests = 0
+        self.total_hits = 0
+        self._request_id = 0
+
+    @property
+    def hit_rate(self) -> float:
+        return self.total_hits / self.total_requests if self.total_requests > 0 else 0.0
+
+    def connect(self):
+        from mlx_flash_compress.rust_bridge import RustCacheClient
+        self._client = RustCacheClient(self.socket_path)
+        self._client.connect()
+
+    def process_token(self, events: list) -> tuple[int, int]:
+        """Process routing events via Rust cache. Returns (hits, misses)."""
+        if self._client is None:
+            self.connect()
+
+        hits = 0
+        misses = 0
+        for event in events:
+            self._request_id += 1
+            result = self._client.fetch_experts(
+                layer=event.layer_idx,
+                experts=event.expert_indices,
+                request_id=self._request_id,
+            )
+            if "ExpertData" in result:
+                sizes = result["ExpertData"].get("expert_sizes", [])
+                for s in sizes:
+                    self.total_requests += 1
+                    if s > 0:
+                        hits += 1
+                        self.total_hits += 1
+                    else:
+                        misses += 1
+
+            # Report routing for prefetch learning
+            self._client.report_routing(
+                layer=event.layer_idx,
+                activated=event.expert_indices,
+                token_idx=event.token_idx,
+            )
+
+        return hits, misses
+
+    def close(self):
+        if self._client:
+            self._client.close()
+
+
 # ── Token-by-token inference with warm-up display ──
 
 def _fmt_prompt(tokenizer, prompt):
@@ -233,10 +292,15 @@ def _fmt_prompt(tokenizer, prompt):
 def generate_with_warmup(
     model, tokenizer, prompt: str, max_tokens: int = 100,
     cache_experts: int = 500, show_progress: bool = True,
+    cache_backend: str = "python",
 ) -> dict:
     """Generate text while showing progressive cache warm-up.
 
     Returns metrics including per-token hit rates and speedup curve.
+
+    Args:
+        cache_backend: ``"python"`` uses CacheSimState (default),
+                       ``"rust"`` uses RustCacheState backed by the Rust server.
     """
     router = ExpertRouter()
     installed = router.install(model)
@@ -253,7 +317,10 @@ def generate_with_warmup(
     router.token_counter = 0
     router.reset_for_new_generation()
 
-    cache = CacheSimState(capacity_experts=cache_experts)
+    if cache_backend == "rust":
+        cache = RustCacheState()
+    else:
+        cache = CacheSimState(capacity_experts=cache_experts)
 
     if show_progress:
         print(f"\n  Generating {max_tokens} tokens with cache warm-up tracking...")
@@ -290,7 +357,7 @@ def generate_with_warmup(
             "misses": misses,
             "hit_rate": hits / total if total > 0 else 0,
             "cumulative_hit_rate": cache.hit_rate,
-            "cache_size": len(cache.cached),
+            "cache_size": len(cache.cached) if hasattr(cache, "cached") else -1,
         })
 
     # Display warm-up curve
@@ -321,6 +388,10 @@ def generate_with_warmup(
 
     # Uninstall hooks
     router.uninstall(model)
+
+    # Close Rust cache connection if applicable
+    if hasattr(cache, "close"):
+        cache.close()
 
     tokens_out = len(tokenizer.encode(output))
     tps = tokens_out / total_time if total_time > 0 else 0
@@ -462,6 +533,9 @@ def main():
                         help="Number of expert slots in cache")
     parser.add_argument("--multi-topic", action="store_true",
                         help="Run multi-topic demo showing topic switching")
+    parser.add_argument("--cache-backend", choices=["python", "rust"], default="python",
+                        help="Cache backend: 'python' (default, CacheSimState) or "
+                             "'rust' (RustCacheState via Unix socket)")
     args = parser.parse_args()
 
     print()
@@ -491,7 +565,8 @@ def main():
     else:
         generate_with_warmup(model, tokenizer, args.prompt,
                              max_tokens=args.tokens,
-                             cache_experts=args.cache_experts)
+                             cache_experts=args.cache_experts,
+                             cache_backend=args.cache_backend)
 
 
 if __name__ == "__main__":

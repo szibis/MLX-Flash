@@ -130,7 +130,33 @@ Set `ram_mb` to `0` for auto-detection (uses 80% of available memory with safety
 
 ```bash
 python -m pytest tests/ -v
-# Expected: 43 passed
+# Expected: 89+ passed
+```
+
+## Rust Sidecar (optional, for production)
+
+The Rust sidecar provides faster memory monitoring, SSE streaming, and expert caching.
+
+### Build
+
+```bash
+cargo build --release -p mlx-flash-server
+```
+
+### Run
+
+```bash
+./mlx-flash-server/target/release/mlx-flash-server --launch-worker --preload --port 8080
+```
+
+### With expert caching
+
+```bash
+./mlx-flash-server/target/release/mlx-flash-server \
+  --launch-worker --preload \
+  --expert-dir /path/to/experts \
+  --cache-mb 512 \
+  --socket-path /tmp/mlx-flash-cache.sock
 ```
 
 ## Docker (for CI/testing only)

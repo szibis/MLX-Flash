@@ -7,11 +7,11 @@ Honest assessment of where we're slow, what doesn't work yet, and what would giv
 | # | Pain Point | Impact | Effort | Priority |
 |---|-----------|--------|--------|----------|
 | 1 | No real MLX weight interception | HIGH | HIGH | P0 |
-| 2 | Cold start: 4.8s to first token | HIGH | LOW | P1 |
-| 3 | First inference 3.5x slower than warm | MED | LOW | P1 |
+| 2 | Cold start: 4.8s to first token | HIGH | LOW | P1 — FIXED |
+| 3 | First inference 3.5x slower than warm | MED | LOW | P1 — FIXED |
 | 4 | Import overhead: 0.7s | LOW | LOW | P2 |
-| 5 | Server is single-threaded | MED | MED | P2 |
-| 6 | No streaming (SSE) support | MED | MED | P2 |
+| 5 | Server is single-threaded | MED | MED | P2 — FIXED |
+| 6 | No streaming (SSE) support | MED | MED | P2 — FIXED |
 | 7 | Cache simulation, not real | HIGH | HIGH | P0 |
 | 8 | No auto mixed-precision trigger | MED | MED | P1 |
 | 9 | Memory pressure detection is slow | LOW | LOW | P3 |

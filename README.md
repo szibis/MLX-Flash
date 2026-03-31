@@ -98,6 +98,7 @@ It shows you the sweet spot — even dedicating just 10GB to caching gives you 5
 | `mixed_precision.py` | Stores rarely-used parts at lower quality — 1.8x smaller, barely noticeable |
 | `compression.py` | LZ4/ZSTD compression + Apple's native LZFSE |
 | `tier_optimizer.py` | Finds the perfect RAM/SSD balance for your specific Mac + model combo |
+| `mlx-flash-server/` | Rust sidecar: HTTP/SSE proxy, memory monitor, LCP cache, Unix socket |
 
 ### Using It
 
@@ -166,12 +167,15 @@ MoE models work like the brain — only 0.78% of "neurons" (experts) activate pe
 
 ## Project Stats
 
-- **9,000+ lines of code** across 20+ Python modules
-- **59 passing tests**
+- **10,000+ lines of code** (Python + Rust)
+- **121 tests** (89 Python + 32 Rust)
 - **8 benchmark suites** + interactive demos
 - **6 research documents** (60+ papers surveyed)
 - **OpenAI-compatible API server** for LM Studio/Ollama/SDK integration
 - **Memory-aware** inference with real-time pressure monitoring
+- **Rust sidecar** with 0.1ms memory checks (210x faster than Python)
+- **Lock-free LCP expert cache** (DashMap)
+- **Unix socket bridge** for Python ↔ Rust expert weight streaming
 
 ## Roadmap
 
