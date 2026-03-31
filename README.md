@@ -216,19 +216,51 @@ MoE models work like the brain — only 0.78% of "neurons" (experts) activate pe
 
 ## Roadmap
 
-### Immediate (what works today)
-- LCP cache with async prefetch (2.93x measured)
-- Mixed precision 4-bit/2-bit (1.80x size reduction)
-- Tier optimizer for any model/hardware combo
+### What Works Today
+- LCP cache with async prefetch (85-95% hit rate, measured)
+- Mixed precision 4-bit/2-bit (1.80x size reduction, measured)
+- Memory pressure recovery: **2.1x on Mixtral-8x7B** (measured)
+- Rust sidecar: 0.1ms memory checks, SSE streaming, LCP cache
+- OpenAI-compatible API for LM Studio, Cursor, Claude Code, Ollama
+- E2E roundtrip: Python -> Rust cache -> SSD -> Python (91% hit rate)
 
-### Next Steps
-- **Entropy coding** (EntroLLM) — switch to asymmetric quantization format for 30% storage savings
-- **AMX dequant pipeline** — use Apple's matrix coprocessor for 13x faster decompression
-- **Thunderbolt 5 striping** — 2.8x SSD bandwidth with external drives
-- **Tensor network decomposition** — 10-20x compression (research frontier)
+### Next Steps (researched, implementations identified)
 
-### The Unfilled Gap
-No project yet does async expert prefetch overlapped with Metal GPU compute on Apple Silicon. This is the next major milestone — worth 40-70% additional latency reduction.
+```mermaid
+graph LR
+    subgraph HIGH["HIGH Priority"]
+        ENT["EntroLLM<br/>uint4 → 1.39 bits<br/>2.5x gen speed<br/>Python impl exists"]
+    end
+    subgraph MED["MEDIUM Priority"]
+        AMX["AMX Pipeline<br/>Apple Matrix Coprocessor<br/>parallel dequant+compute<br/>amx-rs Rust crate"]
+        MLX["mlx-rs Integration<br/>blocked: macOS 26<br/>Metal Toolchain"]
+    end
+    subgraph LOW["LOW Priority"]
+        TT["Tensor Train<br/>93% storage reduction<br/>offline compression"]
+        TB5["Thunderbolt 5<br/>2.8x SSD bandwidth"]
+    end
+```
+
+| Technique | Gain | Evidence | Status |
+|-----------|------|----------|--------|
+| **EntroLLM entropy coding** | uint4 weights stored at 1.39 bits (65% smaller), **2.5x token gen speed** | arXiv:2505.02380, measured on Jetson | Python impl exists, needs MLX port |
+| **AMX dequant pipeline** | Parallel dequant on AMX while Metal computes | Reverse-engineered by dougallj, `amx-rs` Rust crate | Needs custom GENLUT kernel |
+| **Tensor Train decomposition** | 93% storage reduction (offline) | CompactifAI arXiv:2401.14109 on LLaMA 7B | Best for model distribution, not inference |
+| **mlx-rs native inference** | Eliminate Python entirely for cache ops | `gather_qmm` confirmed in mlx-rs 0.25.3 | Blocked by macOS 26 Metal Toolchain |
+
+See `docs/advanced-techniques.md` for deep research on each technique.
+
+### Competition
+
+8 OSS projects and 12+ papers attack the same problem. Our unique differentiators:
+1. **Only** project with Rust sidecar + Mach syscall memory monitoring
+2. **Only** Apple Silicon project with mixed precision per-expert (hot 4-bit / cold 2-bit)
+3. **Only** project combining LCP + mixed precision + async prefetch + memory-aware serving
+
+Closest competitor: `mu-hashmi/mlx-moe` (similar goals, no Rust, no mixed precision).
+Closest paper: HOBBIT (arXiv:2411.01433) — nearly identical architecture, but NVIDIA-only.
+
+See `docs/competitive-analysis.md` for the full landscape.
 
 ## License
 
