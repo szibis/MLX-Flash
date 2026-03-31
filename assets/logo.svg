@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1a2e"/>
+      <stop offset="100%" style="stop-color:#16213e"/>
+    </linearGradient>
+    <linearGradient id="flash" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f7d423"/>
+      <stop offset="100%" style="stop-color:#e8a500"/>
+    </linearGradient>
+    <linearGradient id="ssd" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#4a90d9"/>
+      <stop offset="100%" style="stop-color:#2c5282"/>
+    </linearGradient>
+    <linearGradient id="cape" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#e53e3e"/>
+      <stop offset="100%" style="stop-color:#c53030"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="4" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="shadow">
+      <feDropShadow dx="2" dy="4" stdDeviation="3" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="250" fill="url(#bg)" stroke="#2d3748" stroke-width="4"/>
+
+  <!-- Cape flowing behind -->
+  <path d="M180 200 Q140 280 120 380 Q160 360 200 370 Q220 300 240 260 Z"
+        fill="url(#cape)" opacity="0.9" filter="url(#shadow)"/>
+  <path d="M332 200 Q372 280 392 380 Q352 360 312 370 Q292 300 272 260 Z"
+        fill="url(#cape)" opacity="0.9" filter="url(#shadow)"/>
+
+  <!-- SSD chip body -->
+  <rect x="170" y="160" width="172" height="210" rx="16" ry="16"
+        fill="url(#ssd)" filter="url(#shadow)"/>
+
+  <!-- SSD connector pins at bottom -->
+  <rect x="190" y="360" width="8" height="16" rx="2" fill="#718096"/>
+  <rect x="206" y="360" width="8" height="16" rx="2" fill="#718096"/>
+  <rect x="222" y="360" width="8" height="16" rx="2" fill="#718096"/>
+  <rect x="238" y="360" width="8" height="16" rx="2" fill="#718096"/>
+  <rect x="254" y="360" width="8" height="16" rx="2" fill="#718096"/>
+  <rect x="270" y="360" width="8" height="16" rx="2" fill="#718096"/>
+  <rect x="286" y="360" width="8" height="16" rx="2" fill="#718096"/>
+  <rect x="302" y="360" width="8" height="16" rx="2" fill="#718096"/>
+
+  <!-- SSD chip label area -->
+  <rect x="188" y="178" width="136" height="40" rx="4" fill="#1a365d" opacity="0.6"/>
+
+  <!-- NAND flash die grid (4x2) -->
+  <rect x="192" y="232" width="56" height="40" rx="3" fill="#2b6cb0" stroke="#3182ce" stroke-width="1"/>
+  <rect x="264" y="232" width="56" height="40" rx="3" fill="#2b6cb0" stroke="#3182ce" stroke-width="1"/>
+  <rect x="192" y="284" width="56" height="40" rx="3" fill="#2b6cb0" stroke="#3182ce" stroke-width="1"/>
+  <rect x="264" y="284" width="56" height="40" rx="3" fill="#2b6cb0" stroke="#3182ce" stroke-width="1"/>
+
+  <!-- Lightning bolt (superhero flash symbol) centered on SSD -->
+  <path d="M276 150 L240 250 L268 250 L232 370 L310 230 L278 230 L310 150 Z"
+        fill="url(#flash)" filter="url(#glow)" opacity="0.95"/>
+
+  <!-- Inner lightning highlight -->
+  <path d="M272 164 L246 244 L266 244 L242 342 L298 240 L276 240 L302 164 Z"
+        fill="#fff3b0" opacity="0.4"/>
+
+  <!-- Superhero mask eyes -->
+  <ellipse cx="220" cy="145" rx="24" ry="12" fill="#e2e8f0"
+           transform="rotate(-10 220 145)" filter="url(#shadow)"/>
+  <ellipse cx="292" cy="145" rx="24" ry="12" fill="#e2e8f0"
+           transform="rotate(10 292 145)" filter="url(#shadow)"/>
+  <ellipse cx="220" cy="145" rx="14" ry="7" fill="#4299e1"
+           transform="rotate(-10 220 145)"/>
+  <ellipse cx="292" cy="145" rx="14" ry="7" fill="#4299e1"
+           transform="rotate(10 292 145)"/>
+
+  <!-- Speed lines -->
+  <line x1="90" y1="200" x2="140" y2="220" stroke="#f7d423" stroke-width="3" opacity="0.5" stroke-linecap="round"/>
+  <line x1="80" y1="240" x2="145" y2="250" stroke="#f7d423" stroke-width="2" opacity="0.4" stroke-linecap="round"/>
+  <line x1="85" y1="280" x2="148" y2="275" stroke="#f7d423" stroke-width="3" opacity="0.5" stroke-linecap="round"/>
+  <line x1="372" y1="200" x2="422" y2="220" stroke="#f7d423" stroke-width="3" opacity="0.5" stroke-linecap="round"/>
+  <line x1="367" y1="240" x2="432" y2="250" stroke="#f7d423" stroke-width="2" opacity="0.4" stroke-linecap="round"/>
+  <line x1="364" y1="280" x2="427" y2="275" stroke="#f7d423" stroke-width="3" opacity="0.5" stroke-linecap="round"/>
+
+  <!-- MLX-Flash text -->
+  <text x="256" y="430" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif"
+        font-size="42" font-weight="800" fill="#e2e8f0" letter-spacing="2">
+    MLX-Flash
+  </text>
+  <text x="256" y="458" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif"
+        font-size="14" font-weight="400" fill="#a0aec0" letter-spacing="3">
+    EXPERT STREAMING FOR APPLE SILICON
+  </text>
+</svg>

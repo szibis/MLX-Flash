@@ -1,6 +1,10 @@
-# MLX-Flash
+<p align="center">
+  <img src="assets/logo.svg" width="200" alt="MLX-Flash Logo" />
+</p>
 
-**Run AI models too large for your Mac's memory — at near-full speed.**
+<h1 align="center">MLX-Flash</h1>
+
+<p align="center"><strong>Run AI models too large for your Mac's memory — at near-full speed.</strong></p>
 
 Your MacBook has 32-48GB of RAM, but the best AI models need 100-200GB+. MLX-Flash makes them run anyway by intelligently caching the most-needed parts in RAM and streaming the rest from your SSD — so you don't have to choose between quality and what fits in memory.
 
