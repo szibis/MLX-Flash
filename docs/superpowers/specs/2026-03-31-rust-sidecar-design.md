@@ -245,6 +245,126 @@ Python side reads expert weights via `mmap` and constructs `mx.array` from the r
 - [ ] Mixed precision auto-applied when pressure detected
 - [ ] 50GB+ model runs on 36GB Mac via SSD streaming (the ultimate test)
 
+## Test Strategy
+
+### Test Pyramid
+
+```
+         /  E2E  \           curl -> Rust -> Python -> MLX -> response
+        /─────────\
+       / Integration\        Rust <-> Python socket, SSE forwarding
+      /──────────────\
+     / Functional      \     HTTP API contracts, cache behavior, memory monitoring
+    /───────────────────\
+   /   Unit               \  LCP eviction, priority math, message serialization
+  /────────────────────────\
+```
+
+### Python Tests (existing + new)
+
+**Existing (59 tests)**:
+- `test_compression.py` — LZ4/ZSTD/LZFSE roundtrips (9)
+- `test_cache.py` — cold/hot/warm hits, eviction, parallel fetch (6)
+- `test_lcp_cache.py` — LCP cache, mixed precision, smart eviction (12)
+- `test_config_hw_ssd.py` — config, hardware detect, SSD protection (16)
+- `test_profiler_memory.py` — task profiler, memory manager, tier optimizer (16)
+
+**New tests needed**:
+
+| File | Tests | What |
+|------|-------|------|
+| `test_serve.py` | 8 | Server startup, /status, /hints, /release, chat completion, SSE stream, CORS, error handling |
+| `test_chat.py` | 4 | Prompt formatting, memory bar, status command, conversation management |
+| `test_cached_inference.py` | 6 | Router hook install/uninstall, event capture, token boundary detection, multi-topic cache sim |
+| `test_demo_warmup.py` | 5 | Expert file creation, topic routing distribution, warm-up curve, topic switch detection |
+| `test_bench_memory_pressure.py` | 4 | Footprint measurement, pressure sweep, expert eviction, report generation |
+| `test_memory_manager_hints.py` | 6 | Optimization hints for each pressure level, auto-release, budget adjustment |
+
+**Target: 92 Python tests** (59 existing + 33 new)
+
+### Rust Tests
+
+**Unit tests** (`#[cfg(test)]` in each module):
+
+| Module | Tests | What |
+|--------|-------|------|
+| `memory.rs` | 4 | Read host_statistics64, pressure classification, available_gb calc, page size handling |
+| `cache/lcp.rs` | 8 | Insert/fetch, eviction priority, capacity enforcement, concurrent access, step advance, frequency tracking, cold start, warm-up convergence |
+| `cache/prefetch.rs` | 3 | Async read, prefetch queue, cancel on eviction |
+| `cache/mixed_prec.rs` | 4 | 4->2 bit roundtrip, MSE threshold, size reduction ratio, batch conversion |
+| `proxy.rs` | 4 | Request forwarding, SSE stream proxy, error propagation, timeout handling |
+| `server.rs` | 6 | All endpoints return correct status codes + shapes |
+| `protocol.rs` | 4 | Message serialize/deserialize, shared memory layout, expert request/response |
+| `expert_store.rs` | 3 | Safetensors load, expert slicing, 3D tensor access |
+
+**Target: 36 Rust unit tests**
+
+**Integration tests** (`tests/` directory):
+
+| File | Tests | What |
+|------|-------|------|
+| `test_proxy_roundtrip.rs` | 3 | Start Python worker, proxy request through Rust, verify response matches direct Python |
+| `test_sse_streaming.rs` | 2 | Send stream:true request, verify SSE events arrive incrementally |
+| `test_memory_monitor.rs` | 2 | Verify memory readings match `vm_stat` output, pressure classification consistent |
+| `test_cache_warmup.rs` | 3 | Cold start -> warm-up -> steady state, verify hit rate convergence |
+
+**Target: 10 Rust integration tests**
+
+**E2E tests** (shell scripts or Python):
+
+| Test | What |
+|------|------|
+| `e2e_full_pipeline.sh` | Start Rust + Python, send 5 requests via curl, verify responses, check /status |
+| `e2e_lm_studio_compat.py` | OpenAI SDK client sends chat completion with stream:true, verify format matches spec |
+| `e2e_memory_pressure.py` | Set mx.set_memory_limit, generate, verify /hints suggests mixed precision |
+| `e2e_topic_switch.py` | Send coding prompt, then math prompt, verify cache stats show re-warming |
+
+**Target: 4 E2E tests**
+
+### Benchmarks
+
+| Benchmark | Measures | Baseline | Target |
+|-----------|----------|----------|--------|
+| `bench_cold_start` | Time from binary start to first response | 1066ms (Python) | <50ms (Rust) |
+| `bench_memory_check` | Memory state read latency | 21ms (subprocess) | <0.5ms (mach2) |
+| `bench_concurrent` | 10 parallel requests throughput | 1 at a time | 10 concurrent |
+| `bench_sse_latency` | Time to first SSE event | ~500ms (Python) | <100ms (Rust proxy) |
+| `bench_cache_ops` | LCP insert/fetch/evict per second | ~100K (Python dict) | >1M (DashMap) |
+| `bench_expert_load` | SSD read + cache insert for one expert | ~0.6ms (Python) | <0.3ms (tokio::fs) |
+| `bench_mixed_prec` | 4->2 bit conversion throughput | ~2ms/expert (numpy) | <0.5ms/expert (mlx-rs) |
+
+### CI Pipeline
+
+```yaml
+# .github/workflows/test.yml
+jobs:
+  python-tests:
+    runs-on: macos-14  # Apple Silicon
+    steps:
+      - pip install -e ".[test]"
+      - pytest tests/ -v --tb=short
+
+  rust-tests:
+    runs-on: macos-14
+    steps:
+      - cargo test --workspace
+      - cargo test --workspace -- --ignored  # integration tests
+
+  e2e-tests:
+    runs-on: macos-14
+    needs: [python-tests, rust-tests]
+    steps:
+      - cargo build --release
+      - bash tests/e2e_full_pipeline.sh
+
+  benchmarks:
+    runs-on: macos-14
+    needs: [e2e-tests]
+    steps:
+      - cargo bench
+      - python -m mlx_flash_compress.bench_memory_pressure --tokens 20
+```
+
 ## Risks
 
 | Risk | Impact | Mitigation |
