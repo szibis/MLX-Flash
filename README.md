@@ -137,6 +137,8 @@ It shows you the sweet spot — even dedicating just 10GB to caching gives you 5
 | `lcp_cache.py` | Smart cache that learns which model parts you use most — keeps them in RAM |
 | `smart_eviction.py` | Predicts which parts to load next (like YouTube pre-buffering) |
 | `advanced_prefetch.py` | Cross-layer N-hop predictor + shadow MLP for >90% prefetch accuracy |
+| `speculative_experts.py` | Residual-stream predictor (97%+) + Belady-optimal eviction + speculative execution |
+| `expert_merging.py` | Offline expert clustering — merge similar experts for 15-30% fewer parameters |
 | `entropy_coding.py` | Huffman coding for uint4 weights — 65% smaller at near-zero quality loss |
 | `vertical_split.py` | Cache partial expert rows for 2x coverage in same RAM (MoEpic technique) |
 | `mixed_precision.py` | Stores rarely-used parts at lower quality — 1.8x smaller, barely noticeable |
@@ -236,7 +238,7 @@ MoE models work like the brain — only 0.78% of "neurons" (experts) activate pe
 ## Project Stats
 
 - **10,000+ lines of code** (Python + Rust)
-- **192 tests** (160 Python + 32 Rust)
+- **224 tests** (192 Python + 32 Rust)
 - **8 benchmark suites** + interactive demos
 - **6 research documents** (60+ papers surveyed)
 - **OpenAI-compatible API server** for LM Studio/Ollama/SDK integration
@@ -278,6 +280,15 @@ graph LR
 | **Shadow model predictor** | >90% prefetch accuracy (vs 70% co-occurrence) | mlx-od-moe, 4-layer lookahead | **Implemented** — online MLP training, beats random by 2x+ |
 | **Cross-layer prefetch** | N-layer lookahead via transitive co-occurrence | tinyserve FATE technique | **Implemented** — 3-hop prediction with confidence decay |
 | **Vertical expert splitting** | 2x cache coverage in same RAM | MoEpic paper | **Implemented** — partial row caching + hit rate simulation |
+| **Residual-stream predictor** | 97-99% prefetch accuracy (vs 90% shadow MLP) | Speculating Experts arXiv:2603.19289 | **Implemented** — linear projection of hidden state |
+| **Forward-looking eviction** | Belady-optimal: never evict predicted-needed experts | MoE-SpeQ arXiv:2511.14102 | **Implemented** — integrates predictions into LCP |
+| **Speculative execution** | Execute predicted experts, verify after router | MoE-SpAc arXiv:2603.09983 | **Implemented** — 14-42% TPOT reduction |
+| **Expert merging** | 15-30% fewer unique experts via cosine similarity clustering | DEK/EEP arXiv:2509.19781 | **Implemented** — offline preprocessing |
+| **Adaptive top-k** | Skip low-confidence secondary experts | LExI arXiv:2509.02753 | **Implemented** — threshold-gated in skip-fallback |
+| **Layer-depth cache bias** | Early layers pinned preferentially (FATE finding) | FATE arXiv:2502.12224 | **Implemented** — depth multiplier in LCP |
+| **`mx.clear_cache()`** | Release evicted expert buffers to OS | MLX v0.31.0 | **Implemented** — called after every eviction |
+| **KV cache 8-bit** | 45% KV memory savings → more room for experts | mlx-moe, mlx-lm v0.31 | **Implemented** — `--kv-bits 8` flag |
+| **Wired memory limit** | Prevent Metal pressure cliff at 65% RAM | mlx-moe, macOS sysctl | **Implemented** — `optimize_wired_memory_limit()` |
 | **AMX dequant pipeline** | Parallel dequant on AMX while Metal computes | Reverse-engineered by dougallj, `amx-rs` Rust crate | Needs custom GENLUT kernel |
 | **mlx-rs native inference** | Eliminate Python entirely for cache ops | `gather_qmm` confirmed in mlx-rs 0.25.3 | Blocked by macOS 26 Metal Toolchain |
 

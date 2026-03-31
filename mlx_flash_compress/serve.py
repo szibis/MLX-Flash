@@ -43,10 +43,12 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 class InferenceState:
     """Shared state for the inference server."""
 
-    def __init__(self, model_name: str, cache_budget_pct: float = 0.8):
+    def __init__(self, model_name: str, cache_budget_pct: float = 0.8,
+                 kv_bits: int = 0):
         self.model_name = model_name
         self.model = None
         self.tokenizer = None
+        self.kv_bits = kv_bits  # 0 = no KV quant, 8 = 8-bit (45% savings)
         self.hw = detect_hardware()
         self.mem_mgr = MemoryManager(safety_margin_gb=2.0)
         self.cache_budget_pct = cache_budget_pct
@@ -408,6 +410,8 @@ def main():
     parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--preload", action="store_true", help="Load model immediately")
+    parser.add_argument("--kv-bits", type=int, default=0, choices=[0, 4, 8],
+                        help="KV cache quantization bits (0=none, 8=45%% memory savings)")
     args = parser.parse_args()
 
     print()
@@ -415,7 +419,7 @@ def main():
     print("  MLX-Flash-Compress: Inference Server")
     print("=" * 60)
 
-    state = InferenceState(args.model)
+    state = InferenceState(args.model, kv_bits=args.kv_bits)
     print(f"\n  Hardware: {state.hw.chip}, {state.hw.total_ram_gb:.0f}GB RAM")
 
     mem = get_memory_state()

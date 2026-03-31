@@ -161,10 +161,21 @@ class SafetensorsMap:
 # -- LCP eviction tracker --
 
 class LCPTracker:
-    def __init__(self, num_experts, lcp_base=0.25, lcp_decay=128.0):
+    """LCP eviction with optional layer-depth bias (FATE paper).
+
+    Shallow (early) layers have more predictable routing patterns,
+    so their experts are more valuable to keep cached. The layer_depth_bias
+    multiplies priority by (1 + bias * (1 - layer_frac)) where layer_frac
+    is the layer's position (0=first, 1=last).
+    """
+
+    def __init__(self, num_experts, lcp_base=0.25, lcp_decay=128.0,
+                 layer_depth_bias=0.0, layer_frac=0.5):
         self.num_experts = num_experts
         self.lcp_base = lcp_base
         self.lcp_decay = lcp_decay
+        # Shallow-favoring bias: higher for early layers
+        self._depth_multiplier = 1.0 + layer_depth_bias * (1.0 - layer_frac)
         self.frequency = np.zeros(num_experts, dtype=np.int64)
         self.last_used = np.zeros(num_experts, dtype=np.int64)
         self.step = 0
@@ -178,7 +189,8 @@ class LCPTracker:
 
     def priority(self, eid):
         age = self.step - self.last_used[eid]
-        return self.frequency[eid] * (self.lcp_base ** (age / self.lcp_decay))
+        base_priority = self.frequency[eid] * (self.lcp_base ** (age / self.lcp_decay))
+        return base_priority * self._depth_multiplier
 
     def coldest(self, among, n):
         priorities = [(eid, self.priority(eid)) for eid in among]
@@ -224,7 +236,8 @@ class CachedSwitchLinear(nn.Module):
 class ExpertCache:
     """Pre-stacked expert weights in GPU with LCP eviction."""
 
-    def __init__(self, layer_idx, num_experts, capacity, st_map, weight_keys):
+    def __init__(self, layer_idx, num_experts, capacity, st_map, weight_keys,
+                 num_layers=1, layer_depth_bias=0.3):
         self.layer_idx = layer_idx
         self.num_experts = num_experts
         self.capacity = min(capacity, num_experts)
@@ -236,7 +249,10 @@ class ExpertCache:
         self.weights = {}
         self.scales = {}
         self.biases = {}
-        self.tracker = LCPTracker(num_experts)
+        layer_frac = layer_idx / max(num_layers - 1, 1)
+        self.tracker = LCPTracker(
+            num_experts, layer_depth_bias=layer_depth_bias, layer_frac=layer_frac
+        )
         self._indices_buffer = []
         self.total_tokens = 0
         self.cache_updates = 0
@@ -315,6 +331,12 @@ class ExpertCache:
         self._rebuild_lookup()
         self.cache_updates += 1
 
+        # Release evicted expert buffers back to OS (MLX v0.31+)
+        try:
+            mx.clear_cache()
+        except AttributeError:
+            pass  # older MLX versions
+
     def stats(self):
         return {
             "layer": self.layer_idx,
@@ -367,12 +389,17 @@ class StreamingState:
 
 # -- Skip-fallback: zero missing expert scores --
 
-def enable_skip_fallback(model, caches: list):
+def enable_skip_fallback(model, caches: list, adaptive_skip_threshold: float = 0.0):
     """Monkey-patch MoE blocks to zero scores for uncached experts.
 
     When an expert is not in the cache, its routing score is set to 0
     and remaining scores are renormalized. This avoids computing with
     stale/placeholder weights for uncached experts.
+
+    If adaptive_skip_threshold > 0, also skip low-confidence secondary
+    experts when top-1 score / top-2 score > threshold (LExI paper).
+    E.g., threshold=3.0 means skip expert 2 if expert 1 is 3x more likely.
+    This gives 10-30% compute reduction with <1% quality loss.
     """
     import types
 
@@ -396,6 +423,8 @@ def enable_skip_fallback(model, caches: list):
         mlp = layer.mlp
         original_call = type(mlp).__call__
 
+        skip_thresh = adaptive_skip_threshold
+
         def make_patched(orig, cache_ref):
             def patched_call(self, x):
                 gates = self.gate(x)
@@ -410,6 +439,20 @@ def enable_skip_fallback(model, caches: list):
                 # Zero out scores for uncached experts
                 mask = cache_ref.hit_mask[inds]  # 1.0 cached, 0.0 not
                 scores = scores * mask
+
+                # Adaptive top-k: skip low-confidence secondary experts (LExI)
+                if skip_thresh > 0 and k > 1:
+                    top1 = scores[..., :1]
+                    # Zero out experts where top-1 is much stronger
+                    confidence_mask = mx.where(
+                        top1 > skip_thresh * scores, 0.0, 1.0
+                    )
+                    # Keep top-1 always
+                    confidence_mask = mx.concatenate(
+                        [mx.ones_like(scores[..., :1]), confidence_mask[..., 1:]], axis=-1
+                    )
+                    scores = scores * confidence_mask
+
                 score_sum = scores.sum(axis=-1, keepdims=True)
                 scores = mx.where(score_sum > 0, scores / score_sum, scores)
 
@@ -490,6 +533,7 @@ def enable_expert_streaming(model, capacity_per_layer=200, model_path=None):
         if shards:
             state.st_map = SafetensorsMap([str(s) for s in shards])
 
+    total_layers = len(layers)
     for layer_idx, layer in enumerate(layers):
         if not hasattr(layer, "mlp"):
             continue
@@ -539,6 +583,7 @@ def enable_expert_streaming(model, capacity_per_layer=200, model_path=None):
             capacity=min(capacity_per_layer, num_experts),
             st_map=state.st_map,
             weight_keys=weight_keys,
+            num_layers=total_layers,
         )
         state.caches.append(cache)
 

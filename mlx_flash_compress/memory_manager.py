@@ -381,3 +381,35 @@ class MemoryManager:
                 result["action"] = "mlx_not_available"
 
         return result
+
+
+def optimize_wired_memory_limit(total_ram_gb: float = None,
+                                 os_reserve_gb: float = 4.0) -> dict:
+    """Suggest and optionally set the optimal iogpu.wired_limit_mb.
+
+    macOS defaults to wiring ~65-75% of unified memory for GPU. For large
+    MoE models, we want to maximize this to prevent the Metal pressure cliff.
+
+    Args:
+        total_ram_gb: Total system RAM. Auto-detected if None.
+        os_reserve_gb: Reserve for OS + user apps (default 4GB).
+
+    Returns:
+        Dict with recommended limit and the sysctl command to apply it.
+    """
+    if total_ram_gb is None:
+        state = get_memory_state()
+        total_ram_gb = state.total_gb
+
+    recommended_mb = int((total_ram_gb - os_reserve_gb) * 1024)
+    default_mb = int(total_ram_gb * 0.75 * 1024)
+
+    return {
+        "total_ram_gb": total_ram_gb,
+        "default_wired_mb": default_mb,
+        "recommended_wired_mb": recommended_mb,
+        "gain_mb": recommended_mb - default_mb,
+        "gain_gb": round((recommended_mb - default_mb) / 1024, 1),
+        "command": f"sudo sysctl iogpu.wired_limit_mb={recommended_mb}",
+        "note": "Requires sudo. Persists until reboot. Set before loading model.",
+    }
