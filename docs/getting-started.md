@@ -272,4 +272,5 @@ python -m mlx_flash_compress.cached_inference --tokens 80 --multi-topic
 - Try different models to see scaling behavior
 - Use `--task coding` or `--task writing` for task-specific optimization
 - Run `python -m mlx_flash_compress.tier_optimizer` to find optimal settings
+- Check `docs/integrations.md` for Claude Code, LM Studio, Cursor, Aider integration
 - Check `docs/technical-reference.md` for deep implementation details

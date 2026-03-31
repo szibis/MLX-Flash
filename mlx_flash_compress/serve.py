@@ -96,10 +96,11 @@ class InferenceState:
         print("    python -m mlx_flash_compress.serve --model PATH --mixed-precision")
 
     def get_status(self) -> dict:
-        """Get current server status."""
+        """Get current server status with optimization hints."""
         mem = get_memory_state()
         uptime = time.monotonic() - self.start_time
         cache_budget = self.mem_mgr.get_cache_budget_gb()
+        hints = self.mem_mgr.get_optimization_hints()
 
         return {
             "model": self.model_name,
@@ -113,27 +114,15 @@ class InferenceState:
                 "available_gb": round(mem.available_gb, 1),
                 "pressure": mem.pressure_level,
                 "cache_budget_gb": round(cache_budget, 1),
+                "swap_used_gb": round(mem.swap_used_gb, 1),
             },
             "stats": {
                 "requests": self.total_requests,
                 "tokens_generated": self.total_tokens,
                 "uptime_s": round(uptime, 0),
             },
-            "suggestions": self._get_suggestions(mem),
+            "optimization_hints": hints,
         }
-
-    def _get_suggestions(self, mem) -> list[str]:
-        """Get memory management suggestions."""
-        suggestions = []
-        if mem.pressure_level == "critical":
-            suggestions.append("CRITICAL: Close applications to free RAM immediately")
-        elif mem.pressure_level == "warning":
-            suggestions.append("Memory pressure detected. Close unused apps for better performance.")
-        if mem.swap_used_gb > 1.0:
-            suggestions.append(f"{mem.swap_used_gb:.1f}GB in swap. Performance may be degraded.")
-        if mem.available_gb < 2.0:
-            suggestions.append("Less than 2GB free. Consider using a smaller model.")
-        return suggestions
 
     def generate(self, messages: list[dict], max_tokens: int = 256,
                  temperature: float = 0.7) -> dict:
@@ -141,15 +130,23 @@ class InferenceState:
         if self.model is None:
             self.load_model()
 
-        # Check memory before generation
+        # Check memory before generation — auto-release if needed
         mem = get_memory_state()
+        release_info = None
+        if mem.pressure_level in ("critical", "warning"):
+            release_info = self.mem_mgr.auto_release_if_needed()
+            mem = get_memory_state()  # re-check after release
+
         if mem.pressure_level == "critical":
+            hints = self.mem_mgr.get_optimization_hints()
             return {
                 "error": "Memory pressure is critical. Close applications to free RAM.",
                 "memory": {
                     "available_gb": round(mem.available_gb, 1),
                     "pressure": mem.pressure_level,
                 },
+                "optimization_hints": hints,
+                "auto_release": release_info,
             }
 
         # Format prompt
@@ -212,8 +209,14 @@ class ChatHandler(BaseHTTPRequestHandler):
                     "owned_by": "mlx-flash-compress",
                 }]
             })
-        elif self.path == "/health" or self.path == "/status":
+        elif self.path in ("/health", "/status"):
             self._send_json(self.server_state.get_status())
+        elif self.path == "/hints":
+            hints = self.server_state.mem_mgr.get_optimization_hints()
+            self._send_json({"hints": hints})
+        elif self.path == "/release":
+            result = self.server_state.mem_mgr.auto_release_if_needed()
+            self._send_json(result)
         else:
             self._send_json({"error": "Not found"}, 404)
 

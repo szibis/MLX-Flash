@@ -224,9 +224,9 @@ class MemoryManager:
         max_allowed = state.total_gb * self.max_cache_pct
 
         # Adjust based on pressure
-        if state.pressure_level == "yellow":
+        if state.pressure_level in ("yellow", "warning"):
             available *= 0.5  # cut in half under warning
-        elif state.pressure_level == "red":
+        elif state.pressure_level in ("red", "critical"):
             available = self.min_cache_gb  # minimum under critical
 
         # Clamp
@@ -284,3 +284,100 @@ class MemoryManager:
             "cache_budget_gb": f"{budget / (1024**3):.1f}",
             "safety_margin_gb": f"{self.safety_margin_gb:.1f}",
         }
+
+    def get_optimization_hints(self) -> list[dict]:
+        """Get actionable optimization hints based on current memory state.
+
+        Returns a list of hints with priority, action, and expected impact.
+        """
+        state = get_memory_state()
+        hints = []
+
+        # Critical pressure
+        if state.pressure_level in ("red", "critical"):
+            hints.append({
+                "priority": "critical",
+                "action": "reduce_cache",
+                "message": "Memory pressure critical. Reduce cache size or close apps.",
+                "detail": f"Only {state.free_gb:.1f}GB free, {state.swap_used_gb:.1f}GB in swap.",
+            })
+            hints.append({
+                "priority": "critical",
+                "action": "enable_mixed_precision",
+                "message": "Enable mixed precision to reduce model footprint by ~20%.",
+                "detail": "Cold experts at 2-bit saves significant RAM with minimal quality loss.",
+            })
+
+        # Warning pressure
+        elif state.pressure_level in ("yellow", "warning"):
+            hints.append({
+                "priority": "warning",
+                "action": "shrink_cache",
+                "message": f"Memory pressure warning. Consider reducing cache by 50%.",
+                "detail": f"Available: {state.available_gb:.1f}GB, swap: {state.swap_used_gb:.1f}GB.",
+            })
+
+        # High swap usage
+        if state.swap_used_gb > 2.0:
+            hints.append({
+                "priority": "warning",
+                "action": "close_apps",
+                "message": f"High swap usage ({state.swap_used_gb:.1f}GB). Close unused apps.",
+                "detail": "Browser tabs (~100-500MB each), Xcode (1-4GB), Docker (1-2GB).",
+            })
+
+        # Good conditions — can expand
+        if state.pressure_level in ("green", "normal") and state.available_gb > 8.0:
+            budget_gb = self.get_cache_budget_gb()
+            if budget_gb < state.available_gb * 0.5:
+                hints.append({
+                    "priority": "info",
+                    "action": "expand_cache",
+                    "message": f"Plenty of RAM available ({state.available_gb:.1f}GB). "
+                               f"Cache could grow from {budget_gb:.1f}GB to {state.available_gb * 0.7:.1f}GB.",
+                    "detail": "Larger cache = higher hit rate = faster inference.",
+                })
+
+        # Mixed precision suggestion for tight fits
+        budget_gb = self.get_cache_budget_gb()
+        if 0 < budget_gb < 2.0:
+            hints.append({
+                "priority": "info",
+                "action": "enable_mixed_precision",
+                "message": "Small cache budget. Mixed precision would help.",
+                "detail": "Hot experts at 4-bit, cold at 2-bit = 20% smaller footprint.",
+            })
+
+        return hints
+
+    def auto_release_if_needed(self) -> dict:
+        """Auto-release GPU memory if pressure is critical.
+
+        Calls mx.clear_memory_pool() to release cached MLX allocations.
+        Returns info about what was done.
+        """
+        state = get_memory_state()
+        result = {"action": "none", "pressure": state.pressure_level}
+
+        if state.pressure_level in ("red", "critical"):
+            try:
+                import mlx.core as mx
+                # Clear MLX memory pool (releases unused cached allocations)
+                mx.clear_memory_pool()
+                import gc
+                gc.collect()
+                mx.synchronize()
+
+                after = get_memory_state()
+                freed = after.free_gb - state.free_gb
+                result = {
+                    "action": "released",
+                    "pressure_before": state.pressure_level,
+                    "pressure_after": after.pressure_level,
+                    "freed_gb": round(max(freed, 0), 2),
+                    "free_gb_now": round(after.free_gb, 1),
+                }
+            except (ImportError, AttributeError):
+                result["action"] = "mlx_not_available"
+
+        return result
