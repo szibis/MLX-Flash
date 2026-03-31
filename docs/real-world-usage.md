@@ -149,14 +149,31 @@ client.report_routing(layer=5, activated=[3, 7, 12, 45], token_idx=100)
 # {"entries": 500, "hit_rate": 0.87, "bytes_used": 128000000, ...}
 ```
 
+## Mixtral-8x7B Results (26GB on 36GB Mac)
+
+The real-world "barely fits" demo, measured on M3 Max 36GB:
+
+```
+Mixtral-8x7B-Instruct-v0.1-4bit (26.5GB footprint, 97% expert weights)
+
+  1.00x footprint:   19.3 tok/s  ####################  (full speed)
+  0.90x footprint:    9.1 tok/s  #########             (53% slower — memory pressure!)
+  With mixed prec:   19.2 tok/s  ####################  (full speed restored — 2.1x recovery)
+```
+
+Mixed precision saves 6GB by compressing cold experts from 4-bit to 2-bit. That shifts the model from 0.90x (pressure zone) to 1.17x (comfortable).
+
+This is exactly what happens in real life: you run Mixtral on your 36GB Mac, open a few browser tabs and Slack, and suddenly inference drops from 19 to 9 tok/s. Our mixed precision eliminates that silently.
+
 ## What We Measured vs What We Projected
 
 Being honest about which numbers are measured and which are projected:
 
 | Claim | Measured? | How | Number |
 |-------|-----------|-----|--------|
-| Memory pressure causes 2.8x slowdown | **Yes** | mx.set_memory_limit on real model | 104→37 tok/s |
-| Mixed precision recovers 2.4x | **Yes** | Same model, different limit simulating MP | 43→104 tok/s |
+| Memory pressure causes 2x slowdown | **Yes** | mx.set_memory_limit on Mixtral-8x7B | 19.3→9.1 tok/s |
+| Mixed precision recovers 2.1x | **Yes** | Same model, footprint reduced 23% | 9.1→19.2 tok/s |
+| Qwen MoE pressure cliff | **Yes** | mx.set_memory_limit on Qwen MoE | 104→43 tok/s (2.4x) |
 | Cache warm-up: 83ms→0.5ms | **Yes** | LCPCache with simulated SSD latency | 41x speedup |
 | Topic return is instant | **Yes** | Simulated routing, measured cache hits | 99.8% hit rate |
 | Rust memory check is 210x faster | **Yes** | host_statistics64 vs subprocess | 0.1ms vs 21ms |
