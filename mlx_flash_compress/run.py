@@ -28,7 +28,9 @@ from mlx_flash_compress.config import FlashConfig, get_config
 from mlx_flash_compress.hardware import detect_hardware, MacHardware
 from mlx_flash_compress.lcp_cache import LCPCache
 from mlx_flash_compress.router_hook import RouterHook
-from mlx_flash_compress.ssd_protection import estimate_ssd_impact
+from mlx_flash_compress.memory_manager import MemoryManager, get_memory_state
+from mlx_flash_compress.task_profiler import AdaptiveProfiler, get_predefined_profile
+from mlx_flash_compress.ssd_protection import estimate_ssd_impact, SSDProtectedReader
 from mlx_flash_compress.bench_real import extract_expert_weights_to_disk, _find_expert_params_flat
 
 
@@ -265,6 +267,10 @@ def main():
     parser.add_argument("--cache-mb", type=int, default=0, help="Override cache size (MB, 0=auto)")
     parser.add_argument("--baseline-only", action="store_true", help="Only run baseline (no cache)")
     parser.add_argument("--runs", type=int, default=3, help="Number of baseline runs for averaging")
+    parser.add_argument("--task", type=str, default=None,
+                        help="Task profile: coding, writing, math, chat, analysis")
+    parser.add_argument("--adaptive", action="store_true",
+                        help="Enable adaptive live profiling")
     parser.add_argument("--work-dir", default="/tmp/mlx_flash_run", help="Working directory")
     args = parser.parse_args()
 
@@ -273,12 +279,31 @@ def main():
     hw = detect_hardware()
     print(f"    {hw.chip}, {hw.total_ram_gb:.0f}GB RAM, {hw.ssd_size_gb:.0f}GB SSD")
 
+    # Step 1b: Check memory pressure and auto-size cache
+    print("  Step 1b: Checking memory pressure...")
+    mem_mgr = MemoryManager(safety_margin_gb=2.0)
+    mem_state = get_memory_state()
+    safe_budget_gb = mem_mgr.get_cache_budget_gb()
+    print(f"    Memory: {mem_state.free_gb:.1f}GB free, {mem_state.available_gb:.1f}GB available")
+    print(f"    Pressure: {mem_state.pressure_level.upper()}")
+    print(f"    Safe cache budget: {safe_budget_gb:.1f}GB (with 2GB safety margin)")
+    mem_mgr.start_monitoring(interval_s=15.0)
+
     # Step 2: Load config
     print("  Step 2: Loading configuration...")
     cfg = get_config(args.config)
     if args.cache_mb > 0:
         cfg.cache.ram_mb = args.cache_mb
+    else:
+        # Use memory-pressure-aware budget
+        cfg.cache.ram_mb = int(safe_budget_gb * 1024)
     print(f"    Cache: {cfg.cache.ram_mb}MB, Engine: {cfg.engine.backend}")
+
+    # Step 2b: Task profile
+    if args.task:
+        print(f"    Task profile: {args.task}")
+    elif args.adaptive:
+        print(f"    Adaptive profiling: ON")
 
     # Step 3: Load model
     print(f"  Step 3: Loading model: {args.model}")
