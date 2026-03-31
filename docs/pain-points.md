@@ -12,9 +12,9 @@ Honest assessment of where we're slow, what doesn't work yet, and what would giv
 | 4 | Import overhead: 0.7s | LOW | LOW | P2 |
 | 5 | Server is single-threaded | MED | MED | P2 — FIXED |
 | 6 | No streaming (SSE) support | MED | MED | P2 — FIXED |
-| 7 | Cache simulation, not real | HIGH | HIGH | P0 |
-| 8 | No auto mixed-precision trigger | MED | MED | P1 |
-| 9 | Memory pressure detection is slow | LOW | LOW | P3 |
+| 7 | Cache simulation, not real | HIGH | HIGH | P0 — PARTIAL (Rust LCP cache + Unix socket works, mlx-rs blocked by Metal Toolchain on macOS 26) |
+| 8 | No auto mixed-precision trigger | MED | MED | P1 — hint added, auto-apply pending mlx-rs |
+| 9 | Memory pressure detection is slow | LOW | LOW | P3 — FIXED (Rust mach2, 0.1ms) |
 | 10 | No model download progress | LOW | LOW | P3 |
 
 ## Detailed Breakdown
