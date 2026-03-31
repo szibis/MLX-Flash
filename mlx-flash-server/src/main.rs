@@ -1,4 +1,5 @@
 pub mod memory;
+pub mod server;
 
 use clap::Parser;
 
