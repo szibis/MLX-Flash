@@ -54,6 +54,18 @@ class TestCacheSimState:
         assert (0, 2) not in cache.cached
 
 
+class TestRustCacheState:
+    def test_rust_cache_state_init(self):
+        state = RustCacheState("/tmp/nonexistent.sock")
+        assert state.hit_rate == 0.0
+        assert state.total_requests == 0
+
+    def test_rust_cache_state_connect_fails_gracefully(self):
+        state = RustCacheState("/tmp/nonexistent.sock")
+        with pytest.raises(Exception):
+            state.connect()
+
+
 class TestExpertRouter:
     def test_router_initializes(self):
         router = ExpertRouter()
