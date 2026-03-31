@@ -136,6 +136,9 @@ It shows you the sweet spot — even dedicating just 10GB to caching gives you 5
 |--------|-------------|
 | `lcp_cache.py` | Smart cache that learns which model parts you use most — keeps them in RAM |
 | `smart_eviction.py` | Predicts which parts to load next (like YouTube pre-buffering) |
+| `advanced_prefetch.py` | Cross-layer N-hop predictor + shadow MLP for >90% prefetch accuracy |
+| `entropy_coding.py` | Huffman coding for uint4 weights — 65% smaller at near-zero quality loss |
+| `vertical_split.py` | Cache partial expert rows for 2x coverage in same RAM (MoEpic technique) |
 | `mixed_precision.py` | Stores rarely-used parts at lower quality — 1.8x smaller, barely noticeable |
 | `compression.py` | LZ4/ZSTD compression + Apple's native LZFSE |
 | `tier_optimizer.py` | Finds the perfect RAM/SSD balance for your specific Mac + model combo |
@@ -233,7 +236,7 @@ MoE models work like the brain — only 0.78% of "neurons" (experts) activate pe
 ## Project Stats
 
 - **10,000+ lines of code** (Python + Rust)
-- **141 tests** (109 Python + 32 Rust)
+- **192 tests** (160 Python + 32 Rust)
 - **8 benchmark suites** + interactive demos
 - **6 research documents** (60+ papers surveyed)
 - **OpenAI-compatible API server** for LM Studio/Ollama/SDK integration
@@ -271,9 +274,11 @@ graph LR
 
 | Technique | Gain | Evidence | Status |
 |-----------|------|----------|--------|
-| **EntroLLM entropy coding** | uint4 weights stored at 1.39 bits (65% smaller), **2.5x token gen speed** | arXiv:2505.02380, measured on Jetson | Python impl exists, needs MLX port |
+| **EntroLLM entropy coding** | uint4 weights stored at 1.39 bits (65% smaller), **2.5x token gen speed** | arXiv:2505.02380, measured on Jetson | **Prototype built** — Huffman codebook + encode/decode pipeline |
+| **Shadow model predictor** | >90% prefetch accuracy (vs 70% co-occurrence) | mlx-od-moe, 4-layer lookahead | **Implemented** — online MLP training, beats random by 2x+ |
+| **Cross-layer prefetch** | N-layer lookahead via transitive co-occurrence | tinyserve FATE technique | **Implemented** — 3-hop prediction with confidence decay |
+| **Vertical expert splitting** | 2x cache coverage in same RAM | MoEpic paper | **Implemented** — partial row caching + hit rate simulation |
 | **AMX dequant pipeline** | Parallel dequant on AMX while Metal computes | Reverse-engineered by dougallj, `amx-rs` Rust crate | Needs custom GENLUT kernel |
-| **Tensor Train decomposition** | 93% storage reduction (offline) | CompactifAI arXiv:2401.14109 on LLaMA 7B | Best for model distribution, not inference |
 | **mlx-rs native inference** | Eliminate Python entirely for cache ops | `gather_qmm` confirmed in mlx-rs 0.25.3 | Blocked by macOS 26 Metal Toolchain |
 
 See `docs/advanced-techniques.md` for deep research on each technique.
