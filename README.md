@@ -87,6 +87,34 @@ coding -> writing:  62ms first token (re-warming)  -> 8 tokens to recover
 writing -> coding:  0.6ms first token (still cached!) -> instant fast
 ```
 
+### Expert Streaming Performance
+
+Expert streaming replaces MLX's `QuantizedSwitchLinear` with a GPU lookup table + pre-stacked tensors. The `capacity_per_layer` parameter controls how many experts stay in GPU memory:
+
+| Model | Total Experts | Capacity | Coverage | Throughput | Notes |
+|-------|--------------|----------|----------|------------|-------|
+| Qwen3-30B-A3B | 128 per layer | 128 (100%) | 100% | ~35 tok/s | Full speed, no streaming needed |
+| Qwen3-30B-A3B | 128 per layer | 64 (50%) | 85%+ hit rate | ~15 tok/s | After warm-up with LCP |
+| Mixtral-8x7B | 8 per layer | 8 (100%) | 100% | ~20 tok/s | All experts fit |
+| Mixtral-8x7B | 8 per layer | 4 (50%) | ~95% hit rate | ~12 tok/s | Most active cached |
+
+**Tuning tips:**
+- Start with `capacity_per_layer = total_experts` if RAM allows (no streaming overhead)
+- Use `--task coding` warmup profile for programming tasks (pre-loads code-relevant experts)
+- Enable skip-fallback to avoid computing with stale weights for uncached experts
+- After ~25 tokens, LCP learns your workload and hit rate climbs to 85-95%
+
+```python
+from mlx_flash_compress.expert_streaming import (
+    enable_expert_streaming, enable_skip_fallback, get_warmup_experts
+)
+
+# Load model, enable streaming with 50% capacity
+streaming = enable_expert_streaming(model, capacity_per_layer=64)
+enable_skip_fallback(model, streaming.caches)
+streaming.warmup()
+```
+
 ### Find Your Optimal Configuration
 
 The Tier Optimizer tells you exactly how to allocate your Mac's memory:
@@ -205,7 +233,7 @@ MoE models work like the brain — only 0.78% of "neurons" (experts) activate pe
 ## Project Stats
 
 - **10,000+ lines of code** (Python + Rust)
-- **121 tests** (89 Python + 32 Rust)
+- **141 tests** (109 Python + 32 Rust)
 - **8 benchmark suites** + interactive demos
 - **6 research documents** (60+ papers surveyed)
 - **OpenAI-compatible API server** for LM Studio/Ollama/SDK integration
