@@ -160,6 +160,113 @@ make -C csrc install
 python -m mlx_flash_compress.run --model <path> --cache-mb 2048
 ```
 
+## Interactive Chat
+
+The simplest way to use MLX-Flash-Compress:
+
+```bash
+python -m mlx_flash_compress.chat
+```
+
+Shows real-time memory status, tok/s per response, and warns when RAM is tight. Type `/status` to see memory info, `/clear` to reset conversation.
+
+## API Server (LM Studio, continue.dev, OpenAI SDK)
+
+Start the OpenAI-compatible API server:
+
+```bash
+python -m mlx_flash_compress.serve --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit --port 8080
+```
+
+### Connect from LM Studio
+
+1. Open LM Studio
+2. Go to Settings -> Server
+3. Set custom endpoint: `http://localhost:8080/v1`
+4. Chat normally — our server handles inference + memory management
+
+### Connect from continue.dev (VS Code)
+
+Add to your `~/.continue/config.json`:
+
+```json
+{
+  "models": [{
+    "title": "Local MoE",
+    "provider": "openai",
+    "model": "local",
+    "apiBase": "http://localhost:8080/v1",
+    "apiKey": "not-needed"
+  }]
+}
+```
+
+### Connect from any OpenAI SDK client
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
+response = client.chat.completions.create(
+    model="local",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(response.choices[0].message.content)
+```
+
+### Server endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/completions` | POST | Chat API (OpenAI-compatible) |
+| `/v1/models` | GET | List available models |
+| `/status` | GET | Memory, pressure, cache stats |
+| `/health` | GET | Health check |
+
+### Using with Ollama
+
+Ollama uses `llama.cpp` as its backend, not MLX. Two options:
+
+1. **Run our server alongside**: Our API server at `:8080`, Ollama at `:11434`. Use our server for MoE models that benefit from expert caching.
+2. **Ollama with MLX backend**: If Ollama adds MLX support in the future, our memory management layer can integrate.
+
+## Memory Management
+
+The system automatically monitors your Mac's RAM:
+
+```bash
+# Check memory status anytime during chat
+/status
+
+# Or via the API
+curl http://localhost:8080/status
+```
+
+**What it does:**
+- Monitors macOS memory pressure in real-time
+- Auto-sizes expert cache based on available RAM (2GB safety margin)
+- Warns when pressure is critical ("close apps to prevent slowdown")
+- Suggests actions: which apps to close, whether to use a smaller model
+
+**For models that barely fit in RAM (the sweet spot):**
+
+Mixed precision automatically reduces the model's memory footprint by ~20%:
+- Hot experts stay at 4-bit (full quality)
+- Cold experts compressed to 2-bit (minimal quality impact)
+- Result: a model at 0.9x RAM goes from 43 tok/s -> 104 tok/s (measured)
+
+## Benchmarks
+
+```bash
+# Memory pressure analysis (the key measurement)
+python -m mlx_flash_compress.bench_memory_pressure --tokens 50
+
+# ISP-like warm-up demo (watch cache fill in real-time)
+python -m mlx_flash_compress.demo_warmup --topics coding writing coding math
+
+# Real model routing with cache simulation
+python -m mlx_flash_compress.cached_inference --tokens 80 --multi-topic
+```
+
 ## What's Next
 
 - Try different models to see scaling behavior

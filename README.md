@@ -26,12 +26,14 @@ cd MLX-Flash-compress
 uv venv && source .venv/bin/activate
 uv pip install lz4 zstandard numpy psutil tabulate pytest mlx mlx-lm
 
-# See what configuration is optimal for your hardware
-python -m mlx_flash_compress.tier_optimizer --total-ram 48 --model-gb 209
+# Interactive chat (simplest way to use it)
+python -m mlx_flash_compress.chat
 
-# Run benchmarks
-python -m mlx_flash_compress.bench --synthetic
-python -m mlx_flash_compress.bench_final
+# Or start the API server (works with LM Studio, continue.dev, OpenAI SDK)
+python -m mlx_flash_compress.serve --port 8080
+
+# See what models fit your hardware
+python -m mlx_flash_compress.model_browser
 ```
 
 ## Performance
@@ -45,20 +47,31 @@ python -m mlx_flash_compress.bench_final
 | **Mixed Precision** | **1.80x size reduction** | Rarely-used parts stored at lower quality (saves space, barely affects output) |
 | **Skip Fallback** | **2.67x** | When something isn't cached, gracefully skip it instead of waiting |
 
-### Real Hardware Numbers
+### Real Hardware Numbers (Measured on M3 Max 36GB)
 
-**Flash-MoE scale** (397B parameter model, 48GB MacBook Pro):
-
-```
-Without optimization:    4.4 words/sec    ####
-With MLX-Flash-Compress: 8.7 words/sec    ########    2x faster
-```
-
-**Smaller model** (7GB model, 32GB Mac):
+**Memory pressure recovery** (the key result):
 
 ```
-Without optimization:   26 words/sec     ##########
-With MLX-Flash-Compress: 72 words/sec    ##############################  2.7x faster
+Model at 0.9x RAM (barely fits):
+  Without optimization:    43.5 tok/s  ########
+  With mixed precision:   104.5 tok/s  ####################  2.4x faster
+```
+
+The memory pressure cliff is razor-sharp: 10% over the limit causes 59% slowdown. Our 20% footprint reduction shifts the model back to full speed.
+
+**Cache warm-up** (ISP-like progressive acceleration):
+
+```
+Token  0:  83.3ms (cold start, loading experts from SSD)
+Token  8:   5.7ms (warming up, 62% cache hit)
+Token 24:   0.5ms (full speed, 85%+ cache hit)
+         -> 41x speedup from warm-up
+```
+
+**Topic switching:**
+```
+coding -> writing:  62ms first token (re-warming)  -> 8 tokens to recover
+writing -> coding:  0.6ms first token (still cached!) -> instant fast
 ```
 
 ### Find Your Optimal Configuration
@@ -86,15 +99,35 @@ It shows you the sweet spot — even dedicating just 10GB to caching gives you 5
 | `compression.py` | LZ4/ZSTD compression + Apple's native LZFSE |
 | `tier_optimizer.py` | Finds the perfect RAM/SSD balance for your specific Mac + model combo |
 
+### Using It
+
+| How | Command | Best For |
+|-----|---------|----------|
+| **Interactive chat** | `python -m mlx_flash_compress.chat` | Quick testing, shows memory status |
+| **API server** | `python -m mlx_flash_compress.serve --port 8080` | LM Studio, continue.dev, OpenAI SDK |
+| **Model browser** | `python -m mlx_flash_compress.model_browser` | See what fits your hardware |
+| **Warm-up demo** | `python -m mlx_flash_compress.demo_warmup` | Watch cache fill in real-time |
+| **Pressure test** | `python -m mlx_flash_compress.bench_memory_pressure` | Measure memory impact |
+
+### Integration with LM Studio / Ollama
+
+**LM Studio**: Start our server, then in LM Studio set custom endpoint to `http://localhost:8080/v1`
+
+**Ollama**: Ollama uses llama.cpp (not MLX). Run our server alongside Ollama — use ours for MoE models that benefit from expert caching.
+
+**continue.dev / Cursor / any OpenAI SDK**: Point `api_base` to `http://localhost:8080/v1`
+
+See `docs/getting-started.md` for detailed integration instructions.
+
 ### Benchmark Suite
 
 ```bash
-python -m mlx_flash_compress.bench --synthetic          # Quick test (no model needed)
-python -m mlx_flash_compress.bench_real                   # Real Qwen MoE model test
-python -m mlx_flash_compress.bench_encoding               # Compression analysis
-python -m mlx_flash_compress.bench_advanced                # Advanced techniques
-python -m mlx_flash_compress.bench_e2e                     # Full end-to-end
-python -m mlx_flash_compress.bench_final                   # Final comprehensive benchmark
+python -m mlx_flash_compress.bench_memory_pressure       # Memory pressure analysis (key demo)
+python -m mlx_flash_compress.demo_warmup                   # ISP-like warm-up visualization
+python -m mlx_flash_compress.cached_inference --multi-topic # Real routing capture
+python -m mlx_flash_compress.bench --synthetic              # Quick test (no model needed)
+python -m mlx_flash_compress.bench_real                     # Real Qwen MoE model test
+python -m mlx_flash_compress.bench_final                    # Final comprehensive benchmark
 ```
 
 ### Research Documentation
@@ -133,11 +166,12 @@ MoE models work like the brain — only 0.78% of "neurons" (experts) activate pe
 
 ## Project Stats
 
-- **13 commits, 7,000+ lines of code**
-- **27 passing tests**
-- **6 benchmark suites**
+- **9,000+ lines of code** across 20+ Python modules
+- **59 passing tests**
+- **8 benchmark suites** + interactive demos
 - **6 research documents** (60+ papers surveyed)
-- **14 Python modules**
+- **OpenAI-compatible API server** for LM Studio/Ollama/SDK integration
+- **Memory-aware** inference with real-time pressure monitoring
 
 ## Roadmap
 
