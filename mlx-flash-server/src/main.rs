@@ -1,3 +1,5 @@
+pub mod memory;
+
 use clap::Parser;
 
 #[derive(Parser)]
