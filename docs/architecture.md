@@ -1,6 +1,6 @@
 # Architecture
 
-## How MLX-Flash-Compress Works
+## How MLX-Flash Works
 
 ```mermaid
 flowchart TB

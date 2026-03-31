@@ -90,7 +90,7 @@ class RouterHookConfig:
 
 @dataclass
 class FlashConfig:
-    """Master configuration for MLX-Flash-Compress."""
+    """Master configuration for MLX-Flash."""
     cache: CacheConfig = field(default_factory=CacheConfig)
     prefetch: PrefetchConfig = field(default_factory=PrefetchConfig)
     mixed_precision: MixedPrecisionConfig = field(default_factory=MixedPrecisionConfig)
@@ -211,7 +211,7 @@ class FlashConfig:
 
     def summary(self) -> str:
         lines = [
-            f"MLX-Flash-Compress Configuration",
+            f"MLX-Flash Configuration",
             f"  Hardware: {self.detected_chip}, {self.detected_ram_gb:.0f}GB RAM",
             f"  Cache:    {'ON' if self.cache.enable else 'OFF'} — {self.cache.ram_mb}MB, {self.cache.eviction} eviction",
             f"  Prefetch: {'ON' if self.prefetch.enable else 'OFF'} — {self.prefetch.workers} workers",

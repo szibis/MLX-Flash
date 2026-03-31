@@ -68,7 +68,7 @@ Measured on NVIDIA Jetson (comparable compute class to Apple Silicon):
 
 The 2.5x token generation speedup comes from reduced DRAM bandwidth — each token requires loading all weights, and 65% smaller weights = 65% less data to load. The Huffman decode overhead is cheaper than the bandwidth saved.
 
-### Applicability to MLX-Flash-Compress
+### Applicability to MLX-Flash
 
 ```mermaid
 flowchart LR

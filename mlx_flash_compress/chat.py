@@ -62,7 +62,7 @@ def print_status(hw, mem, request_num: int, total_tokens: int):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MLX-Flash-Compress: Interactive Chat")
+    parser = argparse.ArgumentParser(description="MLX-Flash: Interactive Chat")
     parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit")
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--system", default="You are a helpful AI assistant.",
@@ -71,7 +71,7 @@ def main():
 
     print()
     print("=" * 60)
-    print("  MLX-Flash-Compress: Interactive Chat")
+    print("  MLX-Flash: Interactive Chat")
     print("=" * 60)
 
     hw = detect_hardware()

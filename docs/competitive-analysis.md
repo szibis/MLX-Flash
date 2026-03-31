@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-Between January 2024 and March 2026, at least **8 independent open-source projects** and **12+ academic papers** attacked the same core problem: running MoE models too large for available memory. The approaches split into two camps — **pure streamers** (accept very low throughput, minimize RAM use) and **cache-first systems** (invest RAM in caching for dramatically higher throughput). MLX-Flash-Compress is in the cache-first camp.
+Between January 2024 and March 2026, at least **8 independent open-source projects** and **12+ academic papers** attacked the same core problem: running MoE models too large for available memory. The approaches split into two camps — **pure streamers** (accept very low throughput, minimize RAM use) and **cache-first systems** (invest RAM in caching for dramatically higher throughput). MLX-Flash is in the cache-first camp.
 
 ## Direct Apple Silicon Competitors
 
@@ -71,7 +71,7 @@ Between January 2024 and March 2026, at least **8 independent open-source projec
 
 ### HOBBIT (arXiv:2411.01433, Nov 2024) — Closest Paper
 
-- **Nearly identical architecture** to MLX-Flash-Compress
+- **Nearly identical architecture** to MLX-Flash
 - Mixed precision per expert (hot vs. cold) + dynamic loading + adaptive prefetch + multi-dimensional caching
 - Up to 9.93x speedup
 - llama.cpp + NVIDIA (not MLX/Apple Silicon)
@@ -140,7 +140,7 @@ quadrantChart
     quadrant-2 Simpler Apple Silicon
     quadrant-3 Mainstream (no MoE caching)
     quadrant-4 Research (NVIDIA only)
-    MLX-Flash-Compress: [0.75, 0.9]
+    MLX-Flash: [0.75, 0.9]
     mlx-moe: [0.4, 0.85]
     mlx-od-moe: [0.5, 0.8]
     cosmoe: [0.2, 0.7]

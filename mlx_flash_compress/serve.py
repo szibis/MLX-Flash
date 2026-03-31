@@ -403,7 +403,7 @@ class ChatHandler(BaseHTTPRequestHandler):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MLX-Flash-Compress: Memory-aware inference server"
+        description="MLX-Flash: Memory-aware inference server"
     )
     parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit",
                         help="MLX model to serve")
@@ -416,7 +416,7 @@ def main():
 
     print()
     print("=" * 60)
-    print("  MLX-Flash-Compress: Inference Server")
+    print("  MLX-Flash: Inference Server")
     print("=" * 60)
 
     state = InferenceState(args.model, kv_bits=args.kv_bits)

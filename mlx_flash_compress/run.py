@@ -258,7 +258,7 @@ def print_comparison(baseline: RunResult, optimized: RunResult, hw: MacHardware)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MLX-Flash-Compress: Run with all optimizations")
+    parser = argparse.ArgumentParser(description="MLX-Flash: Run with all optimizations")
     parser.add_argument("--model", required=True, help="MLX model name or path")
     parser.add_argument("--prompt", default="Explain how mixture of experts architecture works in neural networks and why it matters for running large AI models efficiently on consumer hardware like MacBooks.",
                         help="Prompt for generation")

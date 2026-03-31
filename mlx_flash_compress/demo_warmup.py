@@ -283,7 +283,7 @@ def print_session_summary(sessions: list[WarmupSession]):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MLX-Flash-Compress: Progressive Warm-up Demo"
+        description="MLX-Flash: Progressive Warm-up Demo"
     )
     parser.add_argument("--layers", type=int, default=24, help="Number of layers")
     parser.add_argument("--experts", type=int, default=60, help="Experts per layer")
@@ -302,7 +302,7 @@ def main():
 
     print()
     print("=" * 72)
-    print("  MLX-Flash-Compress: Progressive Warm-up Demo")
+    print("  MLX-Flash: Progressive Warm-up Demo")
     print("=" * 72)
 
     hw = detect_hardware()

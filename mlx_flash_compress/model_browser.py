@@ -142,7 +142,7 @@ def run_model(model: MoEModelInfo, tokens: int = 100):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MLX-Flash-Compress Model Browser")
+    parser = argparse.ArgumentParser(description="MLX-Flash Model Browser")
     parser.add_argument("--run", type=str, default=None, help="Run model: 'best' or number (1-7)")
     parser.add_argument("--tokens", type=int, default=100, help="Tokens to generate")
     args = parser.parse_args()

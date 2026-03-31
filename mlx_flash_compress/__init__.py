@@ -1,4 +1,4 @@
-"""MLX-Flash-Compress: Tiered compressed expert cache for MoE inference on Apple Silicon."""
+"""MLX-Flash: Tiered compressed expert cache for MoE inference on Apple Silicon."""
 
 __version__ = "0.1.0"
 

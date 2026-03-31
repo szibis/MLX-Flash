@@ -296,7 +296,7 @@ def main():
     hw = detect_hardware()
 
     print(f"\n{'=' * 70}")
-    print(f"  MLX-Flash-Compress: Hardware Detection & Performance Calculator")
+    print(f"  MLX-Flash: Hardware Detection & Performance Calculator")
     print(f"{'=' * 70}\n")
 
     print(f"  Detected Hardware:")

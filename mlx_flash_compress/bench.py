@@ -773,7 +773,7 @@ def _run(args) -> dict:
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="MLX-Flash-Compress Benchmark Suite",
+        description="MLX-Flash Benchmark Suite",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

@@ -1,6 +1,6 @@
 # Integrations
 
-MLX-Flash-Compress provides an OpenAI-compatible API server that works with any tool supporting custom endpoints.
+MLX-Flash provides an OpenAI-compatible API server that works with any tool supporting custom endpoints.
 
 ## Quick Start
 
@@ -43,7 +43,7 @@ Then in your Claude Code session, you can query the local model via the `/status
 Start the server and use it as an alternative model endpoint:
 
 ```bash
-# Terminal 1: Start MLX-Flash-Compress server
+# Terminal 1: Start MLX-Flash server
 python -m mlx_flash_compress.serve --port 8080 --preload
 
 # Terminal 2: Use with any OpenAI SDK script
@@ -97,7 +97,7 @@ if hasattr(response, "mlx_flash_compress"):
 
 ## LM Studio
 
-1. Start the MLX-Flash-Compress server:
+1. Start the MLX-Flash server:
    ```bash
    python -m mlx_flash_compress.serve --port 8080 --preload
    ```
@@ -120,7 +120,7 @@ Ollama uses `llama.cpp` as its backend. Two approaches:
 # Ollama on default port (11434)
 ollama serve
 
-# MLX-Flash-Compress on 8080
+# MLX-Flash on 8080
 python -m mlx_flash_compress.serve --port 8080 --preload
 
 # Use Ollama for dense models, our server for MoE models
@@ -269,7 +269,7 @@ curl http://localhost:8080/release
 
 ## Ollama Custom Models
 
-Ollama supports registering external models via a `Modelfile`. Point it at our running server so Ollama clients route requests to MLX-Flash-Compress instead of the built-in llama.cpp backend.
+Ollama supports registering external models via a `Modelfile`. Point it at our running server so Ollama clients route requests to MLX-Flash instead of the built-in llama.cpp backend.
 
 ```bash
 # Start our server first
@@ -334,8 +334,8 @@ To build the Rust sidecar as a standalone binary and install it system-wide:
 
 ```bash
 # Clone and enter the repo
-git clone https://github.com/szibis/MLX-Flash-compress.git
-cd MLX-Flash-compress
+git clone https://github.com/szibis/MLX-Flash.git
+cd MLX-Flash
 
 # Build the release binary (requires Rust toolchain)
 cargo build --release -p mlx-flash-server
@@ -355,8 +355,8 @@ For Homebrew formula contributors, the binary can be tapped and distributed as:
 ```ruby
 # Example Homebrew formula (community-maintained)
 class MlxFlashServer < Formula
-  desc "Rust sidecar for MLX-Flash-Compress — HTTP/SSE proxy + LCP expert cache"
-  url "https://github.com/szibis/MLX-Flash-compress/archive/refs/tags/vX.Y.Z.tar.gz"
+  desc "Rust sidecar for MLX-Flash — HTTP/SSE proxy + LCP expert cache"
+  url "https://github.com/szibis/MLX-Flash/archive/refs/tags/vX.Y.Z.tar.gz"
   # ...
   def install
     system "cargo", "build", "--release", "-p", "mlx-flash-server"

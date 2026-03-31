@@ -11,8 +11,8 @@
 
 ```bash
 # Clone the repo
-git clone https://github.com/szibis/MLX-Flash-compress.git
-cd MLX-Flash-compress
+git clone https://github.com/szibis/MLX-Flash.git
+cd MLX-Flash
 
 # Create virtual environment
 uv venv && source .venv/bin/activate
@@ -199,7 +199,7 @@ python -m mlx_flash_compress.run --model <path> --cache-mb 2048
 
 ## Interactive Chat
 
-The simplest way to use MLX-Flash-Compress:
+The simplest way to use MLX-Flash:
 
 ```bash
 python -m mlx_flash_compress.chat

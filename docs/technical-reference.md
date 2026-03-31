@@ -2,7 +2,7 @@
 
 ## Research Foundation
 
-MLX-Flash-Compress is built on techniques from 60+ published papers across multiple fields. Key references:
+MLX-Flash is built on techniques from 60+ published papers across multiple fields. Key references:
 
 ### Cache Eviction
 - **LCP (Least Critical Priority)**: Production-proven in [mlx-moe](https://github.com/mu-hashmi/mlx-moe). Formula: `P = frequency × 0.25^(steps_since_last / 128)`. Combines Zipf-distributed access frequency with exponential recency decay.

@@ -1,4 +1,4 @@
-"""Memory pressure benchmark — the REAL use case for MLX-Flash-Compress.
+"""Memory pressure benchmark — the REAL use case for MLX-Flash.
 
 Demonstrates the "barely fits" scenario:
   1. Model runs at full speed when RAM is ample
@@ -410,7 +410,7 @@ def print_pressure_report(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MLX-Flash-Compress: Memory Pressure Benchmark"
+        description="MLX-Flash: Memory Pressure Benchmark"
     )
     parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit",
                         help="MLX MoE model to benchmark")
@@ -426,7 +426,7 @@ def main():
 
     print()
     print("=" * 72)
-    print("  MLX-Flash-Compress: Memory Pressure Benchmark")
+    print("  MLX-Flash: Memory Pressure Benchmark")
     print("=" * 72)
 
     hw = detect_hardware()

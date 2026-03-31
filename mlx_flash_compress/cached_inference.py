@@ -523,7 +523,7 @@ def run_multi_topic(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="MLX-Flash-Compress: Cached Inference with Warm-up"
+        description="MLX-Flash: Cached Inference with Warm-up"
     )
     parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit")
     parser.add_argument("--prompt", default="Explain how caching works in computer systems, "
@@ -540,7 +540,7 @@ def main():
 
     print()
     print("=" * 60)
-    print("  MLX-Flash-Compress: Cached Inference")
+    print("  MLX-Flash: Cached Inference")
     print("=" * 60)
 
     hw = detect_hardware()

@@ -1,12 +1,12 @@
-# MLX-Flash-Compress
+# MLX-Flash
 
 **Run AI models too large for your Mac's memory — at near-full speed.**
 
-Your MacBook has 32-48GB of RAM, but the best AI models need 100-200GB+. MLX-Flash-Compress makes them run anyway by intelligently caching the most-needed parts in RAM and streaming the rest from your SSD — so you don't have to choose between quality and what fits in memory.
+Your MacBook has 32-48GB of RAM, but the best AI models need 100-200GB+. MLX-Flash makes them run anyway by intelligently caching the most-needed parts in RAM and streaming the rest from your SSD — so you don't have to choose between quality and what fits in memory.
 
 ## How It Works (Simple Version)
 
-Think of it like Netflix streaming: instead of downloading the entire movie before watching, you buffer what you need and stream the rest. MLX-Flash-Compress does this for AI model weights:
+Think of it like Netflix streaming: instead of downloading the entire movie before watching, you buffer what you need and stream the rest. MLX-Flash does this for AI model weights:
 
 ```mermaid
 flowchart TB
@@ -37,8 +37,8 @@ flowchart TB
 ## Quick Start
 
 ```bash
-git clone https://github.com/szibis/MLX-Flash-compress.git
-cd MLX-Flash-compress
+git clone https://github.com/szibis/MLX-Flash.git
+cd MLX-Flash
 uv venv && source .venv/bin/activate
 uv pip install lz4 zstandard numpy psutil tabulate pytest mlx mlx-lm
 

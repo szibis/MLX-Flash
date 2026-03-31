@@ -398,7 +398,7 @@ def benchmark_cache_inference(
 # ── Main benchmark ──────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Real model benchmark for MLX-Flash-Compress")
+    parser = argparse.ArgumentParser(description="Real model benchmark for MLX-Flash")
     parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit",
                         help="MLX MoE model to benchmark")
     parser.add_argument("--prompt", default="Explain the concept of mixture of experts in neural networks in detail.",
@@ -409,7 +409,7 @@ def main():
     parser.add_argument("--work-dir", default="/tmp/mlx_flash_real", help="Working directory")
     args = parser.parse_args()
 
-    print_separator("MLX-Flash-Compress: Real Model Benchmark")
+    print_separator("MLX-Flash: Real Model Benchmark")
     print(f"  Model:  {args.model}")
     print(f"  Prompt: {args.prompt[:60]}...")
     print(f"  Tokens: {args.tokens}")
