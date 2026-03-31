@@ -57,11 +57,11 @@ class MemoryState:
     @property
     def pressure_score(self) -> float:
         """0.0 = no pressure, 1.0 = critical. Used for cache sizing."""
-        if self.pressure_level == "green":
+        if self.pressure_level in ("green", "normal"):
             return 0.0
-        elif self.pressure_level == "yellow":
+        elif self.pressure_level in ("yellow", "warning"):
             return 0.5
-        elif self.pressure_level == "red":
+        elif self.pressure_level in ("red", "critical"):
             return 1.0
         # Fallback: estimate from swap usage
         if self.total_gb > 0:
@@ -129,19 +129,33 @@ def get_memory_state() -> MemoryState:
         )
         output = result.stdout.lower()
         if "normal" in output or "green" in output:
-            state.pressure_level = "green"
+            state.pressure_level = "normal"
         elif "warn" in output or "yellow" in output:
-            state.pressure_level = "yellow"
+            state.pressure_level = "warning"
         elif "critical" in output or "red" in output:
-            state.pressure_level = "red"
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        # Estimate from swap
-        if state.swap_used_gb > 1.0:
-            state.pressure_level = "yellow"
-        elif state.swap_used_gb > 4.0:
-            state.pressure_level = "red"
+            state.pressure_level = "critical"
         else:
-            state.pressure_level = "green"
+            # Parse "free percentage: N%" format
+            pct_match = re.search(r"free percentage:\s*(\d+)%", output)
+            if pct_match:
+                free_pct = int(pct_match.group(1))
+                if free_pct >= 40:
+                    state.pressure_level = "normal"
+                elif free_pct >= 15:
+                    state.pressure_level = "warning"
+                else:
+                    state.pressure_level = "critical"
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # Fallback: estimate from swap usage
+    if state.pressure_level == "unknown":
+        if state.swap_used_gb > 4.0:
+            state.pressure_level = "critical"
+        elif state.swap_used_gb > 1.0:
+            state.pressure_level = "warning"
+        else:
+            state.pressure_level = "normal"
 
     # App memory (active + wired - our process)
     state.app_memory_gb = state.active_gb + state.wired_gb
