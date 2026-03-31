@@ -51,6 +51,23 @@ class TestSafetensorsMap:
         assert SafetensorsMap._NP_DTYPES["F32"] == np.float32
         assert SafetensorsMap._NP_DTYPES["U32"] == np.uint32
 
+    def test_mixtral_key_mapping(self):
+        """Verify Mixtral w1/w2/w3 → gate_proj/down_proj/up_proj key derivation."""
+        # Simulate the key mapping logic from get_expert_slice
+        key = "model.layers.0.block_sparse_moe.switch_mlp.gate_proj.weight"
+        per_expert_key = key.replace(".switch_mlp.", ".experts.0.")
+        assert per_expert_key == "model.layers.0.block_sparse_moe.experts.0.gate_proj.weight"
+
+        # Apply Mixtral renaming
+        _MIXTRAL_MAP = {"gate_proj": "w1", "down_proj": "w2", "up_proj": "w3"}
+        for mlx_name, st_name in _MIXTRAL_MAP.items():
+            per_expert_key = per_expert_key.replace(f".{mlx_name}.", f".{st_name}.")
+        assert per_expert_key == "model.layers.0.block_sparse_moe.experts.0.w1.weight"
+
+        # Verify eid substitution works
+        eid_key = per_expert_key.replace(".experts.0.", ".experts.7.")
+        assert eid_key == "model.layers.0.block_sparse_moe.experts.7.w1.weight"
+
 
 class TestStreamingState:
     def test_empty_state(self):

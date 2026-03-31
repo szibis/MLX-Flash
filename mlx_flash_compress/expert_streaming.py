@@ -123,10 +123,18 @@ class SafetensorsMap:
         # e.g. "model.layers.0.mlp.switch_mlp.gate_proj.weight"
         #    -> "model.layers.0.mlp.experts.{E}.gate_proj.weight"
         per_expert_key = key.replace(".switch_mlp.", ".experts.0.")
+
+        # Mixtral: block_sparse_moe.experts.E.w1/w2/w3 naming
+        _MIXTRAL_MAP = {"gate_proj": "w1", "down_proj": "w2", "up_proj": "w3"}
+        if per_expert_key not in self._tensor_map:
+            for mlx_name, st_name in _MIXTRAL_MAP.items():
+                per_expert_key = per_expert_key.replace(f".{mlx_name}.", f".{st_name}.")
+
         if per_expert_key in self._tensor_map:
+            # Derive the eid_key template from per_expert_key (which has experts.0.)
             slices = []
             for eid in expert_ids:
-                eid_key = key.replace(".switch_mlp.", f".experts.{eid}.")
+                eid_key = per_expert_key.replace(".experts.0.", f".experts.{eid}.")
                 if eid_key not in self._tensor_map:
                     continue
                 path, info = self._tensor_map[eid_key]
@@ -489,12 +497,17 @@ def enable_expert_streaming(model, capacity_per_layer=200, model_path=None):
 
         # Detect switch_mlp (Qwen/DeepSeek) or block_sparse_moe (Mixtral)
         switch = getattr(mlp, "switch_mlp", None)
+        is_mixtral = False
         if switch is None:
-            switch = getattr(mlp, "block_sparse_moe", None)
-            if switch is not None:
-                switch = getattr(switch, "switch_mlp", None)
+            bsm = getattr(mlp, "block_sparse_moe", None)
+            if bsm is not None:
+                switch = getattr(bsm, "switch_mlp", None)
+                is_mixtral = True
         if switch is None:
             continue
+
+        # Mixtral safetensors use w1/w2/w3 naming vs gate_proj/up_proj/down_proj
+        _MIXTRAL_MAP = {"gate_proj": "w1", "down_proj": "w2", "up_proj": "w3"}
 
         num_experts = 0
         proj_modules = {}
@@ -509,7 +522,12 @@ def enable_expert_streaming(model, capacity_per_layer=200, model_path=None):
                 num_experts = w.shape[0]
                 proj_modules[proj_name] = proj
                 for suffix in ["weight", "scales", "biases"]:
-                    wk = f"model.layers.{layer_idx}.mlp.switch_mlp.{proj_name}.{suffix}"
+                    if is_mixtral:
+                        # Mixtral safetensors: block_sparse_moe.switch_mlp.gate_proj.weight
+                        # but also try: block_sparse_moe.experts.E.w1.weight (per-expert)
+                        wk = f"model.layers.{layer_idx}.block_sparse_moe.switch_mlp.{proj_name}.{suffix}"
+                    else:
+                        wk = f"model.layers.{layer_idx}.mlp.switch_mlp.{proj_name}.{suffix}"
                     weight_keys[f"{proj_name}.{suffix}"] = wk
 
         if num_experts == 0:
