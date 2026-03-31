@@ -1,6 +1,7 @@
 mod cache;
 mod expert_store;
 mod memory;
+mod protocol;
 mod proxy;
 mod server;
 
