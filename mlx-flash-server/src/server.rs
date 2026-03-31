@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::memory;
+use crate::proxy;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -42,6 +43,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/hints", get(handle_hints))
         .route("/release", get(handle_release))
         .route("/v1/models", get(handle_models))
+        .route("/v1/chat/completions", axum::routing::post(proxy::handle_chat))
         .with_state(state)
         .layer(cors)
 }
