@@ -357,6 +357,97 @@ class StreamingState:
             self.st_map.close()
 
 
+# -- Skip-fallback: zero missing expert scores --
+
+def enable_skip_fallback(model, caches: list):
+    """Monkey-patch MoE blocks to zero scores for uncached experts.
+
+    When an expert is not in the cache, its routing score is set to 0
+    and remaining scores are renormalized. This avoids computing with
+    stale/placeholder weights for uncached experts.
+    """
+    import types
+
+    layers = None
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
+        layers = model.model.layers
+    elif hasattr(model, "layers"):
+        layers = model.layers
+    if layers is None:
+        return
+
+    cache_by_layer = {c.layer_idx: c for c in caches}
+
+    for layer_idx, layer in enumerate(layers):
+        if layer_idx not in cache_by_layer:
+            continue
+        if not hasattr(layer, "mlp"):
+            continue
+
+        cache = cache_by_layer[layer_idx]
+        mlp = layer.mlp
+        original_call = type(mlp).__call__
+
+        def make_patched(orig, cache_ref):
+            def patched_call(self, x):
+                gates = self.gate(x)
+                gates = mx.softmax(gates, axis=-1, precise=True)
+
+                k = self.top_k
+                inds = mx.stop_gradient(
+                    mx.argpartition(-gates, kth=k - 1, axis=-1)[..., :k]
+                )
+                scores = mx.take_along_axis(gates, inds, axis=-1)
+
+                # Zero out scores for uncached experts
+                mask = cache_ref.hit_mask[inds]  # 1.0 cached, 0.0 not
+                scores = scores * mask
+                score_sum = scores.sum(axis=-1, keepdims=True)
+                scores = mx.where(score_sum > 0, scores / score_sum, scores)
+
+                y = self.switch_mlp(x, inds)
+                y = (y * scores[..., None]).sum(axis=-2)
+
+                if hasattr(self, "shared_expert"):
+                    shared = self.shared_expert(x)
+                    if hasattr(self, "shared_expert_gate"):
+                        shared = mx.sigmoid(self.shared_expert_gate(x)) * shared
+                    y = y + shared
+
+                return y
+            return patched_call
+
+        mlp.__call__ = types.MethodType(make_patched(original_call, cache), mlp)
+
+
+# -- Profile-based warmup --
+
+def get_warmup_experts(task: str = "general", num_layers: int = 24,
+                       num_experts: int = 60, top_n: int = 30) -> list:
+    """Get hot experts for a task from pre-computed profiles.
+
+    Uses task_profiler's predefined profiles to determine which experts
+    to pre-load for a given workload type.
+    """
+    try:
+        from mlx_flash_compress.task_profiler import get_predefined_profile
+        profile = get_predefined_profile(task, num_layers=num_layers, num_experts=num_experts)
+        hot_experts = profile.get_hot_experts(top_pct=top_n / num_experts)
+
+        # Convert to flat list of expert IDs per layer
+        result = []
+        for layer_idx in range(num_layers):
+            layer_key = str(layer_idx)
+            if layer_key in hot_experts:
+                result.append(hot_experts[layer_key][:top_n])
+            else:
+                result.append(list(range(top_n)))
+        return result
+    except Exception:
+        # Fallback: first N experts
+        return [list(range(top_n)) for _ in range(num_layers)]
+
+
 # -- Public API --
 
 def enable_expert_streaming(model, capacity_per_layer=200, model_path=None):

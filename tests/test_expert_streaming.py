@@ -62,3 +62,104 @@ class TestStreamingState:
     def test_update_empty_is_noop(self):
         state = StreamingState()
         state.update()  # should not crash
+
+
+class TestEnableSkipFallback:
+    """Tests for the skip-fallback zero-eval dispatch."""
+
+    def test_import(self):
+        from mlx_flash_compress.expert_streaming import enable_skip_fallback
+        assert callable(enable_skip_fallback)
+
+    def test_noop_when_no_layers(self):
+        """enable_skip_fallback should handle model with no layers gracefully."""
+        from mlx_flash_compress.expert_streaming import enable_skip_fallback
+
+        class FakeModel:
+            pass
+
+        # Should not raise
+        enable_skip_fallback(FakeModel(), caches=[])
+
+    def test_noop_when_no_matching_caches(self):
+        """Skip-fallback should do nothing if no caches match layer indices."""
+        from mlx_flash_compress.expert_streaming import enable_skip_fallback, ExpertCache
+
+        class FakeLayer:
+            pass
+
+        class FakeModel:
+            class model:
+                layers = [FakeLayer()]
+
+        # Cache for layer 5, but model only has layer 0
+        cache = ExpertCache.__new__(ExpertCache)
+        cache.layer_idx = 5
+        cache.num_experts = 10
+        cache.hit_mask = None
+        enable_skip_fallback(FakeModel(), caches=[cache])
+
+    def test_hit_mask_used_in_expert_cache(self):
+        """Verify ExpertCache creates a proper hit_mask during _rebuild_lookup."""
+        cache = ExpertCache.__new__(ExpertCache)
+        cache.layer_idx = 0
+        cache.num_experts = 5
+        cache.capacity = 3
+        cache.cached_ids = [0, 2, 4]
+        cache._rebuild_lookup()
+
+        import mlx.core as mx
+        hit = np.array(cache.hit_mask.tolist())
+        assert hit[0] == 1.0
+        assert hit[1] == 0.0
+        assert hit[2] == 1.0
+        assert hit[3] == 0.0
+        assert hit[4] == 1.0
+
+
+class TestGetWarmupExperts:
+    """Tests for profile-based warmup expert selection."""
+
+    def test_import(self):
+        from mlx_flash_compress.expert_streaming import get_warmup_experts
+        assert callable(get_warmup_experts)
+
+    def test_returns_list_per_layer(self):
+        from mlx_flash_compress.expert_streaming import get_warmup_experts
+        result = get_warmup_experts(
+            task="coding", num_layers=4, num_experts=10, top_n=5
+        )
+        assert len(result) == 4
+        for layer_experts in result:
+            assert isinstance(layer_experts, list)
+            assert len(layer_experts) <= 5
+
+    def test_fallback_for_unknown_task(self):
+        from mlx_flash_compress.expert_streaming import get_warmup_experts
+        # Unknown task should fallback gracefully (not raise)
+        result = get_warmup_experts(
+            task="nonexistent_task_xyz", num_layers=3, num_experts=8, top_n=4
+        )
+        assert len(result) == 3
+        # Fallback returns list(range(top_n)) per layer
+        for layer_experts in result:
+            assert layer_experts == [0, 1, 2, 3]
+
+    def test_general_task(self):
+        from mlx_flash_compress.expert_streaming import get_warmup_experts
+        result = get_warmup_experts(
+            task="general", num_layers=2, num_experts=10, top_n=3
+        )
+        assert len(result) == 2
+        for layer_experts in result:
+            assert len(layer_experts) <= 3
+            # All expert IDs should be valid
+            for eid in layer_experts:
+                assert 0 <= eid < 10
+
+    def test_deterministic(self):
+        """Same task + params should always return same result."""
+        from mlx_flash_compress.expert_streaming import get_warmup_experts
+        r1 = get_warmup_experts(task="coding", num_layers=4, num_experts=20, top_n=8)
+        r2 = get_warmup_experts(task="coding", num_layers=4, num_experts=20, top_n=8)
+        assert r1 == r2
