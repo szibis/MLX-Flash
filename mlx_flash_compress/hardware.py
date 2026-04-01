@@ -95,7 +95,7 @@ def detect_hardware() -> MacHardware:
         hw.chip = hw_info.get("chip_type", "Unknown")
 
         # Parse "proc 14:10:4:0" format (total:perf:eff:?)
-        cores_str = hw_info.get("number_processors", "0")
+        cores_str = str(hw_info.get("number_processors", "0"))
         cores_match = re.match(r"proc\s+(\d+):(\d+):(\d+)", cores_str)
         if cores_match:
             hw.cpu_cores = int(cores_match.group(1))
@@ -108,7 +108,7 @@ def detect_hardware() -> MacHardware:
                 pass
 
         # RAM
-        ram_str = hw_info.get("physical_memory", "0 GB")
+        ram_str = str(hw_info.get("physical_memory", "0 GB"))
         ram_match = re.search(r"(\d+)\s*GB", ram_str)
         if ram_match:
             hw.total_ram_gb = float(ram_match.group(1))
