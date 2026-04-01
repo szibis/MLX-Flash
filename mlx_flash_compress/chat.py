@@ -1,11 +1,8 @@
-"""Interactive chat with memory-aware warm-up display.
-
-Shows real-time memory status, cache warm-up, and performance
-metrics as you chat with the model.
+"""Interactive chat with colorful console UI, download progress, and memory status.
 
 Usage:
-  python -m mlx_flash_compress.chat
-  python -m mlx_flash_compress.chat --model mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit
+  mlx-flash-chat
+  mlx-flash-chat --model mlx-community/Qwen3-30B-A3B-4bit
 """
 
 import argparse
@@ -17,7 +14,96 @@ import mlx.core as mx
 from mlx_lm import load, generate
 
 from mlx_flash_compress.hardware import detect_hardware
-from mlx_flash_compress.memory_manager import MemoryManager, get_memory_state
+from mlx_flash_compress.memory_manager import get_memory_state
+
+
+# -- ANSI colors --
+
+class C:
+    """ANSI color codes for terminal output."""
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+    CYAN = "\033[36m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    RED = "\033[31m"
+    MAGENTA = "\033[35m"
+    BLUE = "\033[34m"
+    WHITE = "\033[97m"
+
+    @staticmethod
+    def enabled():
+        return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+
+def c(code, text):
+    """Colorize text if terminal supports it."""
+    if C.enabled():
+        return f"{code}{text}{C.RESET}"
+    return text
+
+
+# -- UI components --
+
+def memory_bar(used_pct: float) -> str:
+    """Colored memory usage bar."""
+    bar_len = 25
+    filled = int(used_pct / 100 * bar_len)
+    empty = bar_len - filled
+
+    if used_pct >= 90:
+        color = C.RED
+        label = "CRITICAL"
+    elif used_pct >= 75:
+        color = C.YELLOW
+        label = "tight"
+    elif used_pct >= 50:
+        color = C.GREEN
+        label = "ok"
+    else:
+        color = C.CYAN
+        label = "free"
+
+    bar = c(color, "█" * filled) + c(C.DIM, "░" * empty)
+    return f"{bar} {c(color, f'{used_pct:.0f}%')} {c(C.DIM, label)}"
+
+
+def print_header():
+    print()
+    print(c(C.CYAN, "  ╔══════════════════════════════════════════════════════╗"))
+    print(c(C.CYAN, "  ║") + c(C.BOLD, "           ⚡ MLX-Flash Interactive Chat ⚡           ") + c(C.CYAN, "║"))
+    print(c(C.CYAN, "  ╚══════════════════════════════════════════════════════╝"))
+
+
+def print_hw_info(hw, mem):
+    print(f"\n  {c(C.BOLD, hw.chip)}, {hw.total_ram_gb:.0f}GB RAM")
+    used_pct = (1 - mem.available_gb / max(mem.total_gb, 1)) * 100
+    print(f"  Memory: {memory_bar(used_pct)}")
+
+
+def print_status(hw, mem, request_num: int, total_tokens: int):
+    """Print status block."""
+    used_pct = (1 - mem.available_gb / max(mem.total_gb, 1)) * 100
+    print(f"\n  {c(C.BOLD, '📊 Status')}")
+    print(f"  RAM:     {memory_bar(used_pct)}")
+    print(f"  Free:    {c(C.GREEN, f'{mem.available_gb:.1f}GB')} / {mem.total_gb:.0f}GB")
+    print(f"  Pressure: {_pressure_color(mem.pressure_level)}")
+    if request_num > 0:
+        print(f"  Session:  {request_num} messages, {total_tokens} tokens")
+
+
+def _pressure_color(level: str) -> str:
+    colors = {"normal": C.GREEN, "warning": C.YELLOW, "critical": C.RED}
+    return c(colors.get(level, C.WHITE), level.upper())
+
+
+def print_help():
+    print(f"\n  {c(C.BOLD, '📋 Commands')}")
+    print(f"  {c(C.CYAN, '/status')}   Show memory and session info")
+    print(f"  {c(C.CYAN, '/clear')}    Clear conversation history")
+    print(f"  {c(C.CYAN, '/help')}     Show this help")
+    print(f"  {c(C.CYAN, '/quit')}     Exit")
 
 
 def _fmt_prompt(tokenizer, messages):
@@ -31,35 +117,7 @@ def _fmt_prompt(tokenizer, messages):
     return "\n".join(f"{m['role']}: {m['content']}" for m in messages)
 
 
-def _memory_bar(used_pct: float) -> str:
-    """Create a memory usage bar."""
-    bar_len = 20
-    filled = int(used_pct / 100 * bar_len)
-    bar = "#" * filled + "." * (bar_len - filled)
-    if used_pct >= 90:
-        status = "CRITICAL"
-    elif used_pct >= 75:
-        status = "tight"
-    elif used_pct >= 50:
-        status = "ok"
-    else:
-        status = "free"
-    return f"[{bar}] {used_pct:.0f}% {status}"
-
-
-def print_status(hw, mem, request_num: int, total_tokens: int):
-    """Print compact status line."""
-    used_pct = (1 - mem.available_gb / mem.total_gb) * 100
-    bar = _memory_bar(used_pct)
-    print(f"\n  RAM: {bar}  "
-          f"({mem.available_gb:.1f}GB free / {mem.total_gb:.0f}GB)")
-    if mem.pressure_level in ("warning", "critical"):
-        print(f"  ** Memory pressure: {mem.pressure_level.upper()} **")
-        if mem.pressure_level == "critical":
-            print("  Close apps to prevent slowdown!")
-    if request_num > 0:
-        print(f"  Session: {request_num} messages, {total_tokens} tokens generated")
-
+# -- Main --
 
 def main():
     parser = argparse.ArgumentParser(description="MLX-Flash: Interactive Chat")
@@ -70,52 +128,60 @@ def main():
                         help="System prompt")
     args = parser.parse_args()
 
-    print()
-    print("=" * 60)
-    print("  MLX-Flash: Interactive Chat")
-    print("=" * 60)
+    print_header()
 
     hw = detect_hardware()
     mem = get_memory_state()
+    print_hw_info(hw, mem)
 
-    print(f"\n  {hw.chip}, {hw.total_ram_gb:.0f}GB RAM")
-    used_pct = (1 - mem.available_gb / mem.total_gb) * 100
-    print(f"  Memory: {_memory_bar(used_pct)}")
+    # Download with progress
+    model_name = args.model
+    if not os.path.isdir(model_name):
+        try:
+            from huggingface_hub import snapshot_download
+            print(f"\n  {c(C.YELLOW, '⬇')}  Downloading {c(C.BOLD, model_name)}...")
+            snapshot_download(
+                model_name,
+                allow_patterns=["*.safetensors", "*.json", "tokenizer*"],
+            )
+            print(f"  {c(C.GREEN, '✓')}  Download complete")
+        except Exception:
+            pass
 
-    print(f"\n  Loading: {args.model}")
+    print(f"\n  {c(C.YELLOW, '⏳')} Loading model...")
     t0 = time.monotonic()
-    model, tokenizer = load(args.model)
+    model, tokenizer = load(model_name)
     mx.synchronize()
-    print(f"  Ready in {time.monotonic() - t0:.1f}s")
+    load_time = time.monotonic() - t0
+    print(f"  {c(C.GREEN, '✓')}  {c(C.BOLD, model_name.split('/')[-1])} loaded in {load_time:.1f}s")
 
     mem_after = get_memory_state()
-    model_gb = mem.available_gb - mem_after.available_gb
-    print(f"  Model: ~{model_gb:.1f}GB, {mem_after.available_gb:.1f}GB remaining")
+    model_gb = max(mem.available_gb - mem_after.available_gb, 0)
+    print(f"  {c(C.DIM, f'   Model: ~{model_gb:.1f}GB, {mem_after.available_gb:.1f}GB remaining')}")
 
     if mem_after.pressure_level in ("warning", "critical"):
-        print(f"\n  ** Memory is {mem_after.pressure_level.upper()} **")
-        print("  Performance may be degraded. Close other apps to help.")
-        print("  Or try a smaller model: --model mlx-community/Qwen3-4B-4bit")
+        print(f"\n  {c(C.RED, '⚠')}  Memory is {_pressure_color(mem_after.pressure_level)}")
+        print(f"  {c(C.DIM, '   Try: --model mlx-community/Qwen3-4B-4bit')}")
 
     messages = [{"role": "system", "content": args.system}]
     request_num = 0
     total_tokens = 0
 
-    print(f"\n  Type your message (or 'quit' to exit, '/status' for memory info)")
-    print("  " + "-" * 56)
+    print(f"\n  {c(C.DIM, 'Type a message to start chatting. /help for commands.')}")
+    print(c(C.DIM, "  " + "─" * 56))
 
     while True:
         try:
-            user_input = input("\n  You: ").strip()
+            user_input = input(f"\n  {c(C.GREEN, '▶ You:')} ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n\n  Goodbye!")
+            print(f"\n\n  {c(C.CYAN, 'Goodbye! 👋')}")
             break
 
         if not user_input:
             continue
 
         if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
-            print("  Goodbye!")
+            print(f"  {c(C.CYAN, 'Goodbye! 👋')}")
             break
 
         if user_input.lower() in ("/status", "/mem", "/memory"):
@@ -124,28 +190,24 @@ def main():
             continue
 
         if user_input.lower() == "/help":
-            print("  Commands:")
-            print("    /status  - Show memory and session info")
-            print("    /clear   - Clear conversation history")
-            print("    /quit    - Exit")
+            print_help()
             continue
 
         if user_input.lower() == "/clear":
             messages = [{"role": "system", "content": args.system}]
-            print("  Conversation cleared.")
+            print(f"  {c(C.GREEN, '✓')}  Conversation cleared")
             continue
 
-        # Check memory before generation
+        # Memory check
         mem = get_memory_state()
         if mem.pressure_level == "critical":
-            print("\n  ** Memory pressure CRITICAL! **")
-            print("  Close applications to avoid slowdown.")
-            print("  Generating anyway (may be slow)...")
+            print(f"\n  {c(C.RED, '⚠  Memory pressure CRITICAL — may be slow')}")
 
         messages.append({"role": "user", "content": user_input})
         formatted = _fmt_prompt(tokenizer, messages)
 
         # Generate
+        print(f"\n  {c(C.MAGENTA, '◆ Assistant:')}", end=" ", flush=True)
         t0 = time.monotonic()
         output = generate(
             model, tokenizer,
@@ -164,13 +226,13 @@ def main():
         messages.append({"role": "assistant", "content": output})
 
         # Display response
-        print(f"\n  Assistant: {output}")
-        print(f"  [{tokens} tokens, {tps:.0f} tok/s, {elapsed:.1f}s]", end="")
+        print(output)
+        stats = f"{tokens} tok, {tps:.0f} tok/s, {elapsed:.1f}s"
+        print(f"  {c(C.DIM, f'   [{stats}]')}", end="")
 
-        # Compact memory status
         mem_after = get_memory_state()
         if mem_after.pressure_level != "normal":
-            print(f"  [RAM: {mem_after.pressure_level}]", end="")
+            print(f"  {c(C.YELLOW, f'[RAM: {mem_after.pressure_level}]')}", end="")
         print()
 
 
