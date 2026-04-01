@@ -1,0 +1,112 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    name: Test before release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install and test
+        run: |
+          pip install numpy psutil tabulate pytest lz4 zstandard safetensors huggingface-hub
+          pip install mlx mlx-lm || true
+          python -m pytest tests/ -v --tb=short
+
+  pypi:
+    name: Publish to PyPI
+    needs: test
+    runs-on: macos-15
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build package
+        run: |
+          pip install build twine
+          python -m build
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+        run: twine upload dist/*
+
+  github-release:
+    name: Create GitHub Release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+
+  docker:
+    name: Build and push Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/mlx-flash:${{ steps.version.outputs.VERSION }}
+            ghcr.io/${{ github.repository_owner }}/mlx-flash:latest
+
+  update-homebrew:
+    name: Update Homebrew tap
+    needs: [pypi, github-release]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update formula
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+          SHA=$(curl -sL https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz | shasum -a 256 | cut -d' ' -f1)
+
+          gh repo clone ${{ github.repository_owner }}/homebrew-mlx-flash /tmp/homebrew-tap
+          cd /tmp/homebrew-tap
+
+          sed -i "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz\"|" Formula/mlx-flash.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA}\"|" Formula/mlx-flash.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/mlx-flash.rb
+          git commit -m "Update mlx-flash to v${VERSION}" || true
+          git push
