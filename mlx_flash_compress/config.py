@@ -225,7 +225,7 @@ class FlashConfig:
 
 
 # Default config file location
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "mlx-flash-compress" / "config.json"
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "mlx-flash" / "config.json"
 
 
 def get_config(config_path: Optional[str] = None) -> FlashConfig:

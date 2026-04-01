@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Mac with Apple Silicon** (M1, M2, M3, or M4 — any variant)
+- **Mac with Apple Silicon** (M1, M2, M3, M4, or M5 — any variant)
 - **macOS 14+** (Sonoma or newer)
 - **Python 3.10+**
 - At least **16GB RAM** (more = better performance)
@@ -103,7 +103,7 @@ python -m mlx_flash_compress.run --model <path>
 
 ### Full: Config file
 
-Create `~/.config/mlx-flash-compress/config.json`:
+Create `~/.config/mlx-flash/config.json`:
 
 ```json
 {
@@ -173,8 +173,8 @@ cargo build --release -p mlx-flash-server
 ## Docker (for CI/testing only)
 
 ```bash
-docker build -t mlx-flash-compress .
-docker run mlx-flash-compress
+docker build -t mlx-flash .
+docker run mlx-flash
 # Runs synthetic benchmarks (MLX inference requires native macOS)
 ```
 

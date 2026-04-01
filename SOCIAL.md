@@ -66,13 +66,13 @@ We add zero value here. Pure MLX runs at full speed. We don't pretend otherwise.
 
 Running a 200GB AI model on a 36GB MacBook sounds impossible. It is — without smart caching.
 
-We built MLX-Flash-Compress. It streams model weights from SSD with 85% cache hit rate. Result: model runs at 3-4 tok/s instead of crashing.
+We built MLX-Flash. It streams model weights from SSD with 85% cache hit rate. Result: model runs at 3-4 tok/s instead of crashing.
 
 That's slow. But "slow" beats "doesn't run at all."
 
 The surprising win: models that BARELY fit (90-100% of RAM). macOS memory pressure causes 25-50% speed loss. Our mixed precision shrinks the footprint 25%, eliminating pressure entirely. Full speed restored.
 
-github.com/szibis/MLX-Flash-compress
+github.com/szibis/MLX-Flash
 
 ### LinkedIn (professional)
 
@@ -80,11 +80,11 @@ github.com/szibis/MLX-Flash-compress
 
 Everyone talks about running huge models on small devices. But there's a quieter problem: models that technically fit in RAM but perform terribly because macOS memory pressure causes GPU stalls.
 
-We built MLX-Flash-Compress to solve three problems:
+We built MLX-Flash to solve three problems:
 1. **Barely fits**: 35GB model on 36GB Mac → +67% speed (pressure eliminated)
 2. **Doesn't fit**: 209GB model on 36GB Mac → 3.7 tok/s (impossible → possible)
 3. **Comfort zone**: adaptive memory management that never harms your other apps
 
 Built on 60+ research papers, measured on real hardware, 59 tests passing.
 
-Open source: github.com/szibis/MLX-Flash-compress
+Open source: github.com/szibis/MLX-Flash

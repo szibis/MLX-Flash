@@ -45,7 +45,7 @@ Claude Code can use our server as a local model provider for code completion and
 
 ### Option 1: MCP Server (recommended)
 
-Add to your Claude Code MCP configuration (`~/.claude/mcp_servers.json` or project `.claude/mcp_servers.json`):
+Add to your Claude Code MCP configuration (`~/.claude/.mcp.json` or project `.claude/.mcp.json`):
 
 ```json
 {
@@ -524,7 +524,7 @@ Add to your `prometheus.yml`:
 
 ```yaml
 scrape_configs:
-  - job_name: mlx_flash_compress
+  - job_name: mlx_flash
     static_configs:
       - targets: ["localhost:8080"]
     metrics_path: /status
@@ -578,7 +578,7 @@ curl -s http://localhost:8080/cache/stats | python -m json.tool
 Use `RustCacheClient` directly for fine-grained expert weight management from Python, bypassing the HTTP layer entirely.
 
 ```python
-from mlx_flash_compress.rust_cache_client import RustCacheClient
+from mlx_flash_compress.rust_bridge import RustCacheClient
 import mlx.core as mx
 
 # Connect to the Rust sidecar over the Unix socket

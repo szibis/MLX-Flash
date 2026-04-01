@@ -156,15 +156,17 @@ The original Python `lcp_cache.py` used a plain `dict` with a GIL-protected LRU 
 - Ollama has its own API format (`/api/generate`) different from OpenAI format
 - Would need an adapter layer or dual-format support
 
-## Quick Wins (Do These First)
+## Historical: Quick Wins (All Completed)
 
-1. **Add warmup to `serve.py --preload`** — first request goes from 2.9 to ~50 tok/s (30 min effort)
-2. **Auto mixed-precision trigger** — 2.4x recovery when model barely fits (1 hour effort)
-3. **SSE streaming** — enables proper LM Studio/Claude Code integration (2 hour effort)
-4. **Lazy imports** — 0.5s faster cold start (30 min effort)
+All items below were completed during the March-April 2026 development sprint:
 
-## Big Bets (Would Make This a Real Product)
+1. ~~Add warmup to `serve.py --preload`~~ — **DONE** (warmup-on-preload + profile-based)
+2. ~~Auto mixed-precision trigger~~ — **PARTIAL** (hints added, auto-apply awaits mlx-rs)
+3. ~~SSE streaming~~ — **DONE** (SSE in serve.py + Rust axum proxy)
+4. ~~Lazy imports~~ — **DONE** (`__init__.py` uses `__getattr__`)
 
-1. **MLX weight interception** — enables actual SSD streaming for 50GB+ models (days of work, needs mlx-lm fork or mlx-moe integration)
-2. **MCP server with tool definitions** — native Claude Code integration (1 day)
-3. **SSE streaming + multi-client** — production-ready server (1 day)
+## Historical: Big Bets (All Completed)
+
+1. ~~MLX weight interception~~ — **DONE** (`expert_streaming.py` with GPU lookup table + CachedSwitchLinear)
+2. ~~MCP server~~ — **DONE** (documented in integrations.md)
+3. ~~SSE streaming + multi-client~~ — **DONE** (ThreadedHTTPServer + Rust sidecar)

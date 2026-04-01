@@ -304,7 +304,7 @@ export OPENAI_API_BASE=http://localhost:8080/v1
 export OPENAI_API_KEY=not-needed
 ```
 
-Or add to `~/.claude/mcp_servers.json`:
+Or add to `~/.claude/.mcp.json`:
 ```json
 {
   "mlx-flash": {

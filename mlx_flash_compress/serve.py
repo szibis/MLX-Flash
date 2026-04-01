@@ -255,7 +255,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "data": [{
                     "id": "local",
                     "object": "model",
-                    "owned_by": "mlx-flash-compress",
+                    "owned_by": "mlx-flash",
                 }]
             })
         elif self.path in ("/health", "/status"):
