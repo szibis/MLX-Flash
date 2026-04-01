@@ -212,8 +212,13 @@ flowchart TB
 | `ssd_protection.py` | Thermal cutoff, sequential hints, zero writes |
 | **Inference & Serving** | |
 | `serve.py` | OpenAI-compatible server with KV cache quantization, memory-aware hints |
-| `chat.py` | Interactive CLI with memory status bar |
+| `chat.py` | Colorful chat CLI with web search, memory, model switching |
+| `web_search.py` | DuckDuckGo search + persistent memory store (Perplexity-style) |
+| `hf_calculator.py` | Model size/memory estimator for any MoE or dense model |
 | `task_profiler.py` | Per-task expert profiles (coding/writing/math/chat) for fast warmup |
+| **Distributed** | |
+| `distributed_experts.py` | Multi-Mac expert parallelism over Thunderbolt 5 RDMA |
+| `kv_cache_sharing.py` | PT-MoE KV-cache sharing between blocks (37.5% memory savings) |
 | `cached_inference.py` | Expert routing capture + cache simulation |
 | `rust_bridge.py` | Python ↔ Rust Unix socket bridge |
 | **Rust Sidecar** | |
@@ -251,12 +256,15 @@ graph LR
 
 | How | Command | Best For |
 |-----|---------|----------|
-| **Interactive chat** | `python -m mlx_flash_compress.chat` | Quick testing, shows memory status |
-| **API server** | `python -m mlx_flash_compress.serve --port 8080` | LM Studio, continue.dev, OpenAI SDK |
-| **API + KV quant** | `python -m mlx_flash_compress.serve --kv-bits 8` | 45% less KV memory |
-| **Model browser** | `python -m mlx_flash_compress.model_browser` | See what fits your hardware |
+| **Interactive chat** | `mlx-flash-chat` | Chat with web search, memory, model switching |
+| **API server** | `mlx-flash --port 8080` | LM Studio, Cursor, Claude Code, OpenAI SDK |
+| **API + KV quant** | `mlx-flash --port 8080 --kv-bits 8` | 45% less KV memory |
+| **Model calculator** | `python -m mlx_flash_compress.hf_calculator` | Estimate size/memory for any model |
+| **Model browser** | `mlx-flash-browse` | See what fits your hardware |
 | **Warm-up demo** | `python -m mlx_flash_compress.demo_warmup` | Watch cache fill in real-time |
 | **Pressure test** | `python -m mlx_flash_compress.bench_memory_pressure` | Measure memory impact |
+
+**Chat commands:** `/models` browse catalog, `/model N` switch live, `/search` web search, `/ask` search+answer, `/remember` save facts, `/memories` list, `/status` memory info
 
 ### Integrations
 
@@ -445,10 +453,10 @@ Speculative expert execution (from MoE-SpAc paper) runs predicted experts *befor
 ## Project Stats
 
 - **15,000+ lines of code** (Python + Rust)
-- **224 tests** (192 Python + 32 Rust)
+- **254 tests** (222 Python + 32 Rust)
 - **8 benchmark suites** + interactive demos
 - **10 research documents** (15+ papers implemented, 60+ surveyed)
-- **35 Python modules** covering prediction, caching, compression, serving
+- **40 Python modules** covering prediction, caching, compression, distributed, serving
 - **OpenAI-compatible API server** with KV cache quantization
 - **Memory-aware** inference with wired memory optimization
 - **Rust sidecar** with 0.1ms memory checks (210x faster than Python)
