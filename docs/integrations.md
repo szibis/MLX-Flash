@@ -21,14 +21,14 @@ brew install mlx-flash
 
 ```bash
 # Start the server (after pip install)
-mlx-flash --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit --port 8080 --preload
+mlx-flash --model mlx-community/Qwen3-30B-A3B-4bit --port 8080 --preload
 
 # Or with KV cache quantization (45% less KV memory)
 mlx-flash --port 8080 --kv-bits 8 --preload
 
 # Or the module way
 python -m mlx_flash_compress.serve \
-  --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit \
+  --model mlx-community/Qwen3-30B-A3B-4bit \
   --port 8080 --preload
 ```
 
@@ -51,7 +51,7 @@ Add to your Claude Code MCP configuration (`~/.claude/.mcp.json` or project `.cl
 {
   "mlx-flash": {
     "command": "mlx-flash",
-    "args": ["--model", "mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit", "--port", "8080"],
+    "args": ["--model", "mlx-community/Qwen3-30B-A3B-4bit", "--port", "8080"],
     "env": {}
   }
 }
@@ -273,7 +273,7 @@ aider --openai-api-base http://localhost:8080/v1 --openai-api-key not-needed --m
 from mlx_flash_compress.serve import InferenceState
 
 # Direct usage (no HTTP server needed)
-state = InferenceState("mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit")
+state = InferenceState("mlx-community/Qwen3-30B-A3B-4bit")
 state.load_model()
 
 # Generate
@@ -305,7 +305,7 @@ print(f"Hints: {status['optimization_hints']}")
 
 ```json
 {
-  "model": "mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit",
+  "model": "mlx-community/Qwen3-30B-A3B-4bit",
   "hardware": {"chip": "Apple M3 Max", "ram_gb": 36.0},
   "memory": {
     "total_gb": 36.0,
@@ -364,7 +364,7 @@ Ollama supports registering external models via a `Modelfile`. Point it at our r
 ```bash
 # Start our server first
 python -m mlx_flash_compress.serve \
-  --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit \
+  --model mlx-community/Qwen3-30B-A3B-4bit \
   --port 8080 --preload
 
 # Create an Ollama Modelfile that proxies to our server
@@ -490,7 +490,7 @@ services:
       - MLX_SOCKET_PATH=/run/mlx/cache.sock
     command: >
       python -m mlx_flash_compress.serve
-        --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit
+        --model mlx-community/Qwen3-30B-A3B-4bit
         --socket-path /run/mlx/cache.sock
         --preload
     volumes:

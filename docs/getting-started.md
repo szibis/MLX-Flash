@@ -48,18 +48,18 @@ This shows your Mac's specs and what models you can run:
 ```bash
 # Small model (downloads ~5GB, fits in RAM)
 python -m mlx_flash_compress.run \
-  --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit \
+  --model mlx-community/Qwen3-30B-A3B-4bit \
   --tokens 100
 
 # With task-specific optimization
 python -m mlx_flash_compress.run \
-  --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit \
+  --model mlx-community/Qwen3-30B-A3B-4bit \
   --task coding \
   --tokens 100
 
 # With adaptive profiling (learns what you need)
 python -m mlx_flash_compress.run \
-  --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit \
+  --model mlx-community/Qwen3-30B-A3B-4bit \
   --adaptive \
   --tokens 200
 ```
@@ -212,7 +212,7 @@ Shows real-time memory status, tok/s per response, and warns when RAM is tight. 
 Start the OpenAI-compatible API server:
 
 ```bash
-python -m mlx_flash_compress.serve --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit --port 8080
+python -m mlx_flash_compress.serve --model mlx-community/Qwen3-30B-A3B-4bit --port 8080
 ```
 
 ### Connect from LM Studio

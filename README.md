@@ -309,7 +309,7 @@ Or add to `~/.claude/.mcp.json`:
 {
   "mlx-flash": {
     "command": "mlx-flash",
-    "args": ["--model", "mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit", "--port", "8080"]
+    "args": ["--model", "mlx-community/Qwen3-30B-A3B-4bit", "--port", "8080"]
   }
 }
 ```

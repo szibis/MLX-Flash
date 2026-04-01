@@ -7,7 +7,7 @@ Provides an OpenAI-compatible chat API endpoint that:
   4. Provides real-time memory/cache status endpoint
 
 Usage:
-  python -m mlx_flash_compress.serve --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit
+  python -m mlx_flash_compress.serve --model mlx-community/Qwen3-30B-A3B-4bit
   python -m mlx_flash_compress.serve --model PATH --port 8080
 
 Then use any OpenAI-compatible client:
@@ -419,7 +419,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="MLX-Flash: Memory-aware inference server"
     )
-    parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit",
+    parser.add_argument("--model", default="mlx-community/Qwen3-30B-A3B-4bit",
                         help="MLX model to serve")
     parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")

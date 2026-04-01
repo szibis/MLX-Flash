@@ -63,7 +63,7 @@ def print_status(hw, mem, request_num: int, total_tokens: int):
 
 def main():
     parser = argparse.ArgumentParser(description="MLX-Flash: Interactive Chat")
-    parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit")
+    parser.add_argument("--model", default="mlx-community/Qwen3-30B-A3B-4bit")
     parser.add_argument("--max-tokens", type=int, default=256)
     parser.add_argument("--system", default="You are a helpful AI assistant.",
                         help="System prompt")
@@ -93,7 +93,7 @@ def main():
     if mem_after.pressure_level in ("warning", "critical"):
         print(f"\n  ** Memory is {mem_after.pressure_level.upper()} **")
         print("  Performance may be degraded. Close other apps to help.")
-        print("  Or try a smaller model with: --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit")
+        print("  Or try a smaller model with: --model mlx-community/Qwen3-30B-A3B-4bit")
 
     messages = [{"role": "system", "content": args.system}]
     request_num = 0
