@@ -419,14 +419,27 @@ def main():
     parser = argparse.ArgumentParser(
         description="MLX-Flash: Memory-aware inference server"
     )
-    parser.add_argument("--model", default="mlx-community/Qwen3-30B-A3B-4bit",
-                        help="MLX model to serve")
+    parser.add_argument("--model", default=None,
+                        help="MLX model to serve (auto-selects based on RAM if not specified)")
     parser.add_argument("--port", type=int, default=8080, help="Port to listen on")
     parser.add_argument("--host", default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--preload", action="store_true", help="Load model immediately")
     parser.add_argument("--kv-bits", type=int, default=0, choices=[0, 4, 8],
                         help="KV cache quantization bits (0=none, 8=45%% memory savings)")
     args = parser.parse_args()
+
+    # Auto-select model based on available RAM
+    if args.model is None:
+        mem = get_memory_state()
+        ram = mem.total_gb
+        if ram >= 32:
+            args.model = "mlx-community/Qwen3-30B-A3B-4bit"  # 30B MoE, ~18GB
+        elif ram >= 16:
+            args.model = "mlx-community/Qwen3-30B-A3B-4bit"  # fits with streaming
+        elif ram >= 12:
+            args.model = "mlx-community/Qwen3-8B-4bit"  # 8B dense, ~5GB
+        else:
+            args.model = "mlx-community/Qwen3-4B-4bit"  # 4B dense, ~2.5GB
 
     print()
     print("=" * 60)
