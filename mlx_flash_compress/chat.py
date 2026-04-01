@@ -140,21 +140,31 @@ def _pressure_color(level: str) -> str:
 
 
 def print_help():
-    print(f"\n  {c(C.BOLD, '📋 Commands')}")
-    print(f"  {c(C.BOLD, 'Models')}")
-    print(f"  {c(C.CYAN, '/models')}          List available models with size info")
-    print(f"  {c(C.CYAN, '/model N')}        Switch to model N (number or name)")
-    print(f"  {c(C.BOLD, 'Search & Memory')}")
-    print(f"  {c(C.CYAN, '/search <query>')} Search the web (DuckDuckGo)")
-    print(f"  {c(C.CYAN, '/ask <question>')} Search + auto-answer using results")
-    print(f"  {c(C.CYAN, '/remember <fact>')} Save a fact to persistent memory")
-    print(f"  {c(C.CYAN, '/memories')}       Show saved memories")
-    print(f"  {c(C.CYAN, '/forget N')}       Delete memory by number")
-    print(f"  {c(C.BOLD, 'Session')}")
-    print(f"  {c(C.CYAN, '/status')}          Show memory and session info")
-    print(f"  {c(C.CYAN, '/clear')}           Clear conversation history")
-    print(f"  {c(C.CYAN, '/help')}            Show this help")
-    print(f"  {c(C.CYAN, '/quit')}            Exit")
+    print(f"\n  {c(C.BOLD, '📋 All Commands')}")
+    print(f"  {c(C.DIM, '─' * 56)}")
+    print(f"  {c(C.BOLD, '🤖 Models')}")
+    print(f"  {c(C.CYAN, '/models')}               Browse available models with RAM info")
+    print(f"  {c(C.CYAN, '/model')} {c(C.DIM, '<N|name>')}      Switch to a different model live")
+    print()
+    print(f"  {c(C.BOLD, '🔍 Search & Knowledge')}")
+    print(f"  {c(C.CYAN, '/search')} {c(C.DIM, '<query>')}      Search the web (DuckDuckGo)")
+    print(f"  {c(C.CYAN, '/ask')} {c(C.DIM, '<question>')}      Search + get AI answer with web context")
+    print(f"  {c(C.CYAN, '/remember')} {c(C.DIM, '<fact>')}     Save a fact to persistent memory")
+    print(f"  {c(C.CYAN, '/memories')}              Show all saved memories")
+    print(f"  {c(C.CYAN, '/forget')} {c(C.DIM, '<N>')}           Delete a memory by number")
+    print()
+    print(f"  {c(C.BOLD, '💻 Session')}")
+    print(f"  {c(C.CYAN, '/status')}               RAM, model, session stats")
+    print(f"  {c(C.CYAN, '/clear')}                Clear conversation history")
+    print(f"  {c(C.CYAN, '/help')}                 This help menu")
+    print(f"  {c(C.CYAN, '/quit')}                 Exit")
+    print()
+    print(f"  {c(C.BOLD, '💡 Tips')}")
+    print(f"  {c(C.DIM, '• Type normally to chat with the model')}")
+    print(f"  {c(C.DIM, '• Use /ask for questions needing current info (news, prices, etc)')}")
+    print(f"  {c(C.DIM, '• Use /remember to teach the model facts about you')}")
+    print(f"  {c(C.DIM, '• Use /model to try bigger models if you have enough RAM')}")
+    print(f"  {c(C.DIM, '• Memories persist across sessions in ~/.config/mlx-flash/')}")
 
 
 def _fmt_prompt(tokenizer, messages):
@@ -238,8 +248,13 @@ def main():
     request_num = 0
     total_tokens = 0
 
-    print(f"\n  {c(C.DIM, 'Type a message to chat. /help for commands. /search for web.')}")
-    print(c(C.DIM, "  " + "─" * 56))
+    print(f"\n  {c(C.DIM, '─' * 56)}")
+    print(f"  {c(C.BOLD, '💬 Ready to chat!')} Try these to get started:")
+    print(f"     {c(C.CYAN, 'Hello!')}                  — chat with the model")
+    print(f"     {c(C.CYAN, '/ask what is MLX?')}        — search web + AI answer")
+    print(f"     {c(C.CYAN, '/models')}                  — browse & switch models")
+    print(f"     {c(C.CYAN, '/help')}                    — all commands")
+    print(f"  {c(C.DIM, '─' * 56)}")
 
     while True:
         try:
@@ -249,6 +264,28 @@ def main():
             break
 
         if not user_input:
+            continue
+
+        # Show command hints for incomplete slash commands
+        if user_input == "/":
+            print(f"  {c(C.DIM, 'Commands: /help /models /model /search /ask /remember /memories /status /clear /quit')}")
+            continue
+
+        if user_input.startswith("/") and user_input.lower() not in (
+            "/help", "/models", "/model", "/status", "/mem", "/memory",
+            "/clear", "/quit", "/exit", "/memories", "/mem-list",
+        ) and not any(user_input.lower().startswith(p) for p in (
+            "/model ", "/search ", "/ask ", "/remember ", "/forget ",
+        )):
+            # Unknown command — suggest closest match
+            cmds = ["help", "models", "model", "search", "ask", "remember", "memories", "forget", "status", "clear", "quit"]
+            typed = user_input[1:].lower().split()[0] if len(user_input) > 1 else ""
+            matches = [cmd for cmd in cmds if cmd.startswith(typed)]
+            if matches:
+                suggestions = ", ".join(f"/{m}" for m in matches[:3])
+                print(f"  {c(C.DIM, f'Did you mean: {suggestions}?')}")
+            else:
+                print(f"  {c(C.DIM, 'Unknown command. Type /help for all commands.')}")
             continue
 
         if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
@@ -485,6 +522,16 @@ def main():
         if mem_after.pressure_level != "normal":
             print(f"  {c(C.YELLOW, f'[RAM: {mem_after.pressure_level}]')}", end="")
         print()
+
+        # Contextual tips every few messages
+        if request_num == 1:
+            print(f"  {c(C.DIM, '💡 Tip: Use /ask <question> to search the web and get grounded answers')}")
+        elif request_num == 3 and memory_store.count() == 0:
+            print(f"  {c(C.DIM, '💡 Tip: Use /remember <fact> to teach me things about you')}")
+        elif request_num == 5:
+            print(f"  {c(C.DIM, '💡 Tip: Try /models to see bigger models you could switch to')}")
+        elif request_num == 10:
+            print(f"  {c(C.DIM, '💡 Tip: /status shows memory usage and session stats')}")
 
 
 if __name__ == "__main__":
