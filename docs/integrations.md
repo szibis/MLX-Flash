@@ -2,10 +2,31 @@
 
 MLX-Flash provides an OpenAI-compatible API server that works with any tool supporting custom endpoints.
 
+## Installation
+
+```bash
+# PyPI (recommended)
+pip install mlx-flash
+
+# Or from source
+git clone https://github.com/szibis/MLX-Flash.git
+cd MLX-Flash && pip install -e .
+
+# Homebrew (includes Rust sidecar binary)
+brew tap szibis/mlx-flash
+brew install mlx-flash
+```
+
 ## Quick Start
 
 ```bash
-# Start the server
+# Start the server (after pip install)
+mlx-flash --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit --port 8080 --preload
+
+# Or with KV cache quantization (45% less KV memory)
+mlx-flash --port 8080 --kv-bits 8 --preload
+
+# Or the module way
 python -m mlx_flash_compress.serve \
   --model mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit \
   --port 8080 --preload
@@ -28,9 +49,9 @@ Add to your Claude Code MCP configuration (`~/.claude/mcp_servers.json` or proje
 
 ```json
 {
-  "mlx-flash-compress": {
-    "command": "python",
-    "args": ["-m", "mlx_flash_compress.serve", "--model", "mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit", "--port", "8080"],
+  "mlx-flash": {
+    "command": "mlx-flash",
+    "args": ["--model", "mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit", "--port", "8080"],
     "env": {}
   }
 }
@@ -66,7 +87,31 @@ curl -s http://localhost:8080/hints | python -m json.tool
 curl -s http://localhost:8080/release | python -m json.tool
 ```
 
-## OpenAI Codex / ChatGPT API
+## OpenAI Codex CLI
+
+Codex CLI can use MLX-Flash as a local model provider:
+
+```bash
+# Start MLX-Flash server
+mlx-flash --port 8080 --preload
+
+# Use with Codex CLI
+export OPENAI_API_BASE=http://localhost:8080/v1
+export OPENAI_API_KEY=not-needed
+codex "refactor this function to use async/await"
+```
+
+Or configure in `~/.codex/config.json`:
+```json
+{
+  "provider": "openai",
+  "model": "local",
+  "apiBase": "http://localhost:8080/v1",
+  "apiKey": "not-needed"
+}
+```
+
+## OpenAI Python SDK
 
 Any tool that speaks the OpenAI API can connect:
 
@@ -88,11 +133,32 @@ response = client.chat.completions.create(
 )
 
 print(response.choices[0].message.content)
+```
 
-# Check memory-specific metadata
-if hasattr(response, "mlx_flash_compress"):
-    print(f"Speed: {response.mlx_flash_compress['tok_per_s']} tok/s")
-    print(f"Memory: {response.mlx_flash_compress['memory_pressure']}")
+### Streaming example
+
+```python
+stream = client.chat.completions.create(
+    model="local",
+    messages=[{"role": "user", "content": "Explain MoE models"}],
+    max_tokens=512,
+    stream=True,
+)
+
+for chunk in stream:
+    if chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="", flush=True)
+```
+
+### Check server health
+
+```python
+import requests
+
+status = requests.get("http://localhost:8080/status").json()
+print(f"Memory pressure: {status['memory']['pressure']}")
+print(f"Free RAM: {status['memory']['free_gb']:.1f} GB")
+print(f"Hints: {[h['action'] for h in status.get('optimization_hints', [])]}")
 ```
 
 ## LM Studio
@@ -148,12 +214,36 @@ Add to `~/.continue/config.json`:
 
 ## Cursor
 
-In Cursor settings, add a custom model:
+### Setup
 
-- Provider: OpenAI Compatible
-- API Base: `http://localhost:8080/v1`
-- API Key: `not-needed`
-- Model: `local`
+1. Start MLX-Flash:
+   ```bash
+   mlx-flash --port 8080 --preload
+   ```
+
+2. In Cursor, go to **Settings** > **Models** > **Add Model**:
+   - Provider: `OpenAI Compatible`
+   - API Base: `http://localhost:8080/v1`
+   - API Key: `not-needed`
+   - Model: `local`
+
+3. Select the model for chat or code completion.
+
+### With Expert Streaming (large MoE models)
+
+```bash
+# For models that don't fit in RAM — enable expert streaming
+mlx-flash --model mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit \
+  --port 8080 --preload --kv-bits 8
+```
+
+### Verify It Works
+
+In Cursor's terminal:
+```bash
+curl http://localhost:8080/status | python3 -m json.tool
+# Should show model loaded, memory stats, and optimization hints
+```
 
 ## Open WebUI
 

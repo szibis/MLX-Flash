@@ -41,22 +41,29 @@ flowchart TB
 ## Quick Start
 
 ```bash
+# Install from PyPI
+pip install mlx-flash
+
+# Or Homebrew (includes Rust sidecar)
+brew tap szibis/mlx-flash && brew install mlx-flash
+
+# Or from source
 git clone https://github.com/szibis/MLX-Flash.git
-cd MLX-Flash
-uv venv && source .venv/bin/activate
-uv pip install lz4 zstandard numpy psutil tabulate pytest mlx mlx-lm
+cd MLX-Flash && pip install -e ".[all]"
+```
 
+```bash
 # Interactive chat (simplest way to use it)
-python -m mlx_flash_compress.chat
+mlx-flash-chat
 
-# Or start the API server (works with LM Studio, continue.dev, OpenAI SDK)
-python -m mlx_flash_compress.serve --port 8080
+# Start the API server (works with LM Studio, Cursor, Claude Code, Codex, OpenAI SDK)
+mlx-flash --port 8080
 
 # With KV cache quantization (45% less KV memory)
-python -m mlx_flash_compress.serve --port 8080 --kv-bits 8
+mlx-flash --port 8080 --kv-bits 8
 
 # See what models fit your hardware
-python -m mlx_flash_compress.model_browser
+mlx-flash-browse
 ```
 
 ## Performance

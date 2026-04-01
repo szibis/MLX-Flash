@@ -1,15 +1,31 @@
 [project]
-name = "mlx-flash-compress"
-version = "0.1.0"
-description = "Tiered compressed expert cache for MoE inference on Apple Silicon — MLX + Flash-MoE architecture"
+name = "mlx-flash"
+version = "0.2.0"
+description = "Run AI models too large for your Mac's memory — expert caching, speculative execution, and 15+ research techniques for MoE inference on Apple Silicon"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
+keywords = [
+    "mlx", "apple-silicon", "moe", "mixture-of-experts", "inference",
+    "expert-caching", "llm", "speculative-execution", "quantization",
+    "metal-gpu", "macos", "ssd-streaming",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "mlx>=0.24.0",
     "mlx-lm>=0.22.0",
-    "lz4>=4.3.0",
-    "zstandard>=0.23.0",
     "numpy>=1.24.0",
     "huggingface-hub>=0.20.0",
     "safetensors>=0.4.0",
@@ -18,14 +34,36 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+compression = [
+    "lz4>=4.3.0",
+    "zstandard>=0.23.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-benchmark>=4.0",
 ]
+all = [
+    "mlx-flash[compression,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/szibis/MLX-Flash"
+Repository = "https://github.com/szibis/MLX-Flash"
+Issues = "https://github.com/szibis/MLX-Flash/issues"
+Documentation = "https://github.com/szibis/MLX-Flash/tree/main/docs"
 
 [project.scripts]
+mlx-flash = "mlx_flash_compress.serve:main"
+mlx-flash-chat = "mlx_flash_compress.chat:main"
 mlx-flash-bench = "mlx_flash_compress.bench:main"
+mlx-flash-browse = "mlx_flash_compress.model_browser:main"
 
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+include = ["mlx_flash_compress*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

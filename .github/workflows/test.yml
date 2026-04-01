@@ -1,0 +1,67 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-python:
+    name: Python Tests (macOS Apple Silicon)
+    runs-on: macos-15
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy psutil tabulate pytest
+          # MLX requires Apple Silicon - install if available
+          pip install mlx mlx-lm || echo "MLX install skipped (may need Metal GPU)"
+
+      - name: Run tests
+        run: |
+          python -m pytest tests/ -v --tb=short -x
+
+  test-rust:
+    name: Rust Tests
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and test Rust sidecar
+        working-directory: mlx-flash-server
+        run: |
+          cargo test --all-targets
+          cargo build --release
+
+  lint:
+    name: Lint
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Check imports
+        run: |
+          python -c "import ast; [ast.parse(open(f).read()) for f in __import__('glob').glob('mlx_flash_compress/*.py')]"
+          echo "All Python files parse successfully"
