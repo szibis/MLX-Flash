@@ -12,8 +12,15 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-import lz4.frame
-import zstandard as zstd
+try:
+    import lz4.frame
+except ImportError:
+    lz4 = None
+
+try:
+    import zstandard as zstd
+except ImportError:
+    zstd = None
 
 
 class CompressionAlgo(Enum):
