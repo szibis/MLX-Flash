@@ -90,20 +90,27 @@ def print_hw_info(hw, mem):
     print(f"  Memory: {memory_bar(used_pct)}")
 
 
-def print_models(current_model: str, ram_gb: float):
+def print_models(current_model: str, ram_gb: float, max_ram_pct: int = 75):
     """Show available models with size and fit info."""
+    mem = get_memory_state()
+    available = mem.available_gb
+    budget = ram_gb * max_ram_pct / 100
+
     print(f"\n  {c(C.BOLD, '📦 Available Models')}")
+    print(f"  {c(C.DIM, f'   RAM: {ram_gb:.0f}GB total, {available:.1f}GB available, budget: {budget:.0f}GB ({max_ram_pct}% limit)')}")
     print(f"  {c(C.DIM, '─' * 56)}")
 
     for i, (name, total, active, size, mtype, desc) in enumerate(MODELS, 1):
         short = name.split("/")[-1]
-        fits = "✓" if size < ram_gb * 0.85 else "⚡" if mtype == "MoE" else "✗"
 
-        if fits == "✓":
+        if size < budget * 0.85:
+            fits = "✓"
             fit_color = C.GREEN
-        elif fits == "⚡":
+        elif size < ram_gb * 0.95 and mtype == "MoE":
+            fits = "⚡"
             fit_color = C.YELLOW
         else:
+            fits = "✗"
             fit_color = C.RED
 
         active_str = c(C.CYAN, f"{active} active") if mtype == "MoE" else c(C.DIM, "dense")
@@ -112,7 +119,7 @@ def print_models(current_model: str, ram_gb: float):
         print(f"  {c(fit_color, fits)} {c(C.BOLD, f'{i}.')} {short}")
         print(f"     {total} params ({active_str}) · {size:.1f}GB · {c(C.DIM, desc)}{current}")
 
-    print(f"\n  {c(C.DIM, 'Legend: ✓ fits in RAM  ⚡ needs streaming  ✗ too large')}")
+    print(f"\n  {c(C.DIM, f'Legend: ✓ fits ({max_ram_pct}% limit)  ⚡ needs streaming  ✗ too large')}")
     print(f"  {c(C.DIM, 'Switch: /model <number> or /model <name>')}")
 
 
@@ -199,6 +206,8 @@ def main():
     parser.add_argument("--model", default="mlx-community/Qwen3-8B-4bit",
                         help="MLX model to chat with")
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument("--max-ram-pct", type=int, default=75,
+                        help="Max RAM usage %% before blocking model load (default: 75)")
     parser.add_argument("--system", default="You are a helpful AI assistant.",
                         help="System prompt")
     args = parser.parse_args()
@@ -208,6 +217,14 @@ def main():
     hw = detect_hardware()
     mem = get_memory_state()
     print_hw_info(hw, mem)
+
+    # Set MLX memory limit to prevent system crash
+    try:
+        limit_bytes = int(mem.total_gb * args.max_ram_pct / 100 * 1024 * 1024 * 1024)
+        mx.set_memory_limit(limit_bytes)
+        print(f"  {c(C.DIM, f'Memory limit: {args.max_ram_pct}% of RAM ({limit_bytes / (1024**3):.1f}GB)')}")
+    except (AttributeError, TypeError):
+        pass
 
     model_name = args.model
     model, tokenizer = load_model(model_name)
@@ -239,7 +256,7 @@ def main():
             break
 
         if user_input.lower() in ("/models", "/model"):
-            print_models(model_name, mem.total_gb)
+            print_models(model_name, mem.total_gb, args.max_ram_pct)
             continue
 
         if user_input.lower().startswith("/model "):
@@ -274,12 +291,35 @@ def main():
                 print(f"  {c(C.DIM, '   Already using this model')}")
                 continue
 
+            # Safety check: will this model fit within the RAM budget?
+            model_size_gb = None
+            for m_name, _, _, size, _, _ in MODELS:
+                if m_name == new_name:
+                    model_size_gb = size
+                    break
+
+            if model_size_gb:
+                budget_gb = mem.total_gb * args.max_ram_pct / 100
+                if model_size_gb > budget_gb:
+                    print(f"  {c(C.RED, '✗')}  Model needs ~{model_size_gb:.0f}GB but your budget is {budget_gb:.0f}GB ({args.max_ram_pct}% of {mem.total_gb:.0f}GB)")
+                    print(f"  {c(C.DIM, f'   Override with: --max-ram-pct {int(model_size_gb / mem.total_gb * 100) + 10}')}")
+                    print(f"  {c(C.DIM, '   Or choose a smaller model from /models')}")
+                    continue
+
             # Release old model
             print(f"  {c(C.YELLOW, '↻')}  Switching model...")
             del model, tokenizer
             try:
                 mx.clear_cache()
             except AttributeError:
+                pass
+            import gc; gc.collect()
+
+            # Set MLX memory limit to prevent system crash
+            try:
+                limit_bytes = int(mem.total_gb * args.max_ram_pct / 100 * 1024 * 1024 * 1024)
+                mx.set_memory_limit(limit_bytes)
+            except (AttributeError, TypeError):
                 pass
 
             model_name = new_name
