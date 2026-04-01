@@ -15,6 +15,9 @@ from mlx_lm import load, generate
 
 from mlx_flash_compress.hardware import detect_hardware
 from mlx_flash_compress.memory_manager import get_memory_state
+from mlx_flash_compress.web_search import (
+    web_search, format_search_results, build_search_context, MemoryStore,
+)
 
 
 # -- Model catalog --
@@ -131,12 +134,20 @@ def _pressure_color(level: str) -> str:
 
 def print_help():
     print(f"\n  {c(C.BOLD, '📋 Commands')}")
-    print(f"  {c(C.CYAN, '/models')}   List available models with size info")
-    print(f"  {c(C.CYAN, '/model N')} Switch to model N (number or full name)")
-    print(f"  {c(C.CYAN, '/status')}   Show memory and session info")
-    print(f"  {c(C.CYAN, '/clear')}    Clear conversation history")
-    print(f"  {c(C.CYAN, '/help')}     Show this help")
-    print(f"  {c(C.CYAN, '/quit')}     Exit")
+    print(f"  {c(C.BOLD, 'Models')}")
+    print(f"  {c(C.CYAN, '/models')}          List available models with size info")
+    print(f"  {c(C.CYAN, '/model N')}        Switch to model N (number or name)")
+    print(f"  {c(C.BOLD, 'Search & Memory')}")
+    print(f"  {c(C.CYAN, '/search <query>')} Search the web (DuckDuckGo)")
+    print(f"  {c(C.CYAN, '/ask <question>')} Search + auto-answer using results")
+    print(f"  {c(C.CYAN, '/remember <fact>')} Save a fact to persistent memory")
+    print(f"  {c(C.CYAN, '/memories')}       Show saved memories")
+    print(f"  {c(C.CYAN, '/forget N')}       Delete memory by number")
+    print(f"  {c(C.BOLD, 'Session')}")
+    print(f"  {c(C.CYAN, '/status')}          Show memory and session info")
+    print(f"  {c(C.CYAN, '/clear')}           Clear conversation history")
+    print(f"  {c(C.CYAN, '/help')}            Show this help")
+    print(f"  {c(C.CYAN, '/quit')}            Exit")
 
 
 def _fmt_prompt(tokenizer, messages):
@@ -201,11 +212,16 @@ def main():
     model_name = args.model
     model, tokenizer = load_model(model_name)
 
+    # Initialize memory store
+    memory_store = MemoryStore()
+    if memory_store.count() > 0:
+        print(f"  {c(C.BLUE, '🧠')} {memory_store.count()} memories loaded")
+
     messages = [{"role": "system", "content": args.system}]
     request_num = 0
     total_tokens = 0
 
-    print(f"\n  {c(C.DIM, 'Type a message to chat. /help for commands. /models to browse.')}")
+    print(f"\n  {c(C.DIM, 'Type a message to chat. /help for commands. /search for web.')}")
     print(c(C.DIM, "  " + "─" * 56))
 
     while True:
@@ -290,13 +306,116 @@ def main():
             print(f"  {c(C.GREEN, '✓')}  Conversation cleared")
             continue
 
+        # -- Web search --
+        if user_input.lower().startswith("/search "):
+            query = user_input[8:].strip()
+            if not query:
+                print(f"  {c(C.DIM, 'Usage: /search <query>')}")
+                continue
+            print(f"  {c(C.YELLOW, '🔍')} Searching: {c(C.BOLD, query)}...")
+            results = web_search(query)
+            for i, r in enumerate(results, 1):
+                print(f"  {c(C.CYAN, f'{i}.')} {c(C.BOLD, r.title)}")
+                if r.snippet:
+                    print(f"     {c(C.DIM, r.snippet[:120])}")
+                if r.url:
+                    print(f"     {c(C.BLUE, r.url)}")
+            print(f"\n  {c(C.DIM, 'Use /ask <question> to search + get an AI answer')}")
+            continue
+
+        # -- Search + auto-answer --
+        if user_input.lower().startswith("/ask "):
+            query = user_input[5:].strip()
+            if not query:
+                print(f"  {c(C.DIM, 'Usage: /ask <question>')}")
+                continue
+            print(f"  {c(C.YELLOW, '🔍')} Searching: {c(C.BOLD, query)}...")
+            results = web_search(query)
+            if results:
+                for i, r in enumerate(results[:3], 1):
+                    print(f"  {c(C.CYAN, f'{i}.')} {r.title}")
+                search_ctx = build_search_context(query, results)
+                # Inject search results as a system message
+                messages.append({"role": "system", "content": search_ctx})
+                messages.append({"role": "user", "content": query})
+                formatted = _fmt_prompt(tokenizer, messages)
+
+                print(f"\n  {c(C.MAGENTA, '◆ Assistant:')}", end=" ", flush=True)
+                t0 = time.monotonic()
+                output = generate(model, tokenizer, prompt=formatted,
+                                  max_tokens=args.max_tokens, verbose=False)
+                mx.synchronize()
+                elapsed = time.monotonic() - t0
+
+                tokens = len(tokenizer.encode(output))
+                tps = tokens / elapsed if elapsed > 0 else 0
+                request_num += 1
+                total_tokens += tokens
+                messages.append({"role": "assistant", "content": output})
+
+                print(output)
+                print(f"  {c(C.DIM, f'   [{tokens} tok, {tps:.0f} tok/s, {elapsed:.1f}s — with web context]')}")
+            else:
+                print(f"  {c(C.RED, '✗')}  No results found")
+            continue
+
+        # -- Remember --
+        if user_input.lower().startswith("/remember "):
+            fact = user_input[10:].strip()
+            if not fact:
+                print(f"  {c(C.DIM, 'Usage: /remember <fact>')}")
+                continue
+            idx = memory_store.add(fact)
+            print(f"  {c(C.BLUE, '🧠')} Saved memory #{idx}: {c(C.BOLD, fact)}")
+            continue
+
+        # -- List memories --
+        if user_input.lower() in ("/memories", "/memory", "/mem-list"):
+            mems = memory_store.list_all()
+            if not mems:
+                print(f"  {c(C.DIM, 'No memories saved. Use /remember <fact> to save one.')}")
+            else:
+                print(f"\n  {c(C.BOLD, '🧠 Saved Memories')}")
+                for i, m in enumerate(mems, 1):
+                    age = time.time() - m.timestamp
+                    if age < 3600:
+                        age_str = f"{age / 60:.0f}m ago"
+                    elif age < 86400:
+                        age_str = f"{age / 3600:.0f}h ago"
+                    else:
+                        age_str = f"{age / 86400:.0f}d ago"
+                    print(f"  {c(C.CYAN, f'{i}.')} {m.fact} {c(C.DIM, f'({age_str})')}")
+                print(f"\n  {c(C.DIM, 'Use /forget N to delete a memory')}")
+            continue
+
+        # -- Forget --
+        if user_input.lower().startswith("/forget "):
+            try:
+                idx = int(user_input[8:].strip()) - 1
+                mems = memory_store.list_all()
+                if 0 <= idx < len(mems):
+                    fact = mems[idx].fact
+                    memory_store.remove(idx)
+                    print(f"  {c(C.GREEN, '✓')}  Forgot: {fact}")
+                else:
+                    print(f"  {c(C.RED, '✗')}  Invalid number. Use /memories to see list.")
+            except ValueError:
+                print(f"  {c(C.DIM, 'Usage: /forget <number>')}")
+            continue
+
         # Memory check
         mem = get_memory_state()
         if mem.pressure_level == "critical":
             print(f"\n  {c(C.RED, '⚠  Memory pressure CRITICAL — may be slow')}")
 
         messages.append({"role": "user", "content": user_input})
-        formatted = _fmt_prompt(tokenizer, messages)
+
+        # Inject memories into context if any exist
+        prompt_messages = messages.copy()
+        mem_ctx = memory_store.build_context()
+        if mem_ctx:
+            prompt_messages.insert(1, {"role": "system", "content": mem_ctx})
+        formatted = _fmt_prompt(tokenizer, prompt_messages)
 
         # Generate
         print(f"\n  {c(C.MAGENTA, '◆ Assistant:')}", end=" ", flush=True)
