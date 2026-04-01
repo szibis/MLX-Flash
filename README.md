@@ -258,15 +258,149 @@ graph LR
 | **Warm-up demo** | `python -m mlx_flash_compress.demo_warmup` | Watch cache fill in real-time |
 | **Pressure test** | `python -m mlx_flash_compress.bench_memory_pressure` | Measure memory impact |
 
-### Integration
+### Integrations
 
-**LM Studio**: Start our server, then set custom endpoint to `http://localhost:8080/v1`
+All integrations start with running the server:
 
-**Ollama**: Run our server alongside Ollama — use ours for MoE models that benefit from expert caching.
+```bash
+# Install
+pip install mlx-flash
 
-**continue.dev / Cursor / Claude Code / any OpenAI SDK**: Point `api_base` to `http://localhost:8080/v1`
+# Start the server
+mlx-flash --port 8080 --preload
+```
 
-See `docs/integrations.md` for detailed setup for 18+ tools and `docs/getting-started.md` for quick start.
+<details>
+<summary><b>LM Studio</b></summary>
+
+1. Start MLX-Flash: `mlx-flash --port 8080 --preload`
+2. In LM Studio: **Settings** → **Server** → Add custom endpoint: `http://localhost:8080/v1`
+3. Select model: `local`
+4. Chat normally — LM Studio treats MLX-Flash as its backend
+
+</details>
+
+<details>
+<summary><b>Cursor</b></summary>
+
+1. Start MLX-Flash: `mlx-flash --port 8080 --preload`
+2. In Cursor: **Settings** → **Models** → **Add Model**
+   - Provider: `OpenAI Compatible`
+   - API Base: `http://localhost:8080/v1`
+   - API Key: `not-needed`
+   - Model: `local`
+
+</details>
+
+<details>
+<summary><b>Claude Code</b></summary>
+
+```bash
+# Terminal 1: Start server
+mlx-flash --port 8080 --preload
+
+# Terminal 2: Use with Claude Code
+export OPENAI_API_BASE=http://localhost:8080/v1
+export OPENAI_API_KEY=not-needed
+```
+
+Or add to `~/.claude/mcp_servers.json`:
+```json
+{
+  "mlx-flash": {
+    "command": "mlx-flash",
+    "args": ["--model", "mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit", "--port", "8080"]
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>Codex CLI</b></summary>
+
+```bash
+# Start server
+mlx-flash --port 8080 --preload
+
+# Use with Codex
+export OPENAI_API_BASE=http://localhost:8080/v1
+export OPENAI_API_KEY=not-needed
+codex "refactor this function"
+```
+
+</details>
+
+<details>
+<summary><b>Ollama (side-by-side)</b></summary>
+
+```bash
+# Ollama on default port (11434) for dense models
+ollama serve
+
+# MLX-Flash on 8080 for MoE models (better expert caching)
+mlx-flash --port 8080 --preload
+
+# Use Ollama for dense models, MLX-Flash for MoE models
+```
+
+</details>
+
+<details>
+<summary><b>continue.dev (VS Code / JetBrains)</b></summary>
+
+Add to `~/.continue/config.json`:
+```json
+{
+  "models": [{
+    "title": "Local MoE (MLX)",
+    "provider": "openai",
+    "model": "local",
+    "apiBase": "http://localhost:8080/v1",
+    "apiKey": "not-needed"
+  }]
+}
+```
+
+</details>
+
+<details>
+<summary><b>Open WebUI</b></summary>
+
+```bash
+mlx-flash --port 8080 --preload
+# In Open WebUI settings: Add connection → http://localhost:8080/v1
+```
+
+</details>
+
+<details>
+<summary><b>Python / OpenAI SDK</b></summary>
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8080/v1", api_key="not-needed")
+response = client.chat.completions.create(
+    model="local",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(response.choices[0].message.content)
+```
+
+</details>
+
+<details>
+<summary><b>Aider (AI pair programming)</b></summary>
+
+```bash
+mlx-flash --port 8080 --preload
+aider --openai-api-base http://localhost:8080/v1 --openai-api-key not-needed --model local
+```
+
+</details>
+
+> See [`docs/integrations.md`](docs/integrations.md) for 18+ detailed integration guides with streaming examples, health checks, and memory monitoring.
 
 ### Benchmark Suite
 
