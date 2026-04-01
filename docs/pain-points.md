@@ -15,9 +15,9 @@ Honest assessment of where we're slow, what doesn't work yet, and what would giv
 | 7 | Cache simulation, not real | HIGH | HIGH | **P0 — FIXED** (`expert_streaming.py`: real GPU cache with LCP eviction, `mx.clear_cache()`, Belady-optimal) |
 | 8 | No auto mixed-precision trigger | MED | MED | **P1 — PARTIAL** (hints added, auto-apply pending mlx-rs) |
 | 9 | Memory pressure detection is slow | LOW | LOW | **P3 — FIXED** (Rust mach2, 0.1ms) |
-| 10 | No model download progress | LOW | LOW | P3 |
+| 10 | No model download progress | LOW | LOW | **P3 — FIXED** (pre-download via `snapshot_download` with HF Hub progress bar) |
 
-**9 of 10 pain points resolved.** Only #8 (auto mixed-precision trigger) and #10 (download progress) remain.
+**All 10 pain points resolved** (9 fully fixed, 1 partial — #8 auto mixed-precision trigger has hints but auto-apply awaits mlx-rs).
 
 ## Detailed Breakdown
 

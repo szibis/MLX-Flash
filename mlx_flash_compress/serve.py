@@ -73,6 +73,20 @@ class InferenceState:
             print("  Continuing anyway...")
 
         print(f"\n  Loading model: {self.model_name}")
+
+        # Pre-download with progress if not cached locally
+        if not os.path.isdir(self.model_name):
+            try:
+                from huggingface_hub import snapshot_download
+                print("  Downloading model files (with progress)...")
+                snapshot_download(
+                    self.model_name,
+                    allow_patterns=["*.safetensors", "*.json", "tokenizer*"],
+                )
+                print("  Download complete.")
+            except Exception:
+                pass  # mlx_lm.load will handle download as fallback
+
         t0 = time.monotonic()
         self.model, self.tokenizer = load(self.model_name)
         mx.synchronize()
