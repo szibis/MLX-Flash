@@ -84,6 +84,7 @@
   .msg-meta .pressure-normal { background: rgba(45,212,168,0.1); color: var(--green); }
   .msg-meta .pressure-warning { background: rgba(251,191,36,0.1); color: var(--yellow); }
   .msg-meta .pressure-critical { background: rgba(239,68,68,0.1); color: var(--red); }
+  .msg-meta .meta-savings { color: var(--green); font-weight: 500; }
 
   .input-area { flex-shrink: 0; border-top: 1px solid var(--border); padding: 16px 24px; background: var(--surface); }
   .input-wrap { max-width: 800px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
@@ -141,6 +142,7 @@
       <span class="tok-counter" id="gen-tokens">0 tok</span>
       <span class="mem-indicator" id="gen-mem"></span>
     </div>
+    <span id="total-savings" style="color:var(--green);font-weight:500"></span>
     <span style="margin-left:auto" id="mem-info"></span>
   </div>
 </div>
@@ -148,6 +150,25 @@
 <script>
 let messages = [];
 let generating = false;
+
+// Cost calculator — what this conversation would cost on cloud APIs
+// Prices per 1M tokens (output) as of April 2026
+const API_PRICES = {
+  'claude-sonnet': {name: 'Claude Sonnet', per1M: 15.0},
+  'claude-opus': {name: 'Claude Opus', per1M: 75.0},
+  'gpt-4o': {name: 'GPT-4o', per1M: 10.0},
+  'gpt-4-turbo': {name: 'GPT-4 Turbo', per1M: 30.0},
+};
+let totalTokensSession = 0;
+try { totalTokensSession = parseInt(localStorage.getItem('mlx-flash-total-tokens') || '0'); } catch(e) {}
+function calcSavings(tokens) {
+  const cost = tokens / 1000000 * API_PRICES['claude-sonnet'].per1M;
+  return cost;
+}
+function formatSavings(cost) {
+  if (cost < 0.01) return '<$0.01';
+  return '$' + cost.toFixed(2);
+}
 
 const textarea = document.getElementById('input');
 const sendBtn = document.getElementById('send');
@@ -202,6 +223,10 @@ function setMessageMeta(msgIdx, meta) {
   if (meta.pressure && meta.pressure !== 'Normal') {
     const cls = meta.pressure === 'Critical' ? 'pressure-critical' : 'pressure-warning';
     html += '<span class="meta-item"><span class="meta-pressure ' + cls + '">' + meta.pressure + '</span></span>';
+  }
+  if (meta.tokens && meta.tokens > 0) {
+    const saved = calcSavings(meta.tokens);
+    html += '<span class="meta-item"><span class="meta-savings">saved ' + formatSavings(saved) + '</span></span>';
   }
   el.innerHTML = html;
 }
@@ -494,6 +519,11 @@ async function sendMessage() {
 
     aiEl.innerHTML = formatContent(fullText);
     messages[messages.length-1].content = fullText;
+    // Track cumulative tokens for savings calculator
+    if (respTokens > 0) {
+      totalTokensSession += respTokens;
+      try { localStorage.setItem('mlx-flash-total-tokens', totalTokensSession.toString()); } catch(e) {}
+    }
     saveSession();
 
     // Get current model + pressure for metadata bar
@@ -596,6 +626,11 @@ async function updateStatus() {
     const avail = Math.max((mem.free_gb||0)+(mem.inactive_gb||0)*0.5, 0);
     const pressure = (mem.pressure||'Normal').toString();
     document.getElementById('mem-info').textContent = avail.toFixed(1)+'GB free / '+((mem.total_gb||0).toFixed(0))+'GB';
+    // Cumulative savings
+    if (totalTokensSession > 0) {
+      const totalSaved = calcSavings(totalTokensSession);
+      document.getElementById('total-savings').textContent = 'saved ' + formatSavings(totalSaved) + ' vs Claude API';
+    }
     // Update pressure banner (visible even when not generating)
     if (!generating) updatePressureBanner(pressure, avail.toFixed(1), mem.swap_used_gb||0);
   } catch(e) {}

@@ -97,7 +97,7 @@
 <div class="grid">
 
   <!-- Row 1: Key stats -->
-  <div class="card span2">
+  <div class="card">
     <div class="card-label">Model</div>
     <div class="card-sm" id="model">loading...</div>
     <div class="card-sub" id="model-sub"></div>
@@ -117,6 +117,11 @@
     <div class="card-label">Tokens</div>
     <div class="card-value" id="tokens"><span class="accent">0</span></div>
     <div class="card-sub"><span id="tok-rate">0</span> tok/s</div>
+  </div>
+  <div class="card">
+    <div class="card-label">Saved vs Cloud</div>
+    <div class="card-value" id="savings"><span class="green">$0</span></div>
+    <div class="card-sub">vs Claude Sonnet API ($15/1M tok)</div>
   </div>
   <div class="card">
     <div class="card-label">Pressure</div>
@@ -396,6 +401,9 @@ async function poll() {
     document.getElementById('tokens').innerHTML = '<span class="accent">'+tok.toLocaleString()+'</span>';
     document.getElementById('requests').textContent = req.toLocaleString();
     document.getElementById('tok-rate').textContent = tps > 0 ? tps.toFixed(1) : '0';
+    // Savings vs Claude Sonnet ($15/1M tokens)
+    const savedDollars = tok / 1000000 * 15.0;
+    document.getElementById('savings').innerHTML = '<span class="green">$' + (savedDollars < 0.01 ? '0.00' : savedDollars.toFixed(2)) + '</span>';
     document.getElementById('req-rate').textContent = rps > 0 ? rps.toFixed(2) : '0';
     document.getElementById('tps-chart-val').textContent = tps > 0 ? tps.toFixed(1) : '0';
     document.getElementById('uptime').textContent = fmtTime(stats.uptime_secs||0);
