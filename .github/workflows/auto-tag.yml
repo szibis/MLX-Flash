@@ -1,0 +1,61 @@
+name: Auto-Tag Release
+
+# Triggers when a PR is merged to main that changes the version
+on:
+  push:
+    branches: [main]
+    paths:
+      - "pyproject.toml"
+
+permissions:
+  contents: write
+
+jobs:
+  auto-tag:
+    name: Create tag if version changed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # need previous commit to detect change
+
+      - name: Check if version changed
+        id: version
+        run: |
+          # Get current version from pyproject.toml
+          CURRENT=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "current=${CURRENT}" >> $GITHUB_OUTPUT
+
+          # Get previous version
+          PREVIOUS=$(git show HEAD~1:pyproject.toml 2>/dev/null | grep '^version = ' | head -1 | sed 's/version = "\(.*\)"/\1/' || echo "")
+          echo "previous=${PREVIOUS}" >> $GITHUB_OUTPUT
+
+          if [ "$CURRENT" != "$PREVIOUS" ] && [ -n "$CURRENT" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "Version changed: ${PREVIOUS} → ${CURRENT}"
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "Version unchanged: ${CURRENT}"
+          fi
+
+      - name: Check tag doesn't exist
+        if: steps.version.outputs.changed == 'true'
+        id: check_tag
+        run: |
+          TAG="v${{ steps.version.outputs.current }}"
+          if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag ${TAG} already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create and push tag
+        if: steps.version.outputs.changed == 'true' && steps.check_tag.outputs.exists == 'false'
+        run: |
+          TAG="v${{ steps.version.outputs.current }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${TAG}"
+          echo "Tagged ${TAG} — release workflow will trigger automatically"

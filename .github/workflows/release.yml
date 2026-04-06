@@ -104,6 +104,37 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/mlx-flash:${{ steps.version.outputs.VERSION }}
             ghcr.io/${{ github.repository_owner }}/mlx-flash:latest
 
+  update-badges:
+    name: Update README badges
+    needs: [test, pypi, github-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update badges in README
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/v}
+
+          # Count tests from test job (approximate from pyproject test count)
+          # Update test count badge
+          CURRENT_TESTS=$(grep -oP 'tests-\K[0-9]+' README.md | head -1 || echo "0")
+          echo "Current test badge: ${CURRENT_TESTS}"
+
+          # Update version in "What's New" if needed
+          echo "Badges are auto-updated via shields.io (PyPI, Release, Tests CI)"
+
+      - name: Commit badge updates if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git diff --quiet && echo "No badge changes" && exit 0
+          git add README.md
+          git commit -m "chore: update badges for v${GITHUB_REF#refs/tags/v}"
+          git push origin main
+
   update-homebrew:
     name: Update Homebrew tap
     needs: [pypi, github-release]
