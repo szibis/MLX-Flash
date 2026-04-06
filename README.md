@@ -227,31 +227,61 @@ mlx-flash --port 8080 --preload
 </details>
 
 <details>
-<summary><b>Claude Code</b></summary>
+<summary><b>Claude Code (MCP — native tool integration)</b></summary>
 
-```bash
-# Terminal 1: Start server
-mlx-flash --port 8080 --preload
+**Recommended: MCP mode** — Claude Code discovers tools automatically:
 
-# Terminal 2: Use with Claude Code
-export OPENAI_API_BASE=http://localhost:8080/v1
-export OPENAI_API_KEY=not-needed
-```
-
-Or add to `~/.claude/.mcp.json`:
+Add to `~/.claude/mcp.json`:
 ```json
 {
-  "mlx-flash": {
-    "command": "mlx-flash",
-    "args": ["--model", "mlx-community/Qwen3-30B-A3B-4bit", "--port", "8080"]
+  "mcpServers": {
+    "mlx-flash": {
+      "command": "python",
+      "args": ["-m", "mlx_flash_compress.mcp_server"]
+    }
   }
 }
+```
+
+Or with the Rust sidecar (faster memory checks):
+```json
+{
+  "mcpServers": {
+    "mlx-flash": {
+      "command": "mlx-flash-server",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+Claude Code gets 6 tools: `generate`, `check_memory`, `switch_model`, `release_memory`, `list_models`, `get_status`.
+
+**Alternative: OpenAI-compatible API mode:**
+```bash
+mlx-flash --port 8080 --preload
+export OPENAI_API_BASE=http://localhost:8080/v1
+export OPENAI_API_KEY=not-needed
 ```
 
 </details>
 
 <details>
-<summary><b>Codex CLI</b></summary>
+<summary><b>Codex CLI (MCP or API)</b></summary>
+
+**MCP mode** (same config as Claude Code):
+```json
+{
+  "mcpServers": {
+    "mlx-flash": {
+      "command": "python",
+      "args": ["-m", "mlx_flash_compress.mcp_server"]
+    }
+  }
+}
+```
+
+**API mode:**
 
 ```bash
 mlx-flash --port 8080 --preload
