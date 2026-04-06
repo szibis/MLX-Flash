@@ -178,12 +178,14 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     <div class="hints" id="hints"></div>
   </div>
   <div class="card span3">
-    <div class="card-label">Cache</div>
-    <div style="display:flex;gap:20px;align-items:baseline">
-      <div><span class="card-value" id="cache-hit" style="font-size:1.5rem"><span class="green">--%</span></span><div class="card-sub">hit rate</div></div>
-      <div><span class="card-sm" id="cache-entries" style="color:var(--orange)">0</span><div class="card-sub">entries</div></div>
+    <div class="card-label">Cache <span id="cache-status" style="float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--dim)"></span></div>
+    <div id="cache-panel">
+      <div style="display:flex;gap:20px;align-items:baseline">
+        <div><span class="card-value" id="cache-hit" style="font-size:1.5rem"><span class="dim">N/A</span></span><div class="card-sub">hit rate</div></div>
+        <div><span class="card-sm" id="cache-entries" style="color:var(--orange)">—</span><div class="card-sub">entries</div></div>
+      </div>
+      <div class="bar"><div class="bar-fill bg-green" id="cache-bar" style="width:0%"></div></div>
     </div>
-    <div class="bar"><div class="bar-fill bg-green" id="cache-bar" style="width:0%"></div></div>
   </div>
 
   <!-- Row 5: Live Logs -->
@@ -370,7 +372,11 @@ async function poll() {
     document.getElementById('swap').textContent = (mem.swap_used_gb||0).toFixed(1);
 
     // Requests + Tokens + Rates
-    const tok = stats.tokens_generated || 0;
+    // Use Python worker aggregated tokens if Rust counter is 0 (pre-fix requests)
+    let tok = stats.tokens_generated || 0;
+    if (tok === 0 && workerPyStatus) {
+      tok = Object.values(workerPyStatus).reduce((sum, w) => sum + (w.tokens || 0), 0);
+    }
     const req = stats.requests || 0;
     const now = Date.now(), dt = (now - lastT) / 1000;
     const tps = dt > 0 ? Math.max((tok - lastTok) / dt, 0) : 0;
@@ -385,12 +391,18 @@ async function poll() {
 
     // Cache
     if (cache && !cache.error) {
+      document.getElementById('cache-status').textContent = 'active';
+      document.getElementById('cache-status').style.color = 'var(--green)';
       const hits = (cache.hot_hits||0)+(cache.warm_hits||0);
       const t = hits+(cache.cold_hits||0);
       const hr = t > 0 ? hits/t*100 : 0;
       document.getElementById('cache-hit').innerHTML = '<span class="green">'+hr.toFixed(0)+'%</span>';
       document.getElementById('cache-bar').style.width = hr+'%';
       document.getElementById('cache-entries').textContent = (cache.cached_experts||0);
+    } else {
+      document.getElementById('cache-status').textContent = 'not enabled (start with --expert-dir)';
+      document.getElementById('cache-hit').innerHTML = '<span class="dim">N/A</span>';
+      document.getElementById('cache-entries').textContent = '—';
     }
 
     // Hints
