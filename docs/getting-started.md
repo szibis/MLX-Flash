@@ -85,6 +85,49 @@ flowchart LR
     F --> G[python -m mlx_flash_compress.serve]
 ```
 
+## Running the Server
+
+The Rust binary is a single entry point that manages everything:
+
+```bash
+# Simplest — auto-selects model, launches Python worker, serves on :8080
+mlx-flash-server --port 8080
+
+# Specify model + number of workers
+mlx-flash-server --port 8080 --model mlx-community/Qwen3-30B-A3B-4bit --workers 2
+
+# With model preloading (loads into GPU before accepting requests)
+mlx-flash-server --port 8080 --model mlx-community/Qwen3-30B-A3B-4bit --preload
+
+# JSON structured logs + file output
+mlx-flash-server --port 8080 --log-format json --log-file /var/log/mlx-flash.log
+
+# Connect to existing Python worker (don't launch one)
+mlx-flash-server --port 8080 --no-launch-worker --python-port 8081
+```
+
+**What happens on startup:**
+1. Auto-detects Python venv (`.venv*/` in project, `VIRTUAL_ENV` env, or system `python3`)
+2. Verifies `mlx_flash_compress` is importable (clear error if not installed)
+3. Launches N Python workers on ports `8081-808N`
+4. Health-checks each worker until ready (up to 15s, or 120s with `--preload`)
+5. Starts Rust proxy on `:8080` — routes requests to workers
+6. Background health checker every 10s — auto-restarts dead workers
+
+**Monitoring:**
+- Dashboard: http://localhost:8080/admin (live charts, worker management, logs)
+- Chat: http://localhost:8080/chat
+- Metrics: http://localhost:8080/metrics (Prometheus format)
+- Grafana: `docker compose --profile monitoring up -d` → http://localhost:3000
+
+**Worker management (no restart needed):**
+```bash
+curl -X POST http://localhost:8080/v1/models/switch -d '{"model":"mlx-community/Qwen3-8B-4bit"}'
+curl -X POST http://localhost:8080/workers/restart -d '{"port":8081}'
+curl -X POST http://localhost:8080/reload
+curl -X POST http://localhost:8080/shutdown
+```
+
 ## Configuration
 
 ### Quick: Environment variables

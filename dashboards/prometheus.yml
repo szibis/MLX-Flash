@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: 'mlx-flash-rust'
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+        labels:
+          component: 'rust-proxy'
+
+  - job_name: 'mlx-flash-python'
+    static_configs:
+      - targets: ['host.docker.internal:8081']
+        labels:
+          component: 'python-worker-1'

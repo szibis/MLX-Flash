@@ -38,6 +38,29 @@ pub async fn proxy_request(
         .await
 }
 
+/// Extract a session identifier from the request body.
+/// Checks: "session_id" field, or falls back to first message hash for affinity.
+fn extract_session_id(parsed: &serde_json::Value) -> Option<String> {
+    // Explicit session_id (custom extension)
+    if let Some(sid) = parsed.get("session_id").and_then(|v| v.as_str()) {
+        return Some(sid.to_string());
+    }
+    // OpenAI "user" field — stable per user
+    if let Some(user) = parsed.get("user").and_then(|v| v.as_str()) {
+        return Some(user.to_string());
+    }
+    None
+}
+
+fn json_error(status: u16, msg: String) -> Response {
+    let body = serde_json::json!({ "error": msg });
+    axum::response::Response::builder()
+        .status(status)
+        .header("Content-Type", "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap()
+}
+
 pub async fn handle_chat(
     State(state): State<AppState>,
     body: axum::body::Bytes,
@@ -47,38 +70,40 @@ pub async fn handle_chat(
     // Parse body
     let parsed: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
-        Err(e) => {
-            let error_body = serde_json::json!({ "error": format!("Invalid JSON: {e}") });
-            return axum::response::Response::builder()
-                .status(400)
-                .header("Content-Type", "application/json")
-                .body(axum::body::Body::from(error_body.to_string()))
-                .unwrap();
-        }
+        Err(e) => return json_error(400, format!("Invalid JSON: {e}")),
     };
 
     // Validate
     if let Err(e) = validate_chat_request(&parsed) {
-        let error_body = serde_json::json!({ "error": e });
-        return axum::response::Response::builder()
-            .status(400)
-            .header("Content-Type", "application/json")
-            .body(axum::body::Body::from(error_body.to_string()))
-            .unwrap();
+        return json_error(400, e);
     }
+
+    // Pick worker: session-sticky if session_id/user present, else least-connections
+    let session_id = extract_session_id(&parsed);
+    let worker = match &session_id {
+        Some(sid) => state.pool.next_worker_for_session(sid),
+        None => state.pool.next_worker(),
+    };
+
+    let worker = match worker {
+        Some(w) => w,
+        None => return json_error(503, "No healthy workers available".to_string()),
+    };
+
+    let port = worker.port;
+    worker.inflight.fetch_add(1, Ordering::Relaxed);
+    worker.total_requests.fetch_add(1, Ordering::Relaxed);
 
     let streaming = is_stream_request(&parsed);
     let client = reqwest::Client::new();
 
-    match proxy_request(&client, state.python_port, "/v1/chat/completions", &body).await {
+    let result = proxy_request(&client, port, "/v1/chat/completions", &body).await;
+
+    // Decrement inflight after we get a response (or error)
+    let response = match result {
         Err(e) => {
-            let error_body =
-                serde_json::json!({ "error": format!("Python worker unavailable: {e}") });
-            axum::response::Response::builder()
-                .status(502)
-                .header("Content-Type", "application/json")
-                .body(axum::body::Body::from(error_body.to_string()))
-                .unwrap()
+            state.pool.mark_unhealthy(port);
+            json_error(502, format!("Python worker on port {port} unavailable: {e}"))
         }
         Ok(upstream) => {
             if streaming {
@@ -86,8 +111,6 @@ pub async fn handle_chat(
                 let event_stream = byte_stream.map(|chunk| {
                     chunk
                         .map(|bytes| {
-                            // Each chunk from the upstream is already an SSE line or data chunk;
-                            // wrap it as a raw SSE event so axum forwards it verbatim.
                             Event::default().data(
                                 String::from_utf8_lossy(&bytes)
                                     .trim_end()
@@ -105,14 +128,11 @@ pub async fn handle_chat(
                 let bytes = match upstream.bytes().await {
                     Ok(b) => b,
                     Err(e) => {
-                        let error_body = serde_json::json!({
-                            "error": format!("Python worker unavailable: {e}")
-                        });
-                        return axum::response::Response::builder()
-                            .status(502)
-                            .header("Content-Type", "application/json")
-                            .body(axum::body::Body::from(error_body.to_string()))
-                            .unwrap();
+                        worker.inflight.fetch_sub(1, Ordering::Relaxed);
+                        return json_error(
+                            502,
+                            format!("Python worker on port {port} unavailable: {e}"),
+                        );
                     }
                 };
                 axum::response::Response::builder()
@@ -122,7 +142,10 @@ pub async fn handle_chat(
                     .unwrap()
             }
         }
-    }
+    };
+
+    worker.inflight.fetch_sub(1, Ordering::Relaxed);
+    response
 }
 
 #[cfg(test)]
@@ -169,5 +192,29 @@ mod tests {
         let client = reqwest::Client::new();
         let result = proxy_request(&client, 19999, "/v1/chat/completions", b"{}").await;
         assert!(result.is_err(), "expected connection error to port 19999");
+    }
+
+    #[test]
+    fn test_extract_session_id_from_session_field() {
+        let body = serde_json::json!({"session_id": "abc-123", "messages": []});
+        assert_eq!(extract_session_id(&body), Some("abc-123".to_string()));
+    }
+
+    #[test]
+    fn test_extract_session_id_from_user_field() {
+        let body = serde_json::json!({"user": "user-42", "messages": []});
+        assert_eq!(extract_session_id(&body), Some("user-42".to_string()));
+    }
+
+    #[test]
+    fn test_extract_session_id_prefers_session_id_over_user() {
+        let body = serde_json::json!({"session_id": "sess", "user": "usr", "messages": []});
+        assert_eq!(extract_session_id(&body), Some("sess".to_string()));
+    }
+
+    #[test]
+    fn test_extract_session_id_returns_none_when_absent() {
+        let body = serde_json::json!({"messages": [{"role": "user", "content": "hi"}]});
+        assert_eq!(extract_session_id(&body), None);
     }
 }

@@ -1,35 +1,42 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+use tokio::sync::RwLock;
 
-use axum::{Router, extract::State, routing::get};
+use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use axum::http::Method;
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::cache::LcpCache;
+use crate::log_buffer::LogBuffer;
 use crate::memory;
 use crate::proxy;
+use crate::worker_pool::WorkerPool;
 
 #[derive(Clone)]
 pub struct AppState {
     pub python_port: u16,
-    pub model_name: String,
+    pub model_name: Arc<RwLock<String>>,
     pub start_time: Instant,
     pub request_count: Arc<AtomicU64>,
     pub tokens_generated: Arc<AtomicU64>,
     pub cache: Option<Arc<LcpCache>>,
+    pub pool: Arc<WorkerPool>,
+    pub log_buffer: LogBuffer,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             python_port: 8081,
-            model_name: "local".to_string(),
+            model_name: Arc::new(RwLock::new("local".to_string())),
             start_time: Instant::now(),
             request_count: Arc::new(AtomicU64::new(0)),
             tokens_generated: Arc::new(AtomicU64::new(0)),
             cache: None,
+            pool: Arc::new(WorkerPool::single(8081)),
+            log_buffer: LogBuffer::new(),
         }
     }
 }
@@ -41,6 +48,8 @@ pub fn create_router(state: AppState) -> Router {
         .allow_headers(Any);
 
     Router::new()
+        .route("/admin", get(crate::dashboard::serve_dashboard))
+        .route("/chat", get(crate::chat_ui::serve_chat))
         .route("/status", get(handle_status))
         .route("/health", get(handle_status))
         .route("/hints", get(handle_hints))
@@ -48,6 +57,13 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/models", get(handle_models))
         .route("/v1/chat/completions", axum::routing::post(proxy::handle_chat))
         .route("/cache/stats", get(handle_cache_stats))
+        .route("/workers", get(handle_workers))
+        .route("/v1/models/switch", axum::routing::post(handle_model_switch))
+        .route("/metrics", get(handle_metrics))
+        .route("/logs/recent", get(handle_logs_recent))
+        .route("/reload", axum::routing::post(handle_reload))
+        .route("/shutdown", axum::routing::post(handle_shutdown))
+        .route("/workers/restart", axum::routing::post(handle_workers_restart))
         .with_state(state)
         .layer(cors)
 }
@@ -61,15 +77,17 @@ async fn handle_status(State(state): State<AppState>) -> axum::Json<Value> {
     };
 
     let uptime_secs = state.start_time.elapsed().as_secs_f64();
+    let model_name = state.model_name.read().await.clone();
 
     axum::Json(json!({
-        "model": state.model_name,
+        "model": model_name,
         "memory": memory,
         "stats": {
             "requests": state.request_count.load(Ordering::Relaxed),
             "tokens_generated": state.tokens_generated.load(Ordering::Relaxed),
             "uptime_secs": uptime_secs,
         },
+        "workers": state.pool.status(),
         "optimization_hints": memory::get_memory_state()
             .map(|m| serde_json::to_value(m.optimization_hints()).unwrap_or(json!([])))
             .unwrap_or(json!([])),
@@ -97,15 +115,402 @@ async fn handle_release(State(state): State<AppState>) -> axum::Json<Value> {
 
 async fn handle_models(State(state): State<AppState>) -> axum::Json<Value> {
     state.request_count.fetch_add(1, Ordering::Relaxed);
+    let model_name = state.model_name.read().await.clone();
 
     axum::Json(json!({
         "data": [
             {
-                "id": state.model_name,
+                "id": model_name,
                 "object": "model",
                 "owned_by": "mlx-flash-compress",
             }
         ]
+    }))
+}
+
+async fn handle_workers(State(state): State<AppState>) -> axum::Json<Value> {
+    let mut status = state.pool.status();
+    // Add session details
+    let sessions = state.pool.session_details();
+    status["sessions_active"] = json!(state.pool.session_count());
+    status["sessions"] = sessions;
+    axum::Json(status)
+}
+
+async fn handle_model_switch(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::Json<Value> {
+    // Parse request
+    let parsed: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return axum::Json(json!({
+                "error": format!("Invalid JSON: {e}"),
+            }));
+        }
+    };
+
+    let new_model = match parsed.get("model").and_then(|v| v.as_str()) {
+        Some(m) => m.to_string(),
+        None => {
+            return axum::Json(json!({
+                "error": "Missing required field: model",
+                "usage": {"model": "mlx-community/Qwen3-8B-4bit"},
+            }));
+        }
+    };
+
+    let old_model = state.model_name.read().await.clone();
+
+    // Forward switch request to all healthy workers
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300)) // model loading can be slow
+        .build()
+        .unwrap();
+
+    let mut successes = 0;
+    let mut failures = Vec::new();
+
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/switch");
+        let switch_body = serde_json::json!({"model": &new_model}).to_string();
+        match client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(switch_body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                successes += 1;
+            }
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                failures.push(json!({"port": port, "status": status, "error": body}));
+                state.pool.mark_unhealthy(port);
+            }
+            Err(e) => {
+                failures.push(json!({"port": port, "error": format!("{e}")}));
+                state.pool.mark_unhealthy(port);
+            }
+        }
+    }
+
+    // Update model name if at least one worker succeeded
+    if successes > 0 {
+        *state.model_name.write().await = new_model.clone();
+    }
+
+    axum::Json(json!({
+        "switched": successes > 0,
+        "model": if successes > 0 { &new_model } else { &old_model },
+        "previous": old_model,
+        "workers_updated": successes,
+        "workers_failed": failures.len(),
+        "failures": failures,
+    }))
+}
+
+async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(4096);
+
+    let model_name = state.model_name.read().await.clone();
+    let uptime = state.start_time.elapsed().as_secs_f64();
+    let requests = state.request_count.load(Ordering::Relaxed);
+    let tokens = state.tokens_generated.load(Ordering::Relaxed);
+
+    // -- Server info --
+    let _ = write!(out, "# HELP mlx_flash_info Server metadata.\n");
+    let _ = write!(out, "# TYPE mlx_flash_info gauge\n");
+    let _ = write!(out, "mlx_flash_info{{model=\"{model_name}\"}} 1\n\n");
+
+    let _ = write!(out, "# HELP mlx_flash_uptime_seconds Time since server start.\n");
+    let _ = write!(out, "# TYPE mlx_flash_uptime_seconds gauge\n");
+    let _ = write!(out, "mlx_flash_uptime_seconds {uptime:.1}\n\n");
+
+    // -- Request counters --
+    let _ = write!(out, "# HELP mlx_flash_requests_total Total inference requests.\n");
+    let _ = write!(out, "# TYPE mlx_flash_requests_total counter\n");
+    let _ = write!(out, "mlx_flash_requests_total {requests}\n\n");
+
+    let _ = write!(out, "# HELP mlx_flash_tokens_generated_total Total tokens generated.\n");
+    let _ = write!(out, "# TYPE mlx_flash_tokens_generated_total counter\n");
+    let _ = write!(out, "mlx_flash_tokens_generated_total {tokens}\n\n");
+
+    // -- Memory (macOS vm_statistics64) --
+    if let Ok(mem) = memory::get_memory_state() {
+        let total = mem.total_gb * 1073741824.0;
+        let free = mem.free_gb * 1073741824.0;
+        let active = mem.active_gb * 1073741824.0;
+        let inactive = mem.inactive_gb * 1073741824.0;
+        let wired = mem.wired_gb * 1073741824.0;
+        let compressed = mem.compressed_gb * 1073741824.0;
+        let swap = mem.swap_used_gb * 1073741824.0;
+        let available = mem.available_gb() * 1073741824.0;
+        let used_ratio = if mem.total_gb > 0.0 { 1.0 - mem.available_gb() / mem.total_gb } else { 0.0 };
+        let pressure_val = match mem.pressure {
+            memory::PressureLevel::Normal => 0,
+            memory::PressureLevel::Warning => 1,
+            memory::PressureLevel::Critical => 2,
+        };
+
+        let _ = write!(out, "# HELP mlx_flash_memory_total_bytes Total physical RAM.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_total_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_total_bytes {total:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_free_bytes Free (unused) RAM.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_free_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_free_bytes {free:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_available_bytes Usable RAM (free + 50% inactive).\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_available_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_available_bytes {available:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_active_bytes Active pages.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_active_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_active_bytes {active:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_inactive_bytes Inactive pages (reclaimable).\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_inactive_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_inactive_bytes {inactive:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_wired_bytes Wired (non-evictable) pages.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_wired_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_wired_bytes {wired:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_compressed_bytes Compressed pages.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_compressed_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_compressed_bytes {compressed:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_swap_used_bytes Swap space in use.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_swap_used_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_swap_used_bytes {swap:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_used_ratio Fraction of RAM in use (0-1).\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_used_ratio gauge\n");
+        let _ = write!(out, "mlx_flash_memory_used_ratio {used_ratio:.4}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_pressure macOS memory pressure (0=normal, 1=warning, 2=critical).\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_pressure gauge\n");
+        let _ = write!(out, "mlx_flash_memory_pressure {pressure_val}\n\n");
+    }
+
+    // -- Worker pool --
+    let _ = write!(out, "# HELP mlx_flash_workers_total Total workers in pool.\n");
+    let _ = write!(out, "# TYPE mlx_flash_workers_total gauge\n");
+    let _ = write!(out, "mlx_flash_workers_total {}\n\n", state.pool.len());
+
+    let _ = write!(out, "# HELP mlx_flash_workers_healthy Number of healthy workers.\n");
+    let _ = write!(out, "# TYPE mlx_flash_workers_healthy gauge\n");
+    let _ = write!(out, "mlx_flash_workers_healthy {}\n\n", state.pool.healthy_count());
+
+    let _ = write!(out, "# HELP mlx_flash_worker_inflight Current in-flight requests per worker.\n");
+    let _ = write!(out, "# TYPE mlx_flash_worker_inflight gauge\n");
+    let _ = write!(out, "# HELP mlx_flash_worker_requests_total Total requests served per worker.\n");
+    let _ = write!(out, "# TYPE mlx_flash_worker_requests_total counter\n");
+    let _ = write!(out, "# HELP mlx_flash_worker_healthy Whether worker is healthy (1) or not (0).\n");
+    let _ = write!(out, "# TYPE mlx_flash_worker_healthy gauge\n");
+
+    let pool_status = state.pool.status();
+    if let Some(workers) = pool_status["workers"].as_array() {
+        for w in workers {
+            let port = w["port"].as_u64().unwrap_or(0);
+            let inflight = w["inflight"].as_u64().unwrap_or(0);
+            let total_req = w["total_requests"].as_u64().unwrap_or(0);
+            let healthy = if w["healthy"].as_bool().unwrap_or(false) { 1 } else { 0 };
+            let _ = write!(out, "mlx_flash_worker_inflight{{worker=\"{port}\"}} {inflight}\n");
+            let _ = write!(out, "mlx_flash_worker_requests_total{{worker=\"{port}\"}} {total_req}\n");
+            let _ = write!(out, "mlx_flash_worker_healthy{{worker=\"{port}\"}} {healthy}\n");
+        }
+        let _ = write!(out, "\n");
+    }
+
+    let _ = write!(out, "# HELP mlx_flash_sessions_active Active sticky sessions.\n");
+    let _ = write!(out, "# TYPE mlx_flash_sessions_active gauge\n");
+    let _ = write!(out, "mlx_flash_sessions_active {}\n\n", state.pool.session_count());
+
+    // -- Cache --
+    if let Some(ref cache) = state.cache {
+        let stats = cache.stats();
+        if let Ok(cs) = serde_json::to_value(&stats) {
+            let hits = cs["hot_hits"].as_u64().unwrap_or(0) + cs["warm_hits"].as_u64().unwrap_or(0);
+            let misses = cs["cold_hits"].as_u64().unwrap_or(0);
+            let total_cache = hits + misses;
+            let hit_ratio = if total_cache > 0 { hits as f64 / total_cache as f64 } else { 0.0 };
+            let entries = cs["cached_experts"].as_u64().unwrap_or(0);
+
+            let _ = write!(out, "# HELP mlx_flash_cache_hits_total Cache hits (hot+warm).\n");
+            let _ = write!(out, "# TYPE mlx_flash_cache_hits_total counter\n");
+            let _ = write!(out, "mlx_flash_cache_hits_total {hits}\n\n");
+
+            let _ = write!(out, "# HELP mlx_flash_cache_misses_total Cache misses (cold).\n");
+            let _ = write!(out, "# TYPE mlx_flash_cache_misses_total counter\n");
+            let _ = write!(out, "mlx_flash_cache_misses_total {misses}\n\n");
+
+            let _ = write!(out, "# HELP mlx_flash_cache_hit_ratio Cache hit ratio (0-1).\n");
+            let _ = write!(out, "# TYPE mlx_flash_cache_hit_ratio gauge\n");
+            let _ = write!(out, "mlx_flash_cache_hit_ratio {hit_ratio:.4}\n\n");
+
+            let _ = write!(out, "# HELP mlx_flash_cache_entries Cached expert count.\n");
+            let _ = write!(out, "# TYPE mlx_flash_cache_entries gauge\n");
+            let _ = write!(out, "mlx_flash_cache_entries {entries}\n\n");
+        }
+    }
+
+    // -- Per-worker Python status (proxied from each worker's /status) --
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap();
+
+    let _ = write!(out, "# HELP mlx_flash_python_worker_tokens_total Tokens generated by Python worker.\n");
+    let _ = write!(out, "# TYPE mlx_flash_python_worker_tokens_total counter\n");
+    let _ = write!(out, "# HELP mlx_flash_python_worker_requests_total Requests handled by Python worker.\n");
+    let _ = write!(out, "# TYPE mlx_flash_python_worker_requests_total counter\n");
+    let _ = write!(out, "# HELP mlx_flash_python_worker_uptime_seconds Python worker uptime.\n");
+    let _ = write!(out, "# TYPE mlx_flash_python_worker_uptime_seconds gauge\n");
+    let _ = write!(out, "# HELP mlx_flash_python_worker_memory_pressure Python worker memory pressure.\n");
+    let _ = write!(out, "# TYPE mlx_flash_python_worker_memory_pressure gauge\n");
+    let _ = write!(out, "# HELP mlx_flash_python_worker_model_loaded Python worker has model loaded.\n");
+    let _ = write!(out, "# TYPE mlx_flash_python_worker_model_loaded gauge\n");
+
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/status");
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(st) = resp.json::<serde_json::Value>().await {
+                let model = st["model"].as_str().unwrap_or("unknown");
+                let stats = &st["stats"];
+                let mem = &st["memory"];
+
+                let py_tokens = stats["tokens_generated"].as_u64().unwrap_or(0);
+                let py_requests = stats["requests"].as_u64().unwrap_or(0);
+                let py_uptime = stats["uptime_s"].as_f64().unwrap_or(0.0);
+                let py_pressure = match mem["pressure"].as_str().unwrap_or("normal") {
+                    "critical" => 2, "warning" => 1, _ => 0,
+                };
+                let py_loaded = if st.get("model").is_some() { 1 } else { 0 };
+
+                let _ = write!(out, "mlx_flash_python_worker_tokens_total{{worker=\"{port}\",model=\"{model}\"}} {py_tokens}\n");
+                let _ = write!(out, "mlx_flash_python_worker_requests_total{{worker=\"{port}\",model=\"{model}\"}} {py_requests}\n");
+                let _ = write!(out, "mlx_flash_python_worker_uptime_seconds{{worker=\"{port}\",model=\"{model}\"}} {py_uptime:.0}\n");
+                let _ = write!(out, "mlx_flash_python_worker_memory_pressure{{worker=\"{port}\"}} {py_pressure}\n");
+                let _ = write!(out, "mlx_flash_python_worker_model_loaded{{worker=\"{port}\",model=\"{model}\"}} {py_loaded}\n");
+            }
+        }
+    }
+    let _ = write!(out, "\n");
+
+    axum::response::Response::builder()
+        .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        .body(axum::body::Body::from(out))
+        .unwrap()
+}
+
+async fn handle_logs_recent(State(state): State<AppState>) -> axum::Json<Value> {
+    let entries = state.log_buffer.recent(100);
+    axum::Json(json!({ "logs": entries }))
+}
+
+async fn handle_reload(State(state): State<AppState>) -> axum::Json<Value> {
+    tracing::info!("Reload requested via /reload endpoint");
+
+    // Reload: tell all workers to re-read their config / re-check health
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let mut reloaded = 0;
+    let mut failed = 0;
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/health");
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                state.pool.mark_healthy(port);
+                reloaded += 1;
+            }
+            _ => {
+                state.pool.mark_unhealthy(port);
+                failed += 1;
+            }
+        }
+    }
+
+    tracing::info!(reloaded, failed, "Reload complete — worker health refreshed");
+
+    axum::Json(json!({
+        "reloaded": true,
+        "workers_healthy": reloaded,
+        "workers_failed": failed,
+        "message": "Worker health refreshed. Use /v1/models/switch to change models."
+    }))
+}
+
+async fn handle_shutdown(State(_state): State<AppState>) -> axum::Json<Value> {
+    tracing::info!("Graceful shutdown requested via /shutdown endpoint");
+
+    // Spawn shutdown in background so we can return the response first
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        std::process::exit(0);
+    });
+
+    axum::Json(json!({
+        "shutting_down": true,
+        "message": "Server will stop in ~500ms. Restart with: mlx-flash --port 8080"
+    }))
+}
+
+async fn handle_workers_restart(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::Json<Value> {
+    // Parse optional {port: 8081} to restart a specific worker, or restart all unhealthy
+    let parsed: Option<Value> = serde_json::from_slice(&body).ok();
+    let target_port: Option<u16> = parsed
+        .as_ref()
+        .and_then(|v| v.get("port"))
+        .and_then(|v| v.as_u64())
+        .map(|p| p as u16);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let ports_to_restart: Vec<u16> = if let Some(port) = target_port {
+        vec![port]
+    } else {
+        // Restart all unhealthy workers
+        let mut unhealthy = Vec::new();
+        for port in state.pool.ports() {
+            let url = format!("http://127.0.0.1:{port}/health");
+            let ok = client.get(&url).send().await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+            if !ok {
+                unhealthy.push(port);
+            }
+        }
+        unhealthy
+    };
+
+    // Send /shutdown to each, then they'll be auto-restarted by the health checker
+    let mut restarted = Vec::new();
+    for port in &ports_to_restart {
+        let url = format!("http://127.0.0.1:{port}/shutdown");
+        let _ = client.post(&url).send().await;
+        state.pool.mark_unhealthy(*port);
+        restarted.push(*port);
+        tracing::info!(port, "Sent restart signal to worker");
+    }
+
+    axum::Json(json!({
+        "restarting": restarted,
+        "message": "Workers will be auto-restarted by health checker within 10s",
     }))
 }
 
@@ -194,5 +599,127 @@ mod tests {
             response.headers().contains_key("access-control-allow-origin"),
             "expected access-control-allow-origin header"
         );
+    }
+
+    async fn post_json(router: Router, path: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = router.oneshot(req).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn test_model_switch_requires_model_field() {
+        let router = create_router(test_state());
+        let (status, json) = post_json(router, "/v1/models/switch", r#"{"foo": "bar"}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json["error"].as_str().unwrap().contains("model"));
+    }
+
+    #[tokio::test]
+    async fn test_model_switch_rejects_invalid_json() {
+        let router = create_router(test_state());
+        let (status, json) = post_json(router, "/v1/models/switch", "not json").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json["error"].as_str().unwrap().contains("Invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn test_model_switch_reports_worker_failures() {
+        // No Python worker running — switch should fail but not crash
+        let router = create_router(test_state());
+        let (status, json) = post_json(
+            router,
+            "/v1/models/switch",
+            r#"{"model": "mlx-community/Qwen3-8B-4bit"}"#,
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        // Workers unreachable → switched = false
+        assert_eq!(json["switched"], false);
+        assert!(json["workers_failed"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_model_name_unchanged_on_failed_switch() {
+        let state = test_state();
+        let router = create_router(state.clone());
+        let _ = post_json(
+            router,
+            "/v1/models/switch",
+            r#"{"model": "new-model"}"#,
+        ).await;
+        // Model name should remain "local" since no worker accepted the switch
+        let current = state.model_name.read().await.clone();
+        assert_eq!(current, "local");
+    }
+
+    #[tokio::test]
+    async fn test_workers_endpoint() {
+        let router = create_router(test_state());
+        let (status, json) = get_json(router, "/workers").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json["workers"].is_array());
+        assert_eq!(json["total_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_returns_prometheus_format() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let ct = response.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("text/plain"), "expected text/plain content type for prometheus");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("mlx_flash_uptime_seconds"), "expected uptime metric");
+        assert!(text.contains("mlx_flash_requests_total"), "expected requests metric");
+        assert!(text.contains("mlx_flash_memory_total_bytes"), "expected memory metric");
+        assert!(text.contains("mlx_flash_workers_total"), "expected workers metric");
+        assert!(text.contains("# TYPE"), "expected TYPE annotations");
+        assert!(text.contains("# HELP"), "expected HELP annotations");
+    }
+
+    #[tokio::test]
+    async fn test_metrics_contains_worker_labels() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("mlx_flash_worker_inflight{worker="), "expected per-worker inflight metric");
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_returns_html() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("MLX-Flash Dashboard"), "expected dashboard HTML");
+        assert!(html.contains("mem-chart"), "expected memory chart canvas");
     }
 }

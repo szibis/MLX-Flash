@@ -1,0 +1,117 @@
+# MLX-Flash Docker Compose
+#
+# NOTE: MLX inference requires native macOS + Apple Silicon (Metal GPU).
+# These containers are for: testing, building, CI/CD, and monitoring.
+#
+# Usage:
+#   docker compose run tests          # Python test suite
+#   docker compose run rust-build     # Compile Rust sidecar
+#   docker compose run e2e            # Full stack e2e tests
+#   docker compose up --build         # Build everything
+#
+#   docker compose up monitoring      # Prometheus + Grafana (scrapes native mlx-flash)
+#
+# For real inference, run natively:
+#   mlx-flash --port 8080 --workers 3
+
+services:
+  # --- Python test suite (no MLX, tests logic only) ---
+  tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      python -m pytest tests/ -v --tb=short
+      -k "not test_auto_detect and not test_mlx"
+      --junitxml=/app/test-results/python.xml
+    volumes:
+      - test-results:/app/test-results
+    environment:
+      - PYTHONDONTWRITEBYTECODE=1
+      - MLX_FLASH_TESTING=1
+
+  # --- Rust sidecar build + test ---
+  rust-build:
+    build:
+      context: .
+      dockerfile: Dockerfile.rust
+    command: cargo test --release
+    volumes:
+      - rust-target:/app/mlx-flash-server/target
+      - test-results:/app/test-results
+
+  # --- E2E: Python mock server + Rust proxy ---
+  e2e:
+    build:
+      context: .
+      dockerfile: Dockerfile.e2e
+    depends_on:
+      - mock-worker
+    environment:
+      - PYTHON_WORKER_PORT=8081
+      - RUST_SERVER_PORT=8080
+    command: /app/scripts/run-e2e.sh
+    volumes:
+      - test-results:/app/test-results
+
+  # --- Mock Python worker (returns canned responses for e2e) ---
+  mock-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: python -m mlx_flash_compress.serve --port 8081 --host 0.0.0.0
+    expose:
+      - "8081"
+    environment:
+      - MLX_FLASH_MOCK=1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  # --- Prometheus (scrapes mlx-flash running natively on host) ---
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./dashboards/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles: ["monitoring"]
+
+  # --- Grafana (pre-provisioned dashboard + Prometheus datasource) ---
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=mlxflash
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/mlx-flash-overview.json
+    volumes:
+      - ./dashboards/grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./dashboards/grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./dashboards/mlx-flash-overview.json:/var/lib/grafana/dashboards/mlx-flash-overview.json:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    profiles: ["monitoring"]
+
+  # --- Convenience: start monitoring stack ---
+  monitoring:
+    image: alpine:latest
+    command: echo "Monitoring stack is running. Grafana at http://localhost:3000 (admin/mlxflash), Prometheus at http://localhost:9090"
+    depends_on:
+      - prometheus
+      - grafana
+    profiles: ["monitoring"]
+
+volumes:
+  test-results:
+  rust-target:
+  prometheus-data:
+  grafana-data:
