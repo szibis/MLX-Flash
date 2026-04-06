@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use tokio::sync::RwLock;
 
-use axum::{Router, extract::State, routing::get};
+use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use axum::http::Method;
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
@@ -56,6 +56,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/cache/stats", get(handle_cache_stats))
         .route("/workers", get(handle_workers))
         .route("/v1/models/switch", axum::routing::post(handle_model_switch))
+        .route("/metrics", get(handle_metrics))
         .with_state(state)
         .layer(cors)
 }
@@ -198,6 +199,159 @@ async fn handle_model_switch(
         "workers_failed": failures.len(),
         "failures": failures,
     }))
+}
+
+async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(4096);
+
+    let model_name = state.model_name.read().await.clone();
+    let uptime = state.start_time.elapsed().as_secs_f64();
+    let requests = state.request_count.load(Ordering::Relaxed);
+    let tokens = state.tokens_generated.load(Ordering::Relaxed);
+
+    // -- Server info --
+    let _ = write!(out, "# HELP mlx_flash_info Server metadata.\n");
+    let _ = write!(out, "# TYPE mlx_flash_info gauge\n");
+    let _ = write!(out, "mlx_flash_info{{model=\"{model_name}\"}} 1\n\n");
+
+    let _ = write!(out, "# HELP mlx_flash_uptime_seconds Time since server start.\n");
+    let _ = write!(out, "# TYPE mlx_flash_uptime_seconds gauge\n");
+    let _ = write!(out, "mlx_flash_uptime_seconds {uptime:.1}\n\n");
+
+    // -- Request counters --
+    let _ = write!(out, "# HELP mlx_flash_requests_total Total inference requests.\n");
+    let _ = write!(out, "# TYPE mlx_flash_requests_total counter\n");
+    let _ = write!(out, "mlx_flash_requests_total {requests}\n\n");
+
+    let _ = write!(out, "# HELP mlx_flash_tokens_generated_total Total tokens generated.\n");
+    let _ = write!(out, "# TYPE mlx_flash_tokens_generated_total counter\n");
+    let _ = write!(out, "mlx_flash_tokens_generated_total {tokens}\n\n");
+
+    // -- Memory (macOS vm_statistics64) --
+    if let Ok(mem) = memory::get_memory_state() {
+        let total = mem.total_gb * 1073741824.0;
+        let free = mem.free_gb * 1073741824.0;
+        let active = mem.active_gb * 1073741824.0;
+        let inactive = mem.inactive_gb * 1073741824.0;
+        let wired = mem.wired_gb * 1073741824.0;
+        let compressed = mem.compressed_gb * 1073741824.0;
+        let swap = mem.swap_used_gb * 1073741824.0;
+        let available = mem.available_gb() * 1073741824.0;
+        let used_ratio = if mem.total_gb > 0.0 { 1.0 - mem.available_gb() / mem.total_gb } else { 0.0 };
+        let pressure_val = match mem.pressure {
+            memory::PressureLevel::Normal => 0,
+            memory::PressureLevel::Warning => 1,
+            memory::PressureLevel::Critical => 2,
+        };
+
+        let _ = write!(out, "# HELP mlx_flash_memory_total_bytes Total physical RAM.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_total_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_total_bytes {total:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_free_bytes Free (unused) RAM.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_free_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_free_bytes {free:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_available_bytes Usable RAM (free + 50% inactive).\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_available_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_available_bytes {available:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_active_bytes Active pages.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_active_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_active_bytes {active:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_inactive_bytes Inactive pages (reclaimable).\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_inactive_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_inactive_bytes {inactive:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_wired_bytes Wired (non-evictable) pages.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_wired_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_wired_bytes {wired:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_compressed_bytes Compressed pages.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_compressed_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_compressed_bytes {compressed:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_swap_used_bytes Swap space in use.\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_swap_used_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_memory_swap_used_bytes {swap:.0}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_used_ratio Fraction of RAM in use (0-1).\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_used_ratio gauge\n");
+        let _ = write!(out, "mlx_flash_memory_used_ratio {used_ratio:.4}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_memory_pressure macOS memory pressure (0=normal, 1=warning, 2=critical).\n");
+        let _ = write!(out, "# TYPE mlx_flash_memory_pressure gauge\n");
+        let _ = write!(out, "mlx_flash_memory_pressure {pressure_val}\n\n");
+    }
+
+    // -- Worker pool --
+    let _ = write!(out, "# HELP mlx_flash_workers_total Total workers in pool.\n");
+    let _ = write!(out, "# TYPE mlx_flash_workers_total gauge\n");
+    let _ = write!(out, "mlx_flash_workers_total {}\n\n", state.pool.len());
+
+    let _ = write!(out, "# HELP mlx_flash_workers_healthy Number of healthy workers.\n");
+    let _ = write!(out, "# TYPE mlx_flash_workers_healthy gauge\n");
+    let _ = write!(out, "mlx_flash_workers_healthy {}\n\n", state.pool.healthy_count());
+
+    let _ = write!(out, "# HELP mlx_flash_worker_inflight Current in-flight requests per worker.\n");
+    let _ = write!(out, "# TYPE mlx_flash_worker_inflight gauge\n");
+    let _ = write!(out, "# HELP mlx_flash_worker_requests_total Total requests served per worker.\n");
+    let _ = write!(out, "# TYPE mlx_flash_worker_requests_total counter\n");
+    let _ = write!(out, "# HELP mlx_flash_worker_healthy Whether worker is healthy (1) or not (0).\n");
+    let _ = write!(out, "# TYPE mlx_flash_worker_healthy gauge\n");
+
+    let pool_status = state.pool.status();
+    if let Some(workers) = pool_status["workers"].as_array() {
+        for w in workers {
+            let port = w["port"].as_u64().unwrap_or(0);
+            let inflight = w["inflight"].as_u64().unwrap_or(0);
+            let total_req = w["total_requests"].as_u64().unwrap_or(0);
+            let healthy = if w["healthy"].as_bool().unwrap_or(false) { 1 } else { 0 };
+            let _ = write!(out, "mlx_flash_worker_inflight{{worker=\"{port}\"}} {inflight}\n");
+            let _ = write!(out, "mlx_flash_worker_requests_total{{worker=\"{port}\"}} {total_req}\n");
+            let _ = write!(out, "mlx_flash_worker_healthy{{worker=\"{port}\"}} {healthy}\n");
+        }
+        let _ = write!(out, "\n");
+    }
+
+    let _ = write!(out, "# HELP mlx_flash_sessions_active Active sticky sessions.\n");
+    let _ = write!(out, "# TYPE mlx_flash_sessions_active gauge\n");
+    let _ = write!(out, "mlx_flash_sessions_active {}\n\n", state.pool.session_count());
+
+    // -- Cache --
+    if let Some(ref cache) = state.cache {
+        let stats = cache.stats();
+        if let Ok(cs) = serde_json::to_value(&stats) {
+            let hits = cs["hot_hits"].as_u64().unwrap_or(0) + cs["warm_hits"].as_u64().unwrap_or(0);
+            let misses = cs["cold_hits"].as_u64().unwrap_or(0);
+            let total_cache = hits + misses;
+            let hit_ratio = if total_cache > 0 { hits as f64 / total_cache as f64 } else { 0.0 };
+            let entries = cs["cached_experts"].as_u64().unwrap_or(0);
+
+            let _ = write!(out, "# HELP mlx_flash_cache_hits_total Cache hits (hot+warm).\n");
+            let _ = write!(out, "# TYPE mlx_flash_cache_hits_total counter\n");
+            let _ = write!(out, "mlx_flash_cache_hits_total {hits}\n\n");
+
+            let _ = write!(out, "# HELP mlx_flash_cache_misses_total Cache misses (cold).\n");
+            let _ = write!(out, "# TYPE mlx_flash_cache_misses_total counter\n");
+            let _ = write!(out, "mlx_flash_cache_misses_total {misses}\n\n");
+
+            let _ = write!(out, "# HELP mlx_flash_cache_hit_ratio Cache hit ratio (0-1).\n");
+            let _ = write!(out, "# TYPE mlx_flash_cache_hit_ratio gauge\n");
+            let _ = write!(out, "mlx_flash_cache_hit_ratio {hit_ratio:.4}\n\n");
+
+            let _ = write!(out, "# HELP mlx_flash_cache_entries Cached expert count.\n");
+            let _ = write!(out, "# TYPE mlx_flash_cache_entries gauge\n");
+            let _ = write!(out, "mlx_flash_cache_entries {entries}\n\n");
+        }
+    }
+
+    axum::response::Response::builder()
+        .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        .body(axum::body::Body::from(out))
+        .unwrap()
 }
 
 async fn handle_cache_stats(State(state): State<AppState>) -> axum::Json<Value> {
@@ -355,6 +509,42 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert!(json["workers"].is_array());
         assert_eq!(json["total_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_metrics_returns_prometheus_format() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let ct = response.headers().get("content-type").unwrap().to_str().unwrap();
+        assert!(ct.contains("text/plain"), "expected text/plain content type for prometheus");
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("mlx_flash_uptime_seconds"), "expected uptime metric");
+        assert!(text.contains("mlx_flash_requests_total"), "expected requests metric");
+        assert!(text.contains("mlx_flash_memory_total_bytes"), "expected memory metric");
+        assert!(text.contains("mlx_flash_workers_total"), "expected workers metric");
+        assert!(text.contains("# TYPE"), "expected TYPE annotations");
+        assert!(text.contains("# HELP"), "expected HELP annotations");
+    }
+
+    #[tokio::test]
+    async fn test_metrics_contains_worker_labels() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("mlx_flash_worker_inflight{worker="), "expected per-worker inflight metric");
     }
 
     #[tokio::test]

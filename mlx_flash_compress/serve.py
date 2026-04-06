@@ -266,6 +266,8 @@ class ChatHandler(BaseHTTPRequestHandler):
         elif self.path == "/release":
             result = self.server_state.mem_mgr.auto_release_if_needed()
             self._send_json(result)
+        elif self.path == "/metrics":
+            self._serve_metrics()
         elif self.path == "/chat":
             self._serve_chat_html()
         elif self.path == "/admin":
@@ -486,6 +488,75 @@ async function send(){
   msgsEl.innerHTML+=`<p><b style="color:#7b61ff">AI:</b> ${reply}</p>`;
 }
 </script></body></html>"""
+
+    def _serve_metrics(self):
+        """Serve Prometheus exposition format metrics."""
+        state = self.server_state
+        mem = get_memory_state()
+        uptime = time.monotonic() - state.start_time
+
+        lines = []
+        lines.append('# HELP mlx_flash_info Server metadata.')
+        lines.append('# TYPE mlx_flash_info gauge')
+        lines.append(f'mlx_flash_info{{model="{state.model_name}"}} 1')
+        lines.append('')
+        lines.append('# HELP mlx_flash_uptime_seconds Time since server start.')
+        lines.append('# TYPE mlx_flash_uptime_seconds gauge')
+        lines.append(f'mlx_flash_uptime_seconds {uptime:.1f}')
+        lines.append('')
+        lines.append('# HELP mlx_flash_requests_total Total inference requests.')
+        lines.append('# TYPE mlx_flash_requests_total counter')
+        lines.append(f'mlx_flash_requests_total {state.total_requests}')
+        lines.append('')
+        lines.append('# HELP mlx_flash_tokens_generated_total Total tokens generated.')
+        lines.append('# TYPE mlx_flash_tokens_generated_total counter')
+        lines.append(f'mlx_flash_tokens_generated_total {state.total_tokens}')
+        lines.append('')
+        # Memory
+        total_b = mem.total_gb * 1073741824
+        free_b = mem.free_gb * 1073741824
+        available_b = mem.available_gb * 1073741824
+        swap_b = mem.swap_used_gb * 1073741824
+        used_ratio = (1.0 - mem.available_gb / mem.total_gb) if mem.total_gb > 0 else 0
+        pressure_map = {"normal": 0, "warning": 1, "critical": 2}
+        pressure_val = pressure_map.get(mem.pressure_level, 0)
+
+        lines.append('# HELP mlx_flash_memory_total_bytes Total physical RAM.')
+        lines.append('# TYPE mlx_flash_memory_total_bytes gauge')
+        lines.append(f'mlx_flash_memory_total_bytes {total_b:.0f}')
+        lines.append('')
+        lines.append('# HELP mlx_flash_memory_free_bytes Free (unused) RAM.')
+        lines.append('# TYPE mlx_flash_memory_free_bytes gauge')
+        lines.append(f'mlx_flash_memory_free_bytes {free_b:.0f}')
+        lines.append('')
+        lines.append('# HELP mlx_flash_memory_available_bytes Usable RAM (free + inactive).')
+        lines.append('# TYPE mlx_flash_memory_available_bytes gauge')
+        lines.append(f'mlx_flash_memory_available_bytes {available_b:.0f}')
+        lines.append('')
+        lines.append('# HELP mlx_flash_memory_swap_used_bytes Swap space in use.')
+        lines.append('# TYPE mlx_flash_memory_swap_used_bytes gauge')
+        lines.append(f'mlx_flash_memory_swap_used_bytes {swap_b:.0f}')
+        lines.append('')
+        lines.append('# HELP mlx_flash_memory_used_ratio Fraction of RAM in use (0-1).')
+        lines.append('# TYPE mlx_flash_memory_used_ratio gauge')
+        lines.append(f'mlx_flash_memory_used_ratio {used_ratio:.4f}')
+        lines.append('')
+        lines.append('# HELP mlx_flash_memory_pressure macOS memory pressure (0=normal, 1=warning, 2=critical).')
+        lines.append('# TYPE mlx_flash_memory_pressure gauge')
+        lines.append(f'mlx_flash_memory_pressure {pressure_val}')
+        lines.append('')
+        # Model loaded
+        loaded = 1 if state.model is not None else 0
+        lines.append('# HELP mlx_flash_model_loaded Whether a model is loaded (1) or not (0).')
+        lines.append('# TYPE mlx_flash_model_loaded gauge')
+        lines.append(f'mlx_flash_model_loaded {loaded}')
+        lines.append('')
+
+        body = '\n'.join(lines) + '\n'
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(body.encode())
 
     def _serve_dashboard_html(self):
         """Serve the admin dashboard — loads from assets/dashboard.html or inline fallback."""

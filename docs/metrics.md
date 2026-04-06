@@ -1,0 +1,175 @@
+# MLX-Flash Metrics Reference
+
+MLX-Flash exposes a Prometheus-compatible `/metrics` endpoint on both the Rust proxy (`:8080`) and Python workers (`:8081+`). All metrics use the `mlx_flash_` prefix.
+
+## Quick Start
+
+```bash
+# 1. Start MLX-Flash
+mlx-flash --port 8080 --workers 2
+
+# 2. Verify metrics
+curl http://localhost:8080/metrics
+
+# 3. Start Grafana + Prometheus (auto-provisioned)
+docker compose --profile monitoring up -d
+
+# 4. Open Grafana
+open http://localhost:3000   # admin / mlxflash
+```
+
+The pre-built dashboard is auto-loaded at startup.
+
+## Scrape Configuration
+
+Both servers expose `/metrics` in Prometheus text exposition format:
+
+| Target | Default Port | Path | Content |
+|--------|-------------|------|---------|
+| Rust proxy | 8080 | `/metrics` | Full metrics: server, memory, workers, cache |
+| Python worker 1 | 8081 | `/metrics` | Worker metrics: server, memory, model status |
+| Python worker N | 808N | `/metrics` | Same as worker 1 |
+
+Prometheus config (`dashboards/prometheus.yml`):
+
+```yaml
+scrape_configs:
+  - job_name: 'mlx-flash-rust'
+    static_configs:
+      - targets: ['localhost:8080']
+  - job_name: 'mlx-flash-python'
+    static_configs:
+      - targets: ['localhost:8081']
+```
+
+## Metrics Reference
+
+### Server
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `mlx_flash_info` | gauge | Always `1`. Labels: `model` (active model ID). Use for join queries. |
+| `mlx_flash_uptime_seconds` | gauge | Seconds since server started. |
+| `mlx_flash_requests_total` | counter | Total inference requests received. |
+| `mlx_flash_tokens_generated_total` | counter | Total tokens generated across all requests. |
+| `mlx_flash_model_loaded` | gauge | `1` if model is loaded, `0` if pending first request. (Python only) |
+
+### Memory (macOS `vm_statistics64`)
+
+These metrics come from macOS kernel memory statistics via `host_statistics64()` and `sysctl`. They reflect the physical RAM state of the Mac running inference — critical for understanding whether your model fits in memory or is swap-thrashing.
+
+| Metric | Type | Unit | Description |
+|--------|------|------|-------------|
+| `mlx_flash_memory_total_bytes` | gauge | bytes | Total physical RAM installed. |
+| `mlx_flash_memory_free_bytes` | gauge | bytes | Free (completely unused) pages. |
+| `mlx_flash_memory_available_bytes` | gauge | bytes | Usable RAM: `free + 50% × inactive`. Best single indicator. |
+| `mlx_flash_memory_active_bytes` | gauge | bytes | Active pages (recently accessed, not evictable). |
+| `mlx_flash_memory_inactive_bytes` | gauge | bytes | Inactive pages (reclaimable under pressure). |
+| `mlx_flash_memory_wired_bytes` | gauge | bytes | Wired pages (kernel, not evictable). |
+| `mlx_flash_memory_compressed_bytes` | gauge | bytes | Compressed pages (in-memory compression). |
+| `mlx_flash_memory_swap_used_bytes` | gauge | bytes | Swap space currently in use. Non-zero = performance degradation. |
+| `mlx_flash_memory_used_ratio` | gauge | ratio (0-1) | `1 - available / total`. Alert if > 0.85. |
+| `mlx_flash_memory_pressure` | gauge | enum | macOS pressure level: `0`=normal, `1`=warning, `2`=critical. |
+
+**Key metric for alerting**: `mlx_flash_memory_pressure > 0` means macOS is actively reclaiming pages. At `2` (critical), inference latency will spike due to page eviction and swap I/O.
+
+### Worker Pool (Rust proxy only)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `mlx_flash_workers_total` | gauge | — | Total workers in pool. |
+| `mlx_flash_workers_healthy` | gauge | — | Number of healthy (responsive) workers. |
+| `mlx_flash_worker_inflight` | gauge | `worker` (port) | Current in-flight requests on this worker. |
+| `mlx_flash_worker_requests_total` | counter | `worker` (port) | Total requests served by this worker. |
+| `mlx_flash_worker_healthy` | gauge | `worker` (port) | `1` if healthy, `0` if marked unhealthy. |
+| `mlx_flash_sessions_active` | gauge | — | Active sticky sessions (conversation affinity). |
+
+### Expert Cache (Rust proxy, when `--expert-dir` enabled)
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `mlx_flash_cache_hits_total` | counter | Cache hits (hot + warm tiers). |
+| `mlx_flash_cache_misses_total` | counter | Cache misses (cold — loaded from SSD). |
+| `mlx_flash_cache_hit_ratio` | gauge | Hit ratio (0-1). Target: > 0.85 after warmup. |
+| `mlx_flash_cache_entries` | gauge | Number of expert weight tensors currently cached. |
+
+## Example PromQL Queries
+
+```promql
+# Request rate (req/s)
+rate(mlx_flash_requests_total[1m])
+
+# Token generation rate (tok/s)
+rate(mlx_flash_tokens_generated_total[1m])
+
+# Average tokens per request
+rate(mlx_flash_tokens_generated_total[5m]) / rate(mlx_flash_requests_total[5m])
+
+# Memory used percentage
+mlx_flash_memory_used_ratio * 100
+
+# Available RAM in GB
+mlx_flash_memory_available_bytes / 1073741824
+
+# Worker load imbalance (max inflight across workers)
+max(mlx_flash_worker_inflight) - min(mlx_flash_worker_inflight)
+
+# Per-worker request rate
+rate(mlx_flash_worker_requests_total[1m])
+
+# Any worker down?
+mlx_flash_workers_total - mlx_flash_workers_healthy > 0
+
+# Cache miss rate
+rate(mlx_flash_cache_misses_total[5m]) / (rate(mlx_flash_cache_hits_total[5m]) + rate(mlx_flash_cache_misses_total[5m]))
+
+# Swap is active (bad for inference)
+mlx_flash_memory_swap_used_bytes > 0
+```
+
+## Alerting Rules (example)
+
+```yaml
+groups:
+  - name: mlx-flash
+    rules:
+      - alert: MLXFlashMemoryPressure
+        expr: mlx_flash_memory_pressure > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MLX-Flash memory pressure detected"
+          description: "Memory pressure is {{ $value }} (1=warning, 2=critical)"
+
+      - alert: MLXFlashWorkerDown
+        expr: mlx_flash_workers_healthy < mlx_flash_workers_total
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "MLX-Flash worker unhealthy"
+          description: "{{ $value }} of {{ with query \"mlx_flash_workers_total\" }}{{ . | first | value }}{{ end }} workers healthy"
+
+      - alert: MLXFlashSwapActive
+        expr: mlx_flash_memory_swap_used_bytes > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MLX-Flash using swap — inference will be slow"
+          description: "Swap usage: {{ $value | humanize1024 }}B"
+```
+
+## Grafana Dashboard
+
+A pre-built dashboard is included at `dashboards/mlx-flash-overview.json`. It is auto-provisioned when using `docker compose --profile monitoring up`.
+
+**Panels:**
+- Server Overview: model, uptime, total requests, tokens, pressure, workers, sessions
+- Throughput: request rate, token generation rate
+- Memory: breakdown (active/wired/compressed/free/inactive), used ratio, swap
+- Workers: per-worker in-flight, per-worker request rate
+- Cache: hit ratio, cached entries
+
+Import manually: Grafana > Dashboards > Import > Upload JSON > select `dashboards/mlx-flash-overview.json`.

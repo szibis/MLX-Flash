@@ -428,6 +428,51 @@ See [`docs/integrations.md`](docs/integrations.md) for 20+ detailed integration 
 
 </details>
 
+## Monitoring & Metrics
+
+MLX-Flash exposes a Prometheus-compatible `/metrics` endpoint for production monitoring. Both the Rust proxy (`:8080`) and Python workers (`:8081+`) serve metrics.
+
+```bash
+# Quick check
+curl -s http://localhost:8080/metrics | head -20
+
+# Start Grafana + Prometheus (pre-configured, one command)
+docker compose --profile monitoring up -d
+open http://localhost:3000   # admin / mlxflash
+```
+
+**Key metrics exposed:**
+
+| Metric | Type | What it tells you |
+|--------|------|-------------------|
+| `mlx_flash_tokens_generated_total` | counter | Total tokens — derive tok/s with `rate()` |
+| `mlx_flash_requests_total` | counter | Total requests — derive req/s with `rate()` |
+| `mlx_flash_memory_pressure` | gauge | macOS memory pressure (0/1/2) — **alert on > 0** |
+| `mlx_flash_memory_used_ratio` | gauge | RAM usage fraction — alert on > 0.85 |
+| `mlx_flash_memory_swap_used_bytes` | gauge | Swap in use — **any swap = inference degraded** |
+| `mlx_flash_worker_inflight{worker}` | gauge | Per-worker concurrent requests |
+| `mlx_flash_worker_healthy{worker}` | gauge | Per-worker health status |
+| `mlx_flash_sessions_active` | gauge | Sticky sessions (conversation affinity count) |
+| `mlx_flash_cache_hit_ratio` | gauge | Expert cache hit rate (target > 0.85) |
+
+Pre-built Grafana dashboard at `dashboards/mlx-flash-overview.json` — auto-provisioned with `docker compose --profile monitoring up`.
+
+See [docs/metrics.md](docs/metrics.md) for the full reference (30+ metrics), example PromQL queries, and alerting rules.
+
+## Web UI
+
+MLX-Flash includes built-in web interfaces — no extra setup needed:
+
+| URL | What |
+|-----|------|
+| `http://localhost:8080/admin` | **Dashboard** — live memory charts, token rate, cache stats, optimization hints |
+| `http://localhost:8080/chat` | **Chat UI** — conversational interface with model switching, SSE streaming |
+| `http://localhost:8080/metrics` | **Prometheus metrics** — scrape target for Grafana/Prometheus |
+| `http://localhost:8080/status` | **JSON status** — programmatic health check |
+| `http://localhost:8080/workers` | **Worker pool** — per-worker health and load |
+
+The dashboard and chat UI also work on standalone Python workers (`:8081/admin`, `:8081/chat`).
+
 ## Requirements
 
 - **macOS** with Apple Silicon (M1/M2/M3/M4/M5)
