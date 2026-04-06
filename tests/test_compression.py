@@ -14,6 +14,18 @@ from mlx_flash_compress.compression_native import (
     Algorithm,
 )
 
+try:
+    import lz4.frame
+    HAS_LZ4 = True
+except ImportError:
+    HAS_LZ4 = False
+
+try:
+    import zstandard
+    HAS_ZSTD = True
+except ImportError:
+    HAS_ZSTD = False
+
 
 @pytest.fixture
 def sample_data():
@@ -31,6 +43,7 @@ def random_data():
     return rng.bytes(4096)
 
 
+@pytest.mark.skipif(not HAS_LZ4, reason="lz4 not installed")
 class TestLZ4:
     def test_roundtrip(self, sample_data):
         comp = LZ4Compressor()
@@ -53,6 +66,7 @@ class TestLZ4:
         assert buf.ratio >= 0.9  # at least not much expansion
 
 
+@pytest.mark.skipif(not HAS_ZSTD, reason="zstandard not installed")
 class TestZSTD:
     def test_roundtrip(self, sample_data):
         comp = ZSTDCompressor(level=3)

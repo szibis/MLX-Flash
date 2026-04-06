@@ -1,9 +1,16 @@
 """Tests for cached inference router hooks and cache simulation."""
 import pytest
 from collections import defaultdict
-from mlx_flash_compress.cached_inference import (
-    ExpertRouter, RoutingEvent, CacheSimState, RustCacheState,
-)
+
+try:
+    from mlx_flash_compress.cached_inference import (
+        ExpertRouter, RoutingEvent, CacheSimState, RustCacheState,
+    )
+    HAS_MODULE = True
+except (ImportError, ModuleNotFoundError):
+    HAS_MODULE = False
+
+pytestmark = pytest.mark.skipif(not HAS_MODULE, reason="cached_inference requires mlx")
 
 
 class TestCacheSimState:

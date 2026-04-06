@@ -1,9 +1,16 @@
 """Tests for vllm-mlx integration adapter."""
 import pytest
-from mlx_flash_compress.vllm_integration import (
-    get_model_info,
-    auto_configure,
-)
+
+try:
+    from mlx_flash_compress.vllm_integration import (
+        get_model_info,
+        auto_configure,
+    )
+    HAS_MODULE = True
+except (ImportError, ModuleNotFoundError):
+    HAS_MODULE = False
+
+pytestmark = pytest.mark.skipif(not HAS_MODULE, reason="vllm_integration requires mlx")
 
 
 class TestGetModelInfo:

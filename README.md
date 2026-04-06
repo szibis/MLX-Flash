@@ -8,8 +8,10 @@
 <p align="center">70B on 32 GB. 200B+ on 48 GB. No extra quantization — uses the model's native precision.</p>
 
 <p align="center">
-  <a href="https://pypi.org/project/mlx-flash/"><img src="https://img.shields.io/pypi/v/mlx-flash?color=blue" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/mlx-flash/"><img src="https://img.shields.io/pypi/v/mlx-flash?color=blue&label=PyPI" alt="PyPI" /></a>
+  <a href="https://github.com/szibis/MLX-Flash/releases/latest"><img src="https://img.shields.io/github/v/release/szibis/MLX-Flash?color=orange&label=Release" alt="GitHub Release" /></a>
   <a href="https://github.com/szibis/MLX-Flash/actions"><img src="https://github.com/szibis/MLX-Flash/actions/workflows/test.yml/badge.svg" alt="Tests" /></a>
+  <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage 91%" />
   <a href="https://github.com/szibis/MLX-Flash/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License" /></a>
   <a href="https://github.com/szibis/MLX-Flash"><img src="https://img.shields.io/github/stars/szibis/MLX-Flash?style=social" alt="Stars" /></a>
 </p>
@@ -29,28 +31,40 @@ MLX-Flash intelligently caches the most-needed model parts in RAM and streams th
 
 ## Quick Start
 
-### 1. Install
+### Option A: pip (recommended)
 
 ```bash
 pip install mlx-flash
+mlx-flash-chat    # auto-selects best Gemma 4 model for your hardware
 ```
 
-### 2. Chat
+### Option B: Homebrew (includes Rust sidecar)
 
 ```bash
+brew tap szibis/mlx-flash
+brew install mlx-flash
 mlx-flash-chat
 ```
 
-### 3. Or start an API server
+### Option C: Docker (for CI/testing)
+
+```bash
+docker pull ghcr.io/szibis/mlx-flash:latest
+docker run --rm ghcr.io/szibis/mlx-flash pytest   # run tests
+```
+
+> **Note:** Docker runs tests and packaging only. For GPU inference, run natively on macOS with Apple Silicon.
+
+### Start the API server
 
 ```bash
 # Works with LM Studio, Cursor, Claude Code, Codex, OpenAI SDK, and more
 mlx-flash --port 8080
 ```
 
-That's it. MLX-Flash auto-detects your hardware, picks the best cache settings, and starts serving.
+MLX-Flash auto-detects your hardware, picks the best Gemma 4 model for your RAM, and starts serving.
 
-> **More install options:** `brew tap szibis/mlx-flash && brew install mlx-flash` (includes Rust sidecar), or `git clone` + `pip install -e ".[all]"` from source.
+> **From source:** `git clone https://github.com/szibis/MLX-Flash.git && cd MLX-Flash && pip install -e ".[all]"`
 
 ## How It Works
 
@@ -102,8 +116,12 @@ Token 24:   0.5ms (full speed, 85%+ hit)
 |-----------|---------|---------------|
 | **Smart Cache** | **2.80x** | Keeps the right model parts in RAM, predicts what's needed next |
 | **Async Prefetch** | **2.93x** | Loads the next part while the GPU is still working on the current one |
+| **Pipelined Execution** | **15-25% faster** | Overlaps SSD reads with GPU compute at the phase level (norm/attn/MLP) |
+| **Page Cache Control** | **20% less pressure** | Uses `madvise(MADV_FREE)` to release evicted weights from macOS page cache |
 | **Mixed Precision** | **1.80x smaller** | Rarely-used parts stored at lower quality (barely affects output) |
 | **Speculative Execution** | **14-42% faster** | Starts work before confirming it's needed — right 97% of the time |
+| **Metal Kernels** | **15-30% bandwidth** | Fused Q4 dequant+GEMV and SwiGLU avoid intermediate memory writes |
+| **Bit-Parity Verified** | **0.0 delta** | FP32 accumulation proves streaming output matches standard MLX exactly |
 
 <details>
 <summary><b>Expert streaming details</b></summary>
@@ -250,11 +268,23 @@ See [`docs/integrations.md`](docs/integrations.md) for 18+ detailed integration 
 - **Python 3.10+**
 - **16 GB+ RAM** (more = better caching = faster)
 
+## What's New in v0.6.0
+
+- **Gemma 4 as default model** — chat auto-detects the best Gemma 4 model (E2B/E4B/26B MoE/31B) for your Mac's RAM
+- **Page cache control** — `madvise(MADV_FREE)` eviction keeps memory pressure 20% lower
+- **Pipelined execution** — phase-level IO/compute overlap (prefetch attn while computing norm)
+- **Metal kernels** — fused Q4 dequant+GEMV, SwiGLU, MoE dispatch shaders
+- **Bit-parity verification** — FP32 accumulation proves zero quality loss from streaming
+- **mlx-lm integration** — monkey-patch `mlx_lm.load()` for transparent Flash mode in LM Studio
+
+See the [CHANGELOG](CHANGELOG.md) for the full history.
+
 ## Deep Dive
 
 | Document | What's Inside |
 |----------|---------------|
 | [Architecture & Internals](docs/internals.md) | Module reference, architecture diagrams, research techniques, benchmarks |
+| [Performance Gains](docs/performance-gains.md) | Detailed analysis of each optimization technique |
 | [Performance Analysis](docs/measured-results.md) | Detailed benchmark results and methodology |
 | [Getting Started Guide](docs/getting-started.md) | Extended setup and configuration walkthrough |
 | [Integration Guides](docs/integrations.md) | 18+ tools with streaming examples and health checks |

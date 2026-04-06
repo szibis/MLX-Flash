@@ -25,13 +25,22 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy psutil tabulate pytest lz4 zstandard safetensors huggingface-hub
+          pip install numpy psutil tabulate pytest pytest-cov lz4 zstandard safetensors huggingface-hub
           # MLX requires Apple Silicon - install if available
           pip install mlx mlx-lm || echo "MLX install skipped (may need Metal GPU)"
 
-      - name: Run tests
+      - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --tb=short -x
+          python -m pytest tests/ -v --tb=short \
+            --cov=mlx_flash_compress \
+            --cov-config=.coveragerc \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=90
+
+      - name: Print coverage summary
+        if: always()
+        run: python -m coverage report --rcfile=.coveragerc | tail -5
 
   test-rust:
     name: Rust Tests
