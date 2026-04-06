@@ -1,7 +1,18 @@
 """Tests for the inference server (no model loading)."""
 import json
+import sys
 import pytest
 from unittest.mock import patch, MagicMock
+
+# Pre-import the module so mock.patch can resolve dotted paths.
+# The serve module imports mlx which may not be available.
+try:
+    import mlx_flash_compress.serve
+    HAS_SERVE = True
+except (ImportError, ModuleNotFoundError):
+    HAS_SERVE = False
+
+pytestmark = pytest.mark.skipif(not HAS_SERVE, reason="serve module requires mlx")
 
 
 # ---------------------------------------------------------------------------

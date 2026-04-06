@@ -9,6 +9,18 @@ import pytest
 
 from mlx_flash_compress.cache import ExpertCacheManager, CacheTier
 
+try:
+    import lz4.frame
+    HAS_LZ4 = True
+except ImportError:
+    HAS_LZ4 = False
+
+try:
+    import zstandard
+    HAS_ZSTD = True
+except ImportError:
+    HAS_ZSTD = False
+
 
 @pytest.fixture
 def expert_dir():
@@ -46,6 +58,7 @@ class TestCacheManager:
         assert cache.stats.cold_hits == 2
         cache.shutdown()
 
+    @pytest.mark.skipif(not HAS_LZ4, reason="lz4 not installed (hot tier uses LZ4)")
     def test_hot_cache_hit(self, expert_dir):
         """After promotion, should get hot cache hits."""
         cache = ExpertCacheManager(
@@ -70,6 +83,7 @@ class TestCacheManager:
 
         cache.shutdown()
 
+    @pytest.mark.skipif(not HAS_ZSTD, reason="zstandard not installed (warm tier uses ZSTD)")
     def test_warm_cache_hit(self, expert_dir):
         """ZSTD warm tier should work."""
         cache = ExpertCacheManager(
@@ -95,6 +109,7 @@ class TestCacheManager:
 
         cache.shutdown()
 
+    @pytest.mark.skipif(not HAS_LZ4, reason="lz4 not installed (hot tier uses LZ4)")
     def test_eviction(self, expert_dir):
         """Cache should evict when limit is reached."""
         # Very small cache: 2KB (only fits ~1 expert)
@@ -133,6 +148,7 @@ class TestCacheManager:
 
         cache.shutdown()
 
+    @pytest.mark.skipif(not HAS_LZ4, reason="lz4 not installed (hot tier uses LZ4)")
     def test_stats_tracking(self, expert_dir):
         """Stats should accurately track cache behavior."""
         cache = ExpertCacheManager(

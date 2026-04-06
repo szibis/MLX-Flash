@@ -1,9 +1,16 @@
 """Tests for real expert streaming with GPU lookup tables."""
 import numpy as np
 import pytest
-from mlx_flash_compress.expert_streaming import (
-    LCPTracker, SafetensorsMap, ExpertCache, StreamingState,
-)
+
+try:
+    from mlx_flash_compress.expert_streaming import (
+        LCPTracker, SafetensorsMap, ExpertCache, StreamingState,
+    )
+    HAS_MODULE = True
+except (ImportError, ModuleNotFoundError):
+    HAS_MODULE = False
+
+pytestmark = pytest.mark.skipif(not HAS_MODULE, reason="expert_streaming requires mlx")
 
 
 class TestLCPTracker:
