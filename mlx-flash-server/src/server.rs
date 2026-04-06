@@ -42,6 +42,7 @@ pub fn create_router(state: AppState) -> Router {
 
     Router::new()
         .route("/admin", get(crate::dashboard::serve_dashboard))
+        .route("/chat", get(crate::chat_ui::serve_chat))
         .route("/status", get(handle_status))
         .route("/health", get(handle_status))
         .route("/hints", get(handle_hints))

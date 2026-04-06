@@ -1,4 +1,5 @@
 mod cache;
+mod chat_ui;
 mod dashboard;
 mod expert_store;
 mod mcp;
