@@ -31,8 +31,10 @@ struct Args {
     host: String,
     #[arg(long, default_value = "mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit")]
     model: String,
-    #[arg(long, help = "Launch Python worker automatically")]
+    #[arg(long, default_value = "true", help = "Launch Python workers automatically (use --no-launch-worker to disable)")]
     launch_worker: bool,
+    #[arg(long, help = "Don't launch Python workers (connect to existing)")]
+    no_launch_worker: bool,
     #[arg(long, help = "Preload model in Python worker")]
     preload: bool,
     #[arg(long, help = "Directory with expert weight files")]
@@ -47,6 +49,8 @@ struct Args {
     chat: bool,
     #[arg(long, default_value = "1", help = "Number of Python inference workers")]
     workers: usize,
+    #[arg(long, help = "Path to Python interpreter (auto-detects venv if not set)")]
+    python: Option<String>,
     #[arg(long, default_value = "text", help = "Log format: text or json")]
     log_format: String,
     #[arg(long, help = "Log file path (also logs to stdout)")]
@@ -112,8 +116,47 @@ async fn wait_for_worker(port: u16, timeout_secs: u64) -> bool {
     false
 }
 
-fn launch_python_worker(port: u16, model: &str, preload: bool) -> Option<Child> {
-    let mut cmd = Command::new("python3");
+/// Find the best Python interpreter: explicit --python, then venv, then system.
+fn find_python(explicit: &Option<String>) -> String {
+    // 1. Explicit --python flag
+    if let Some(p) = explicit {
+        return p.clone();
+    }
+
+    // 2. VIRTUAL_ENV environment variable
+    if let Ok(venv) = std::env::var("VIRTUAL_ENV") {
+        let venv_python = format!("{}/bin/python3", venv);
+        if std::path::Path::new(&venv_python).exists() {
+            return venv_python;
+        }
+    }
+
+    // 3. Auto-detect .venv* in current dir or parent dirs
+    let cwd = std::env::current_dir().unwrap_or_default();
+    for dir in [&cwd, &cwd.join(".."), &cwd.join("../..")]  {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(".venv") || name == "venv" {
+                    let candidate = entry.path().join("bin/python3");
+                    if candidate.exists() {
+                        tracing::info!("Auto-detected Python venv: {}", candidate.display());
+                        return candidate.to_string_lossy().to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. System python3
+    "python3".to_string()
+}
+
+fn launch_python_worker(port: u16, model: &str, preload: bool, python: &str) -> Option<Child> {
+    let mut cmd = Command::new(python);
+    // Set PYTHONPATH to project root so mlx_flash_compress is importable
+    let project_root = std::env::current_dir().unwrap_or_default();
+    cmd.env("PYTHONPATH", &project_root);
     cmd.args([
         "-m", "mlx_flash_compress.serve",
         "--port", &port.to_string(),
@@ -123,13 +166,14 @@ fn launch_python_worker(port: u16, model: &str, preload: bool) -> Option<Child> 
     if preload {
         cmd.arg("--preload");
     }
+    tracing::info!("Launching Python worker: {} -m mlx_flash_compress.serve --port {}", python, port);
     match cmd.spawn() {
         Ok(child) => {
-            tracing::info!("Python worker started (PID {})", child.id());
+            tracing::info!("Python worker started (PID {}) on port {}", child.id(), port);
             Some(child)
         }
         Err(e) => {
-            tracing::error!("Failed to start Python worker: {}", e);
+            tracing::error!("Failed to start Python worker: {} (python={})", e, python);
             None
         }
     }
@@ -218,10 +262,14 @@ async fn main() {
         Err(e) => tracing::warn!("Could not read memory state: {}", e),
     }
 
+    let python_path = find_python(&args.python);
+    tracing::info!("Python interpreter: {}", python_path);
+
     let mut _workers: Vec<Child> = Vec::new();
     let worker_count = args.workers.max(1);
 
-    if args.launch_worker {
+    let should_launch = args.launch_worker && !args.no_launch_worker;
+    if should_launch {
         for i in 0..worker_count {
             let port = args.python_port + i as u16;
             if is_port_in_use(port) {
@@ -238,7 +286,7 @@ async fn main() {
                 }
             }
 
-            if let Some(child) = launch_python_worker(port, &args.model, args.preload) {
+            if let Some(child) = launch_python_worker(port, &args.model, args.preload, &python_path) {
                 _workers.push(child);
             }
         }
@@ -297,6 +345,7 @@ async fn main() {
     // Background: periodic health check + auto-restart dead workers
     let health_pool = pool.clone();
     let health_model = model_for_restart.clone();
+    let health_python = python_path.clone();
     let health_base_port = args.python_port;
     let health_preload = preload_for_restart;
     tokio::spawn(async move {
@@ -328,7 +377,7 @@ async fn main() {
                         health_pool.mark_unhealthy(port);
                         // Auto-restart: launch a new worker on this port
                         if !is_port_in_use(port) {
-                            if let Some(_child) = launch_python_worker(port, &health_model, health_preload) {
+                            if let Some(_child) = launch_python_worker(port, &health_model, health_preload, &health_python) {
                                 tracing::info!(port, "Auto-restarted Python worker");
                                 // Wait for it to come up
                                 if wait_for_worker(port, 30).await {
