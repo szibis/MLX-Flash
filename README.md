@@ -197,7 +197,13 @@ See [Performance Gains](docs/performance-gains.md) for detailed analysis.
 
 ## Integrations
 
-MLX-Flash exposes an OpenAI-compatible API, so it works as a drop-in backend for most AI tools:
+MLX-Flash connects to every major AI tool via three protocols:
+
+| Protocol | Tools | Setup |
+|----------|-------|-------|
+| **MCP** (native tools) | Claude Code, Codex, Osaurus, BoltAI, apfel | Add to `mcp.json` — tools auto-discovered |
+| **OpenAI API** | LM Studio, Cursor, continue.dev, Open WebUI, Aider, any OpenAI SDK | `mlx-flash --port 8080` |
+| **Ollama API** | Ollama clients, Open WebUI (Ollama mode) | Same port, `/api/generate` + `/api/chat` |
 
 ```bash
 pip install mlx-flash
@@ -309,9 +315,45 @@ print(response.choices[0].message.content)
 </details>
 
 <details>
-<summary><b>More integrations (Ollama, continue.dev, Open WebUI, Aider)</b></summary>
+<summary><b>Ollama (native API compatibility)</b></summary>
 
-See [`docs/integrations.md`](docs/integrations.md) for 18+ detailed integration guides with streaming examples, health checks, and memory monitoring.
+MLX-Flash speaks Ollama's API natively — no adapter needed:
+
+```bash
+mlx-flash --port 8080 --preload
+
+# Ollama clients connect directly:
+curl http://localhost:8080/api/generate -d '{"model":"local","prompt":"Hello"}'
+curl http://localhost:8080/api/chat -d '{"model":"local","messages":[{"role":"user","content":"Hi"}]}'
+curl http://localhost:8080/api/tags  # list loaded models
+```
+
+</details>
+
+<details>
+<summary><b>Osaurus / BoltAI / apfel (MCP)</b></summary>
+
+Any MCP-compatible tool connects the same way:
+
+```json
+{
+  "mcpServers": {
+    "mlx-flash": {
+      "command": "python",
+      "args": ["-m", "mlx_flash_compress.mcp_server"]
+    }
+  }
+}
+```
+
+Tools get 6 capabilities: generate, check_memory, switch_model, release_memory, list_models, get_status.
+
+</details>
+
+<details>
+<summary><b>More (continue.dev, Open WebUI, Aider, mlx-lm, Swift)</b></summary>
+
+See [`docs/integrations.md`](docs/integrations.md) for 20+ detailed integration guides with streaming examples, health checks, and memory monitoring.
 
 </details>
 
