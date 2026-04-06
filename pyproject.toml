@@ -1,6 +1,6 @@
 [project]
 name = "mlx-flash"
-version = "0.6.0"
+version = "0.6.1"
 description = "Run AI models too large for your Mac's memory — expert caching, speculative execution, and 15+ research techniques for MoE inference on Apple Silicon"
 readme = "PYPI_README.md"
 license = {text = "MIT"}

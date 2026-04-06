@@ -1,6 +1,6 @@
 """MLX-Flash: Tiered compressed expert cache for MoE inference on Apple Silicon."""
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 
 def __getattr__(name):
