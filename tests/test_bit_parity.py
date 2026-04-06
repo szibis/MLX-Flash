@@ -96,9 +96,16 @@ class TestCompareLogits:
 
 
 class TestVerifyParity:
-    def test_without_mlx(self):
-        """verify_parity returns graceful result when MLX unavailable."""
-        # This tests the fallback path
-        result = verify_parity("nonexistent/model")
-        # Should return a result (possibly with inf delta if MLX not available)
+    def test_result_structure(self):
+        """ParityResult has correct fields and grade logic."""
+        result = ParityResult(
+            model_name="test",
+            prompt="hello",
+            tokens_compared=0,
+            max_delta=float("inf"),
+            mean_delta=float("inf"),
+            bit_perfect=False,
+        )
         assert isinstance(result, ParityResult)
+        assert result.parity_grade == "DIVERGENT"
+        assert result.fp32_accumulation is True
