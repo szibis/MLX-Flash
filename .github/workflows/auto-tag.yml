@@ -12,27 +12,22 @@ on:
 permissions:
   contents: write
   actions: write
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   auto-tag:
     name: Determine version and tag
     runs-on: ubuntu-latest
     # Skip if commit message starts with "chore:" or has [skip release]
-    if: "!contains(github.event.head_commit.message, '[skip release]') && !startsWith(github.event.head_commit.message, 'chore:')"
+    if: "!contains(github.event.head_commit.message, '[skip release]') && !startsWith(github.event.head_commit.message, 'chore:') && !startsWith(github.event.head_commit.message, 'release:')"
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Use PAT to bypass branch protection for version bump commit.
-          # Set RELEASE_TOKEN as a repo secret (PAT with repo scope + bypass branch protection).
-          # Falls back to GITHUB_TOKEN if RELEASE_TOKEN is not set.
-          token: ${{ secrets.RELEASE_TOKEN || github.token }}
 
       - name: Find merged PR and its labels
         id: pr
         run: |
-          # Get the PR that was merged in this push
           PR_NUM=$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/pulls --jq '.[0].number // empty' 2>/dev/null || echo "")
           echo "number=${PR_NUM}" >> $GITHUB_OUTPUT
 
@@ -63,7 +58,6 @@ jobs:
         if: steps.pr.outputs.bump != 'none'
         id: version
         run: |
-          # Get current version from pyproject.toml
           CURRENT=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "current=${CURRENT}" >> $GITHUB_OUTPUT
 
@@ -93,24 +87,52 @@ jobs:
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Bump version in files
+      # Create a release PR to bump version files (doesn't push directly to main)
+      - name: Create version bump PR
         if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
+        id: bump_pr
         run: |
           NEXT="${{ steps.version.outputs.next }}"
+          BRANCH="release/v${NEXT}"
+
+          # Create release branch
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "${BRANCH}"
+
+          # Bump version in files
           sed -i "s/^version = \".*\"/version = \"${NEXT}\"/" pyproject.toml
           sed -i "s/__version__ = \".*\"/__version__ = \"${NEXT}\"/" mlx_flash_compress/__init__.py
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml mlx_flash_compress/__init__.py
           git diff --cached --quiet && echo "No version change needed" && exit 0
-          git commit -m "release: v${NEXT} [skip release]"
-          git push origin main
 
+          git commit -m "release: v${NEXT} [skip release]"
+          git push origin "${BRANCH}"
+
+          # Create PR with auto-merge
+          PR_URL=$(gh pr create \
+            --title "release: v${NEXT}" \
+            --body "Automated version bump: ${{ steps.version.outputs.current }} → ${NEXT} (${{ steps.pr.outputs.bump }})" \
+            --label "release:automated" \
+            --head "${BRANCH}" \
+            --base main)
+          echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
+
+          # Note: PR needs 1 approval per ruleset. Approve + merge manually,
+          # or set up a GitHub App to auto-approve release PRs.
+          echo "Version bump PR created: ${PR_URL}"
+          echo "Approve and merge to update version files."
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      # Tag the CURRENT commit (before version bump) — the tag points to the actual code
       - name: Create and push tag
         if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
         run: |
           TAG="v${{ steps.version.outputs.next }}"
+          # Tag the main branch commit (the merged PR), not the bump commit
+          git checkout main
           git tag -a "${TAG}" -m "Release ${TAG}"
           git push origin "${TAG}"
           echo "Tagged ${TAG}"
@@ -121,9 +143,19 @@ jobs:
           TAG="v${{ steps.version.outputs.next }}"
           gh workflow run release.yml -f tag="${TAG}"
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
 
-      - name: Add labels to PR if missing
+      - name: Summary
+        if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
+        run: |
+          echo "### Release v${{ steps.version.outputs.next }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Tag: v${{ steps.version.outputs.next }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Bump: ${{ steps.pr.outputs.bump }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Version PR: ${{ steps.bump_pr.outputs.pr_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Release workflow triggered" >> $GITHUB_STEP_SUMMARY
+
+      - name: No release label
         if: steps.pr.outputs.bump == 'none' && steps.pr.outputs.number != ''
         run: |
           echo "PR #${{ steps.pr.outputs.number }} has no release label. Add one of:"
