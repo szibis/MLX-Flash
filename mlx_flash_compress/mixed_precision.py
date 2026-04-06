@@ -1,18 +1,27 @@
-"""DynaExq-inspired mixed-precision expert quantization.
+"""Multi-precision expert quantization with configurable hot/warm/cold tiers.
 
-Hot experts (frequently activated) stay at 4-bit.
-Cold experts (rarely activated) are requantized to 2-bit on-the-fly.
+Supports 6 precision levels for expert weights:
 
-This achieves ~50% bandwidth reduction on cold experts with tolerable
-quality loss — cold experts contribute less to output quality by definition.
+  Precision  | Bits | Size per 1K params | Quality     | Use Case
+  -----------|------|--------------------|-----------  |----------
+  FP16       | 16   | 2.0 KB             | Lossless    | Critical experts (top 5%)
+  Q8         | 8    | 1.0 KB             | Near-perfect| Hot experts (top 20%)
+  Q6         | 6    | 0.75 KB            | Very good   | Warm-hot experts
+  Q5         | 5    | 0.625 KB           | Good        | Warm experts
+  Q4 (default)| 4   | 0.5 KB             | Standard    | Base model format
+  Q3         | 3    | 0.375 KB           | Acceptable  | Cold-warm experts
+  Q2         | 2    | 0.25 KB            | Lossy       | Cold experts (bottom 30%)
 
-The 2-bit format: for each group of 32 weights, store:
-  - 8 bytes of packed 2-bit values (32 weights x 2 bits = 8 bytes)
-  - 2 bytes float16 scale
-  - 2 bytes float16 zero_point
-  Total: 12 bytes per group (vs 20 bytes at 4-bit = 40% reduction)
+The tier assignment is based on expert activation frequency:
+  - frequency > 15%  → FP16 (keep full precision for most-used experts)
+  - frequency > 8%   → Q8 (near-lossless for frequently-used experts)
+  - frequency > 5%   → Q4 (standard, no requantization needed)
+  - frequency > 2%   → Q3 (slight quality trade-off)
+  - frequency < 2%   → Q2 (aggressive compression for rarely-used experts)
 
-Reference: DynaExq (arxiv.org/abs/2511.15015)
+References:
+  - DynaExq (arxiv.org/abs/2511.15015) — dynamic expert quantization
+  - HOBBIT (arxiv.org/abs/2411.01433) — mixed precision per-expert
 """
 
 import time
@@ -45,6 +54,76 @@ class ExpertHotness:
         """Classify expert as 'hot' (>threshold) or 'cold' (<threshold)."""
         freq = self.get_frequency(layer_idx, expert_id)
         return "hot" if freq >= threshold else "cold"
+
+    def classify_precision(self, layer_idx: int, expert_id: int) -> str:
+        """Classify expert into a precision tier based on activation frequency.
+
+        Returns one of: 'fp16', 'q8', 'q4', 'q3', 'q2'
+        """
+        freq = self.get_frequency(layer_idx, expert_id)
+        if freq >= 0.15:
+            return "fp16"
+        elif freq >= 0.08:
+            return "q8"
+        elif freq >= 0.05:
+            return "q4"
+        elif freq >= 0.02:
+            return "q3"
+        else:
+            return "q2"
+
+
+# -- Precision tier definitions --
+
+PRECISION_TIERS = {
+    "fp16": {"bits": 16, "bytes_per_param": 2.0, "quality": "lossless"},
+    "q8":   {"bits": 8,  "bytes_per_param": 1.0, "quality": "near-perfect"},
+    "q6":   {"bits": 6,  "bytes_per_param": 0.75, "quality": "very good"},
+    "q5":   {"bits": 5,  "bytes_per_param": 0.625, "quality": "good"},
+    "q4":   {"bits": 4,  "bytes_per_param": 0.5, "quality": "standard"},
+    "q3":   {"bits": 3,  "bytes_per_param": 0.375, "quality": "acceptable"},
+    "q2":   {"bits": 2,  "bytes_per_param": 0.25, "quality": "lossy"},
+}
+
+
+def estimate_tier_savings(
+    num_experts: int,
+    expert_params: int,
+    activation_frequencies: dict,
+) -> dict:
+    """Estimate memory savings from multi-tier precision.
+
+    Args:
+        num_experts: Total number of experts per layer
+        expert_params: Parameters per expert
+        activation_frequencies: {expert_id: frequency} dict
+
+    Returns dict with per-tier counts and total savings.
+    """
+    hotness = ExpertHotness()
+    hotness.total_tokens = 1000  # normalize
+    for eid, freq in activation_frequencies.items():
+        hotness.activation_counts[(0, eid)] = int(freq * 1000)
+
+    tier_counts = {"fp16": 0, "q8": 0, "q4": 0, "q3": 0, "q2": 0}
+    for eid in range(num_experts):
+        tier = hotness.classify_precision(0, eid)
+        tier_counts[tier] += 1
+
+    # Calculate total bytes
+    baseline_bytes = num_experts * expert_params * 0.5  # Q4 baseline
+    tiered_bytes = sum(
+        tier_counts[tier] * expert_params * PRECISION_TIERS[tier]["bytes_per_param"]
+        for tier in tier_counts
+    )
+
+    return {
+        "tier_counts": tier_counts,
+        "baseline_bytes": baseline_bytes,
+        "tiered_bytes": tiered_bytes,
+        "savings_ratio": 1.0 - (tiered_bytes / baseline_bytes) if baseline_bytes > 0 else 0,
+        "effective_bits": (tiered_bytes * 8) / (num_experts * expert_params) if expert_params > 0 else 0,
+    }
 
 
 def requantize_4bit_to_2bit(
