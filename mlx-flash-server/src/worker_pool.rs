@@ -115,26 +115,28 @@ impl WorkerPool {
             .min()
             .unwrap();
 
-        // Among workers with min inflight, pick the warmest (most total requests)
+        // Among workers with min inflight, pick the warmest (most total requests).
+        // Snapshot atomic values once to avoid TOCTOU races under concurrent access.
         let candidates: Vec<_> = healthy
             .into_iter()
             .filter(|w| w.inflight.load(Ordering::Relaxed) == min_inflight)
             .collect();
 
-        if candidates.len() == 1 {
-            return Some(candidates[0]);
+        if candidates.len() <= 1 {
+            return candidates.into_iter().next();
         }
 
-        // Multiple candidates with same inflight — prefer warmest cache
-        let max_total = candidates
+        // Snapshot total_requests once per candidate to avoid TOCTOU
+        let snapshots: Vec<_> = candidates
             .iter()
             .map(|w| w.total_requests.load(Ordering::Relaxed))
-            .max()
-            .unwrap();
-
+            .collect();
+        let max_total = *snapshots.iter().max().unwrap();
         let warmest: Vec<_> = candidates
-            .into_iter()
-            .filter(|w| w.total_requests.load(Ordering::Relaxed) == max_total)
+            .iter()
+            .zip(snapshots.iter())
+            .filter(|(_, t)| **t == max_total)
+            .map(|(w, _)| *w)
             .collect();
 
         if warmest.len() == 1 {
@@ -142,7 +144,8 @@ impl WorkerPool {
         }
 
         // Perfect tie (e.g. all cold workers at startup) — rotate
-        let idx = self.tie_breaker.fetch_add(1, Ordering::Relaxed) % warmest.len();
+        let n = warmest.len().max(1);
+        let idx = self.tie_breaker.fetch_add(1, Ordering::Relaxed) % n;
         Some(warmest[idx])
     }
 
@@ -429,15 +432,19 @@ mod tests {
     #[test]
     fn test_concurrent_access() {
         let pool = Arc::new(WorkerPool::new(8081, 4));
+        let success_count = Arc::new(AtomicU64::new(0));
         let handles: Vec<_> = (0..8)
             .map(|_| {
                 let pool = pool.clone();
+                let success = success_count.clone();
                 std::thread::spawn(move || {
                     for _ in 0..100 {
-                        let w = pool.next_worker().unwrap();
-                        w.inflight.fetch_add(1, Ordering::Relaxed);
-                        w.total_requests.fetch_add(1, Ordering::Relaxed);
-                        w.inflight.fetch_sub(1, Ordering::Relaxed);
+                        if let Some(w) = pool.next_worker() {
+                            w.inflight.fetch_add(1, Ordering::Relaxed);
+                            w.total_requests.fetch_add(1, Ordering::Relaxed);
+                            w.inflight.fetch_sub(1, Ordering::Relaxed);
+                            success.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 })
             })
@@ -448,8 +455,10 @@ mod tests {
         let total: u64 = pool
             .workers
             .iter()
-            .map(|w| w.total_requests.load(Ordering::Relaxed))
+            .map(|w| w.total_requests.load(Ordering::SeqCst))
             .sum();
-        assert_eq!(total, 800);
+        let expected = success_count.load(Ordering::SeqCst);
+        assert_eq!(total, expected, "total_requests must match successful dispatches");
+        assert_eq!(expected, 800, "all 800 dispatches should succeed (all workers healthy)");
     }
 }
