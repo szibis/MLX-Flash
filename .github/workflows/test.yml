@@ -38,14 +38,26 @@ jobs:
             --cov-report=xml:coverage.xml \
             --cov-fail-under=90
 
-      - name: Upload coverage
-        if: matrix.python-version == '3.13'
-        uses: codecov/codecov-action@v4
+      - name: Extract coverage percentage
+        if: matrix.python-version == '3.13' && github.ref == 'refs/heads/main'
+        id: coverage
+        run: |
+          COV=$(python -m coverage report --rcfile=.coveragerc | tail -1 | awk '{print $NF}' | tr -d '%')
+          echo "coverage=${COV}" >> $GITHUB_OUTPUT
+          echo "Coverage: ${COV}%"
+
+      - name: Update coverage badge
+        if: matrix.python-version == '3.13' && github.ref == 'refs/heads/main'
+        uses: schneegans/dynamic-badges-action@v1.7.0
         with:
-          file: coverage.xml
-          fail_ci_if_error: false
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          auth: ${{ secrets.GIST_TOKEN }}
+          gistID: ${{ vars.COVERAGE_GIST_ID }}
+          filename: coverage.json
+          label: coverage
+          message: ${{ steps.coverage.outputs.coverage }}%
+          valColorRange: ${{ steps.coverage.outputs.coverage }}
+          minColorRange: 50
+          maxColorRange: 95
 
   test-rust:
     name: Rust Tests
