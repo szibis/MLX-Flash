@@ -79,14 +79,18 @@ def _flash_load_wrapper(
 
 def _is_moe_model(model) -> bool:
     """Detect if a model uses Mixture of Experts."""
-    model_str = str(type(model)).lower()
+    # Check class name (works with real MLX model classes)
+    class_name = getattr(type(model), "__name__", "")
+    model_str = (class_name + " " + str(type(model))).lower()
     if any(k in model_str for k in ("mixtral", "moe", "switch", "deepseek")):
         return True
 
-    # Check for expert layers
-    for name, _ in getattr(model, "named_modules", lambda: [])():
-        if "expert" in name.lower() or "gate" in name.lower():
-            return True
+    # Check for expert layers via named_modules
+    named_modules = getattr(model, "named_modules", None)
+    if callable(named_modules):
+        for name, _ in named_modules():
+            if "expert" in name.lower() or "gate" in name.lower():
+                return True
 
     return False
 

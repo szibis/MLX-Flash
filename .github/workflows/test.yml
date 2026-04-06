@@ -33,9 +33,10 @@ jobs:
         run: |
           python -m pytest tests/ -v --tb=short \
             --cov=mlx_flash_compress \
+            --cov-config=.coveragerc \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
-            --cov-fail-under=50
+            --cov-fail-under=90
 
       - name: Upload coverage
         if: matrix.python-version == '3.13'

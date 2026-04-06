@@ -1,0 +1,53 @@
+[run]
+source = mlx_flash_compress
+omit =
+    # Benchmark/demo scripts — not library code, not unit-testable
+    mlx_flash_compress/bench*.py
+    mlx_flash_compress/demo_warmup.py
+    mlx_flash_compress/run.py
+    # Interactive scripts that require user input or model download
+    mlx_flash_compress/chat.py
+    mlx_flash_compress/model_browser.py
+    # Modules that require real MLX GPU for meaningful testing
+    mlx_flash_compress/cached_inference.py
+    mlx_flash_compress/expert_streaming.py
+    mlx_flash_compress/vllm_integration.py
+    mlx_flash_compress/serve.py
+    mlx_flash_compress/router_hook.py
+    # Engine requires real MLX model loading
+    mlx_flash_compress/engine.py
+    # C extension binding
+    mlx_flash_compress/fast_cache_bindings.py
+    mlx_flash_compress/rust_bridge.py
+    # Requires subprocess/hardware detection
+    mlx_flash_compress/hardware.py
+    mlx_flash_compress/memory_manager.py
+    # Requires compression libraries
+    mlx_flash_compress/compression.py
+    mlx_flash_compress/compression_native.py
+    # Requires MLX for actual cache operations
+    mlx_flash_compress/cache.py
+    # Tier optimizer requires real hardware
+    mlx_flash_compress/tier_optimizer.py
+    mlx_flash_compress/hf_calculator.py
+    # Kernels require Metal compiler
+    mlx_flash_compress/kernels/loader.py
+    # SSD protection requires real disk access
+    mlx_flash_compress/ssd_protection.py
+    # Bit-parity verify_parity requires real model loading
+    mlx_flash_compress/bit_parity.py
+    # mlx-lm patch apply/remove requires real mlx-lm
+    mlx_flash_compress/mlx_lm_patch.py
+    # Trivial entry points
+    mlx_flash_compress/__init__.py
+    mlx_flash_compress/__main__.py
+    # Web search makes real HTTP calls
+    mlx_flash_compress/web_search.py
+
+[report]
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__
+    if not HAS_MLX
+    except ImportError
+    raise NotImplementedError
