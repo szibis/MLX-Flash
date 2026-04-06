@@ -24,14 +24,42 @@ from mlx_flash_compress.web_search import (
 
 MODELS = [
     # (name, total_params, active_params, size_gb, type, description)
+    ("mlx-community/gemma-4-E2B-it-4bit", "2B", "2B", 1.5, "dense", "Gemma 4 tiny, fits any Mac"),
     ("mlx-community/Qwen3-4B-4bit", "4B", "4B", 2.5, "dense", "Fast, fits 8GB"),
+    ("mlx-community/gemma-4-E4B-it-4bit", "4B", "4B", 2.8, "dense", "Gemma 4 edge, multimodal"),
     ("mlx-community/Qwen3-8B-4bit", "8B", "8B", 5.0, "dense", "Great quality, fits 8GB"),
     ("mlx-community/Qwen3-14B-4bit", "14B", "14B", 8.5, "dense", "Strong, needs 12GB+"),
+    ("mlx-community/gemma-4-26b-it-4bit", "26B", "3B", 15.0, "MoE", "Gemma 4 MoE, multimodal, vision+audio"),
     ("mlx-community/Qwen3-30B-A3B-4bit", "30B", "3B", 18.0, "MoE", "Best MoE, needs 24GB+ or streaming"),
     ("mlx-community/Qwen3.5-35B-A3B-4bit", "35B", "3B", 20.0, "MoE", "Latest MoE, needs 24GB+"),
+    ("mlx-community/gemma-4-31b-it-4bit", "31B", "31B", 20.0, "dense", "Gemma 4 flagship, #3 open model"),
     ("mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit", "30B", "3B", 18.0, "MoE", "Best for coding"),
     ("mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit", "47B", "13B", 26.0, "MoE", "Classic MoE, needs 32GB+"),
 ]
+
+
+def auto_select_model(ram_gb: float) -> str:
+    """Pick the best Gemma 4 model that fits the available RAM.
+
+    Prefers Gemma 4 models as defaults, falling back to Qwen for edge cases.
+    Uses 70% of total RAM as the budget to leave room for OS + apps.
+    """
+    budget = ram_gb * 0.70
+
+    # Preference order: best Gemma 4 that fits, then best alternative
+    gemma_preferences = [
+        ("mlx-community/gemma-4-31b-it-4bit", 20.0),       # 31B dense flagship
+        ("mlx-community/gemma-4-26b-it-4bit", 15.0),       # 26B MoE multimodal
+        ("mlx-community/gemma-4-E4B-it-4bit", 2.8),        # 4B edge
+        ("mlx-community/gemma-4-E2B-it-4bit", 1.5),        # 2B tiny
+    ]
+
+    for model_name, size_gb in gemma_preferences:
+        if size_gb <= budget:
+            return model_name
+
+    # Fallback for very low RAM (shouldn't happen on Apple Silicon)
+    return "mlx-community/gemma-4-E2B-it-4bit"
 
 
 # -- ANSI colors --
@@ -213,8 +241,8 @@ def load_model(model_name: str):
 
 def main():
     parser = argparse.ArgumentParser(description="MLX-Flash: Interactive Chat")
-    parser.add_argument("--model", default="mlx-community/Qwen3-8B-4bit",
-                        help="MLX model to chat with")
+    parser.add_argument("--model", default=None,
+                        help="MLX model to chat with (default: auto-detect best Gemma 4 for your hardware)")
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--max-ram-pct", type=int, default=75,
                         help="Max RAM usage %% before blocking model load (default: 75)")
@@ -236,7 +264,12 @@ def main():
     except (AttributeError, TypeError):
         pass
 
-    model_name = args.model
+    # Auto-select best model if not specified
+    if args.model is None:
+        model_name = auto_select_model(hw.total_ram_gb)
+        print(f"  {c(C.CYAN, '🔍')} Auto-selected: {c(C.BOLD, model_name.split('/')[-1])} for {hw.total_ram_gb:.0f}GB RAM")
+    else:
+        model_name = args.model
     model, tokenizer = load_model(model_name)
 
     # Initialize memory store

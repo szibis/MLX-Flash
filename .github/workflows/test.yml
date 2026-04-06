@@ -25,13 +25,26 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install numpy psutil tabulate pytest lz4 zstandard safetensors huggingface-hub
+          pip install numpy psutil tabulate pytest pytest-cov lz4 zstandard safetensors huggingface-hub
           # MLX requires Apple Silicon - install if available
           pip install mlx mlx-lm || echo "MLX install skipped (may need Metal GPU)"
 
-      - name: Run tests
+      - name: Run tests with coverage
         run: |
-          python -m pytest tests/ -v --tb=short -x
+          python -m pytest tests/ -v --tb=short -x \
+            --cov=mlx_flash_compress \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage.xml \
+            --cov-fail-under=70
+
+      - name: Upload coverage
+        if: matrix.python-version == '3.13'
+        uses: codecov/codecov-action@v4
+        with:
+          file: coverage.xml
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   test-rust:
     name: Rust Tests
