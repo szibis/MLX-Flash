@@ -500,7 +500,21 @@ open http://localhost:3000   # admin / mlxflash
 
 Pre-built Grafana dashboard at `dashboards/mlx-flash-overview.json` — auto-provisioned with `docker compose --profile monitoring up`.
 
-See [docs/metrics.md](docs/metrics.md) for the full reference (30+ metrics), example PromQL queries, and alerting rules.
+**Structured logs** — both Rust and Python emit unified structured logs (JSON or text) to stdout and optionally to file:
+
+```bash
+# JSON logs for Loki / Datadog / ELK
+mlx-flash --port 8080 --log-format json
+
+# JSON + file
+mlx-flash --port 8080 --log-format json --log-file /var/log/mlx-flash.log
+```
+
+```json
+{"timestamp":"2026-04-06T14:32:01Z","level":"info","component":"python-worker","worker_port":8081,"message":"Model loaded","model":"Qwen3-30B","load_time_s":4.2}
+```
+
+See [docs/metrics.md](docs/metrics.md) for the full metrics reference (30+ metrics), and [docs/logging.md](docs/logging.md) for structured logging, Vector/Loki config, and log field reference.
 
 ## Web UI
 

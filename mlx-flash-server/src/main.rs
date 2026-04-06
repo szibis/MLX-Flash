@@ -17,6 +17,7 @@ use std::net::TcpStream;
 use std::process::{Child, Command};
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser)]
 #[command(name = "mlx-flash-server", about = "Rust sidecar for MLX-Flash-Compress")]
@@ -45,6 +46,10 @@ struct Args {
     chat: bool,
     #[arg(long, default_value = "1", help = "Number of Python inference workers")]
     workers: usize,
+    #[arg(long, default_value = "text", help = "Log format: text or json")]
+    log_format: String,
+    #[arg(long, help = "Log file path (also logs to stdout)")]
+    log_file: Option<String>,
 }
 
 fn run_mcp_stdio(python_port: u16) {
@@ -145,7 +150,56 @@ async fn main() {
         return;
     }
 
-    tracing_subscriber::fmt::init();
+    // Structured logging: JSON or text, stdout + optional file
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+
+    if args.log_format == "json" {
+        if let Some(ref log_path) = args.log_file {
+            let dir = std::path::Path::new(log_path).parent().unwrap_or(std::path::Path::new("."));
+            let filename = std::path::Path::new(log_path).file_name().unwrap_or_default();
+            let file_appender = tracing_appender::rolling::never(dir, filename);
+            let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer().json()
+                    .with_target(true)
+                    .with_thread_ids(true)
+                    .flatten_event(true))
+                .with(tracing_subscriber::fmt::layer().json()
+                    .with_writer(non_blocking)
+                    .with_target(true)
+                    .flatten_event(true))
+                .init();
+            // Keep _guard alive for the duration of main
+            Box::leak(Box::new(_guard));
+        } else {
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer().json()
+                    .with_target(true)
+                    .with_thread_ids(true)
+                    .flatten_event(true))
+                .init();
+        }
+    } else {
+        if let Some(ref log_path) = args.log_file {
+            let dir = std::path::Path::new(log_path).parent().unwrap_or(std::path::Path::new("."));
+            let filename = std::path::Path::new(log_path).file_name().unwrap_or_default();
+            let file_appender = tracing_appender::rolling::never(dir, filename);
+            let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(tracing_subscriber::fmt::layer())
+                .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+                .init();
+            Box::leak(Box::new(_guard));
+        } else {
+            tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .init();
+        }
+    }
 
     match memory::get_memory_state() {
         Ok(mem) => tracing::info!(

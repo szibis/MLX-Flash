@@ -33,6 +33,10 @@ from mlx_lm import load, generate
 
 from mlx_flash_compress.hardware import detect_hardware
 from mlx_flash_compress.memory_manager import MemoryManager, get_memory_state
+from mlx_flash_compress.log_config import setup_logging
+
+# Module-level logger, configured in main()
+logger = None
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -60,30 +64,33 @@ class InferenceState:
 
     def load_model(self):
         """Load the model with memory checks."""
+        global logger
+        log = logger or __import__('logging').getLogger("mlx_flash")
         mem = get_memory_state()
-        print(f"\n  Memory before load:")
-        print(f"    Total: {mem.total_gb:.1f}GB")
-        print(f"    Free:  {mem.free_gb:.1f}GB")
-        print(f"    Available: {mem.available_gb:.1f}GB")
-        print(f"    Pressure: {mem.pressure_level}")
+        log.info("Memory before load", extra={
+            "action": "pre_load_memory",
+            "memory_gb": round(mem.total_gb, 1),
+            "pressure": mem.pressure_level,
+        })
 
         if mem.pressure_level == "critical":
-            print("\n  WARNING: Memory pressure is CRITICAL!")
-            print("  Consider closing other applications before loading the model.")
-            print("  Continuing anyway...")
+            log.warning("Memory pressure CRITICAL — loading anyway", extra={
+                "action": "critical_pressure_warning",
+                "memory_gb": round(mem.available_gb, 1),
+            })
 
-        print(f"\n  Loading model: {self.model_name}")
+        log.info("Loading model", extra={"model": self.model_name, "action": "model_load_start"})
 
         # Pre-download with progress if not cached locally
         if not os.path.isdir(self.model_name):
             try:
                 from huggingface_hub import snapshot_download
-                print("  Downloading model files (with progress)...")
+                log.info("Downloading model files", extra={"model": self.model_name, "action": "download_start"})
                 snapshot_download(
                     self.model_name,
                     allow_patterns=["*.safetensors", "*.json", "tokenizer*"],
                 )
-                print("  Download complete.")
+                log.info("Download complete", extra={"model": self.model_name, "action": "download_complete"})
             except Exception:
                 pass  # mlx_lm.load will handle download as fallback
 
@@ -91,10 +98,14 @@ class InferenceState:
         self.model, self.tokenizer = load(self.model_name)
         mx.synchronize()
         load_time = time.monotonic() - t0
-        print(f"  Loaded in {load_time:.1f}s")
+        log.info("Model loaded", extra={
+            "model": self.model_name,
+            "load_time_s": round(load_time, 1),
+            "action": "model_load_complete",
+        })
 
         # Warmup: compile Metal shaders and allocate KV cache
-        print("  Warming up (compiling shaders)...")
+        log.info("Warming up (compiling Metal shaders)", extra={"action": "warmup_start"})
         t_warm = time.monotonic()
         warmup_prompt = "Hello"
         if hasattr(self.tokenizer, "apply_chat_template"):
@@ -108,17 +119,26 @@ class InferenceState:
         _ = generate(self.model, self.tokenizer, prompt=warmup_prompt,
                      max_tokens=5, verbose=False)
         mx.synchronize()
-        print(f"  Warm-up done in {time.monotonic() - t_warm:.1f}s")
+        log.info("Warm-up done", extra={
+            "load_time_s": round(time.monotonic() - t_warm, 1),
+            "action": "warmup_complete",
+        })
 
         # Check post-load memory
         mem_after = get_memory_state()
         model_size_gb = mem.available_gb - mem_after.available_gb
-        print(f"\n  Model size (estimated): {model_size_gb:.1f}GB")
-        print(f"  RAM remaining: {mem_after.available_gb:.1f}GB")
-        print(f"  Pressure: {mem_after.pressure_level}")
+        log.info("Post-load memory", extra={
+            "model": self.model_name,
+            "memory_gb": round(mem_after.available_gb, 1),
+            "pressure": mem_after.pressure_level,
+            "action": "post_load_memory",
+        })
 
         if mem_after.pressure_level in ("warning", "critical"):
-            print("\n  MEMORY PRESSURE DETECTED after model load!")
+            log.warning("Memory pressure detected after model load", extra={
+                "pressure": mem_after.pressure_level,
+                "memory_gb": round(mem_after.available_gb, 1),
+            })
             self._suggest_memory_actions(mem_after)
 
         # Auto mixed-precision: if model barely fits, reduce footprint
@@ -133,16 +153,13 @@ class InferenceState:
 
     def _suggest_memory_actions(self, mem):
         """Suggest actions to reduce memory pressure."""
-        print("\n  Suggestions to free RAM:")
-        print("    1. Close browser tabs (each tab uses 100-500MB)")
-        print("    2. Close Xcode/Android Studio (1-4GB each)")
-        print("    3. Close Docker Desktop (1-2GB)")
-        print("    4. Quit unused apps in Dock")
-        if mem.swap_used_gb > 0:
-            print(f"    5. {mem.swap_used_gb:.1f}GB in swap — closing apps will help most")
-        print()
-        print("  Or use a smaller model / enable mixed precision:")
-        print("    python -m mlx_flash_compress.serve --model PATH --mixed-precision")
+        global logger
+        log = logger or __import__('logging').getLogger("mlx_flash")
+        log.warning("Memory optimization suggestions: close browser tabs, Xcode, Docker. "
+                     "Or use a smaller model / enable mixed precision.", extra={
+            "action": "memory_suggestions",
+            "memory_gb": round(mem.available_gb, 1),
+        })
 
     def get_status(self) -> dict:
         """Get current server status with optimization hints."""
@@ -300,7 +317,8 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         state = self.server_state
         old_model = state.model_name
-        print(f"  Switching model: {old_model} -> {new_model}")
+        log = logger or __import__('logging').getLogger("mlx_flash")
+        log.info("Switching model", extra={"model": new_model, "action": "model_switch"})
 
         # Unload current model
         state.model = None
@@ -612,10 +630,13 @@ poll();setInterval(poll,2000);
         self.end_headers()
 
     def log_message(self, format, *args):
-        """Quiet logging — only show requests."""
+        """Route HTTP access logs through structured logger."""
+        log = logger or __import__('logging').getLogger("mlx_flash")
         msg = format % args
-        if "POST" in msg or "error" in msg.lower():
-            print(f"  [{time.strftime('%H:%M:%S')}] {msg}")
+        if "POST" in msg:
+            log.info(msg, extra={"action": "http_request"})
+        elif "error" in msg.lower() or "404" in msg or "500" in msg:
+            log.warning(msg, extra={"action": "http_error"})
 
 
 def main():
@@ -629,7 +650,20 @@ def main():
     parser.add_argument("--preload", action="store_true", help="Load model immediately")
     parser.add_argument("--kv-bits", type=int, default=0, choices=[0, 4, 8],
                         help="KV cache quantization bits (0=none, 8=45%% memory savings)")
+    parser.add_argument("--log-format", default="text", choices=["text", "json"],
+                        help="Log format: text (human) or json (structured)")
+    parser.add_argument("--log-file", default=None,
+                        help="Log file path (also logs to stdout)")
     args = parser.parse_args()
+
+    # Initialize structured logging
+    global logger
+    logger = setup_logging(
+        component="python-worker",
+        port=args.port,
+        json_format=(args.log_format == "json"),
+        log_file=args.log_file,
+    )
 
     # Auto-select model based on available RAM
     if args.model is None:
@@ -644,16 +678,18 @@ def main():
         else:
             args.model = "mlx-community/Qwen3-4B-4bit"  # 4B dense, ~2.5GB
 
-    print()
-    print("=" * 60)
-    print("  MLX-Flash: Inference Server")
-    print("=" * 60)
-
     state = InferenceState(args.model, kv_bits=args.kv_bits)
-    print(f"\n  Hardware: {state.hw.chip}, {state.hw.total_ram_gb:.0f}GB RAM")
+
+    logger.info("MLX-Flash inference server starting", extra={
+        "model": args.model,
+        "port": args.port,
+    })
 
     mem = get_memory_state()
-    print(f"  Memory: {mem.available_gb:.1f}GB available, pressure: {mem.pressure_level}")
+    logger.info("Hardware detected", extra={
+        "memory_gb": round(mem.available_gb, 1),
+        "pressure": mem.pressure_level,
+    })
 
     if args.preload:
         state.load_model()
@@ -661,18 +697,16 @@ def main():
     ChatHandler.server_state = state
 
     server = ThreadedHTTPServer((args.host, args.port), ChatHandler)
-    print(f"\n  Server running on http://{args.host}:{args.port}")
-    print(f"  API endpoint: http://{args.host}:{args.port}/v1/chat/completions")
-    print(f"  Status: http://{args.host}:{args.port}/status")
-    print(f"\n  Compatible with: LM Studio (custom endpoint), continue.dev, OpenAI SDK")
-    print(f"  Model loads on first request (or use --preload)")
-    print(f"\n  Press Ctrl+C to stop")
-    print()
+    logger.info("Server listening", extra={
+        "port": args.port,
+        "action": "server_start",
+        "model": args.model,
+    })
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\n  Shutting down...")
+        logger.info("Shutting down", extra={"action": "server_stop"})
         server.shutdown()
 
 
