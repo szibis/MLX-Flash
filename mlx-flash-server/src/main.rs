@@ -1,5 +1,6 @@
 mod cache;
 mod expert_store;
+mod mcp;
 mod memory;
 mod protocol;
 mod proxy;
@@ -7,6 +8,7 @@ mod server;
 mod socket_server;
 
 use clap::Parser;
+use std::io::BufRead as _;
 use std::process::{Child, Command};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -32,6 +34,30 @@ struct Args {
     cache_mb: u32,
     #[arg(long, default_value = "/tmp/mlx-flash-cache.sock", help = "Unix socket path for expert cache")]
     socket_path: String,
+    #[arg(long, help = "Run as MCP stdio server for Claude Code / Codex")]
+    mcp: bool,
+}
+
+fn run_mcp_stdio(python_port: u16) {
+    let stdin = std::io::stdin();
+    let reader = stdin.lock();
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        let line = line.trim().to_string();
+        if line.is_empty() {
+            continue;
+        }
+        let request: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if let Some(response) = mcp::handle_request(&request, python_port) {
+            println!("{}", serde_json::to_string(&response).unwrap_or_default());
+        }
+    }
 }
 
 fn launch_python_worker(port: u16, model: &str, preload: bool) -> Option<Child> {
@@ -60,6 +86,13 @@ fn launch_python_worker(port: u16, model: &str, preload: bool) -> Option<Child> 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+
+    // MCP stdio mode — no HTTP, just JSON-RPC over stdin/stdout
+    if args.mcp {
+        run_mcp_stdio(args.python_port);
+        return;
+    }
+
     tracing_subscriber::fmt::init();
 
     match memory::get_memory_state() {

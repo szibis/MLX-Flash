@@ -12,7 +12,7 @@
   <a href="https://github.com/szibis/MLX-Flash/releases/latest"><img src="https://img.shields.io/github/v/release/szibis/MLX-Flash?color=orange&label=Release" alt="GitHub Release" /></a>
   <a href="https://github.com/szibis/MLX-Flash/actions"><img src="https://github.com/szibis/MLX-Flash/actions/workflows/test.yml/badge.svg" alt="Tests" /></a>
   <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage 91%" />
-  <img src="https://img.shields.io/badge/tests-320-blue" alt="320 Tests" />
+  <img src="https://img.shields.io/badge/tests-355-blue" alt="355 Tests" />
   <a href="https://github.com/szibis/MLX-Flash/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License" /></a>
   <a href="https://github.com/szibis/MLX-Flash"><img src="https://img.shields.io/github/stars/szibis/MLX-Flash?style=social" alt="Stars" /></a>
 </p>
@@ -197,7 +197,13 @@ See [Performance Gains](docs/performance-gains.md) for detailed analysis.
 
 ## Integrations
 
-MLX-Flash exposes an OpenAI-compatible API, so it works as a drop-in backend for most AI tools:
+MLX-Flash connects to every major AI tool via three protocols:
+
+| Protocol | Tools | Setup |
+|----------|-------|-------|
+| **MCP** (native tools) | Claude Code, Codex, Osaurus, BoltAI, apfel | Add to `mcp.json` — tools auto-discovered |
+| **OpenAI API** | LM Studio, Cursor, continue.dev, Open WebUI, Aider, any OpenAI SDK | `mlx-flash --port 8080` |
+| **Ollama API** | Ollama clients, Open WebUI (Ollama mode) | Same port, `/api/generate` + `/api/chat` |
 
 ```bash
 pip install mlx-flash
@@ -227,31 +233,61 @@ mlx-flash --port 8080 --preload
 </details>
 
 <details>
-<summary><b>Claude Code</b></summary>
+<summary><b>Claude Code (MCP — native tool integration)</b></summary>
 
-```bash
-# Terminal 1: Start server
-mlx-flash --port 8080 --preload
+**Recommended: MCP mode** — Claude Code discovers tools automatically:
 
-# Terminal 2: Use with Claude Code
-export OPENAI_API_BASE=http://localhost:8080/v1
-export OPENAI_API_KEY=not-needed
-```
-
-Or add to `~/.claude/.mcp.json`:
+Add to `~/.claude/mcp.json`:
 ```json
 {
-  "mlx-flash": {
-    "command": "mlx-flash",
-    "args": ["--model", "mlx-community/Qwen3-30B-A3B-4bit", "--port", "8080"]
+  "mcpServers": {
+    "mlx-flash": {
+      "command": "python",
+      "args": ["-m", "mlx_flash_compress.mcp_server"]
+    }
   }
 }
+```
+
+Or with the Rust sidecar (faster memory checks):
+```json
+{
+  "mcpServers": {
+    "mlx-flash": {
+      "command": "mlx-flash-server",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+Claude Code gets 6 tools: `generate`, `check_memory`, `switch_model`, `release_memory`, `list_models`, `get_status`.
+
+**Alternative: OpenAI-compatible API mode:**
+```bash
+mlx-flash --port 8080 --preload
+export OPENAI_API_BASE=http://localhost:8080/v1
+export OPENAI_API_KEY=not-needed
 ```
 
 </details>
 
 <details>
-<summary><b>Codex CLI</b></summary>
+<summary><b>Codex CLI (MCP or API)</b></summary>
+
+**MCP mode** (same config as Claude Code):
+```json
+{
+  "mcpServers": {
+    "mlx-flash": {
+      "command": "python",
+      "args": ["-m", "mlx_flash_compress.mcp_server"]
+    }
+  }
+}
+```
+
+**API mode:**
 
 ```bash
 mlx-flash --port 8080 --preload
@@ -279,9 +315,45 @@ print(response.choices[0].message.content)
 </details>
 
 <details>
-<summary><b>More integrations (Ollama, continue.dev, Open WebUI, Aider)</b></summary>
+<summary><b>Ollama (native API compatibility)</b></summary>
 
-See [`docs/integrations.md`](docs/integrations.md) for 18+ detailed integration guides with streaming examples, health checks, and memory monitoring.
+MLX-Flash speaks Ollama's API natively — no adapter needed:
+
+```bash
+mlx-flash --port 8080 --preload
+
+# Ollama clients connect directly:
+curl http://localhost:8080/api/generate -d '{"model":"local","prompt":"Hello"}'
+curl http://localhost:8080/api/chat -d '{"model":"local","messages":[{"role":"user","content":"Hi"}]}'
+curl http://localhost:8080/api/tags  # list loaded models
+```
+
+</details>
+
+<details>
+<summary><b>Osaurus / BoltAI / apfel (MCP)</b></summary>
+
+Any MCP-compatible tool connects the same way:
+
+```json
+{
+  "mcpServers": {
+    "mlx-flash": {
+      "command": "python",
+      "args": ["-m", "mlx_flash_compress.mcp_server"]
+    }
+  }
+}
+```
+
+Tools get 6 capabilities: generate, check_memory, switch_model, release_memory, list_models, get_status.
+
+</details>
+
+<details>
+<summary><b>More (continue.dev, Open WebUI, Aider, mlx-lm, Swift)</b></summary>
+
+See [`docs/integrations.md`](docs/integrations.md) for 20+ detailed integration guides with streaming examples, health checks, and memory monitoring.
 
 </details>
 
