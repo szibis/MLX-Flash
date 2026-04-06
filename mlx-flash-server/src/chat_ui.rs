@@ -203,7 +203,9 @@ function setMessageMeta(msgIdx, meta) {
     html += '<span class="meta-item"><span class="meta-tokens">' + meta.tokens + ' tokens</span></span>';
   }
   if (meta.tokPerSec) {
-    html += '<span class="meta-item"><span class="meta-speed">' + meta.tokPerSec + ' tok/s</span></span>';
+    // tokPerSec may already include "tok/s" suffix
+    const speed = meta.tokPerSec.toString().includes('tok/s') ? meta.tokPerSec : meta.tokPerSec + ' tok/s';
+    html += '<span class="meta-item"><span class="meta-speed">' + speed + '</span></span>';
   }
   if (meta.elapsed) {
     html += '<span class="meta-item"><span class="meta-time">' + meta.elapsed + 's</span></span>';

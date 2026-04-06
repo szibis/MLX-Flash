@@ -33,6 +33,34 @@ impl PressureLevel {
             PressureLevel::Critical
         }
     }
+
+    /// Smarter pressure classification using available memory (free + reclaimable)
+    /// and swap usage. On loaded macOS systems, free is often near zero but inactive
+    /// pages are abundant and cheap to reclaim.
+    pub fn from_system_state(available_gb: f64, total_gb: f64, swap_gb: f64) -> Self {
+        let avail_pct = if total_gb > 0.0 { (available_gb / total_gb) * 100.0 } else { 0.0 };
+
+        // Swap > 8GB is always bad regardless of available RAM
+        if swap_gb > 8.0 && avail_pct < 20.0 {
+            return PressureLevel::Critical;
+        }
+
+        // Available-based thresholds (more accurate than free-only)
+        if avail_pct >= 25.0 {
+            PressureLevel::Normal
+        } else if avail_pct >= 10.0 {
+            // Elevated swap is a warning sign even with some available RAM
+            if swap_gb > 4.0 {
+                PressureLevel::Warning
+            } else {
+                PressureLevel::Normal
+            }
+        } else if avail_pct >= 5.0 {
+            PressureLevel::Warning
+        } else {
+            PressureLevel::Critical
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,10 +184,9 @@ pub fn get_memory_state() -> Result<MemoryState, String> {
     // (a full implementation would call sysctl kern.swapusage)
     let swap_used_gb = get_swap_used_gb();
 
-    let used_bytes = (active_gb + wired_gb + compressed_gb) / total_gb;
-    let free_pct = (free_gb / total_gb) * 100.0;
-    let _ = used_bytes; // suppress unused warning
-    let pressure = PressureLevel::from_free_pct(free_pct);
+    let available_gb = (free_gb + inactive_gb * 0.5).max(0.0);
+    // Use available-based pressure (accounts for reclaimable inactive pages + swap)
+    let pressure = PressureLevel::from_system_state(available_gb, total_gb, swap_used_gb);
 
     Ok(MemoryState {
         total_gb,
@@ -217,10 +244,27 @@ mod tests {
     }
 
     #[test]
-    fn test_pressure_classification() {
+    fn test_pressure_classification_free_pct() {
         assert_eq!(PressureLevel::from_free_pct(80.0), PressureLevel::Normal);
         assert_eq!(PressureLevel::from_free_pct(25.0), PressureLevel::Warning);
         assert_eq!(PressureLevel::from_free_pct(5.0), PressureLevel::Critical);
+    }
+
+    #[test]
+    fn test_pressure_from_system_state() {
+        // Plenty of available RAM, no swap
+        assert_eq!(PressureLevel::from_system_state(12.0, 36.0, 0.0), PressureLevel::Normal);
+        // Low available but no swap — warning
+        assert_eq!(PressureLevel::from_system_state(2.5, 36.0, 0.0), PressureLevel::Warning);
+        // Very low available — critical
+        assert_eq!(PressureLevel::from_system_state(1.0, 36.0, 0.0), PressureLevel::Critical);
+        // Moderate available but heavy swap — warning
+        assert_eq!(PressureLevel::from_system_state(5.0, 36.0, 6.0), PressureLevel::Warning);
+        // Heavy swap + low available — critical
+        assert_eq!(PressureLevel::from_system_state(4.0, 36.0, 12.0), PressureLevel::Critical);
+        // Your actual system: 8.2GB available, 12.8GB swap, 36GB total
+        // available_pct = 22.8%, swap > 8 but avail > 20% → Warning (not Critical)
+        assert_eq!(PressureLevel::from_system_state(8.2, 36.0, 12.8), PressureLevel::Warning);
     }
 
     #[test]
