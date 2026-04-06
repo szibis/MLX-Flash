@@ -1,4 +1,5 @@
 mod cache;
+mod dashboard;
 mod expert_store;
 mod mcp;
 mod memory;

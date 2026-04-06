@@ -41,6 +41,7 @@ pub fn create_router(state: AppState) -> Router {
         .allow_headers(Any);
 
     Router::new()
+        .route("/admin", get(crate::dashboard::serve_dashboard))
         .route("/status", get(handle_status))
         .route("/health", get(handle_status))
         .route("/hints", get(handle_hints))
@@ -194,5 +195,21 @@ mod tests {
             response.headers().contains_key("access-control-allow-origin"),
             "expected access-control-allow-origin header"
         );
+    }
+
+    #[tokio::test]
+    async fn test_dashboard_returns_html() {
+        let router = create_router(test_state());
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8_lossy(&body);
+        assert!(html.contains("MLX-Flash Dashboard"), "expected dashboard HTML");
+        assert!(html.contains("mem-chart"), "expected memory chart canvas");
     }
 }
