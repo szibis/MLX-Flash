@@ -27,15 +27,18 @@ jobs:
 
       - name: Find merged PR and its labels
         id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           # Method 1: Parse PR number from squash merge commit message "(#N)"
-          COMMIT_MSG="${{ github.event.head_commit.message }}"
-          PR_NUM=$(echo "$COMMIT_MSG" | grep -oE '\(#([0-9]+)\)' | head -1 | tr -d '(#)')
+          # COMMIT_MSG is passed via env to avoid bash interpreting parentheses
+          PR_NUM=$(echo "$COMMIT_MSG" | grep -oE '#[0-9]+' | head -1 | tr -d '#')
           echo "From commit message: PR #${PR_NUM:-none}"
 
           # Method 2: Fallback to API (may fail due to indexing delay)
           if [ -z "$PR_NUM" ]; then
-            sleep 5  # Give GitHub time to index the merge
+            sleep 5
             PR_NUM=$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/pulls --jq '.[0].number // empty' 2>/dev/null || echo "")
             echo "From API: PR #${PR_NUM:-none}"
           fi
@@ -62,8 +65,6 @@ jobs:
             echo "bump=none" >> $GITHUB_OUTPUT
             echo "No release label found — skipping release"
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Calculate next version
         if: steps.pr.outputs.bump != 'none'
