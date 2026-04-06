@@ -61,6 +61,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/models/switch", axum::routing::post(handle_model_switch))
         .route("/metrics", get(handle_metrics))
         .route("/logs/recent", get(handle_logs_recent))
+        .route("/reload", axum::routing::post(handle_reload))
+        .route("/shutdown", axum::routing::post(handle_shutdown))
+        .route("/workers/restart", axum::routing::post(handle_workers_restart))
         .with_state(state)
         .layer(cors)
 }
@@ -126,7 +129,12 @@ async fn handle_models(State(state): State<AppState>) -> axum::Json<Value> {
 }
 
 async fn handle_workers(State(state): State<AppState>) -> axum::Json<Value> {
-    axum::Json(state.pool.status())
+    let mut status = state.pool.status();
+    // Add session details
+    let sessions = state.pool.session_details();
+    status["sessions_active"] = json!(state.pool.session_count());
+    status["sessions"] = sessions;
+    axum::Json(status)
 }
 
 async fn handle_model_switch(
@@ -361,6 +369,106 @@ async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
 async fn handle_logs_recent(State(state): State<AppState>) -> axum::Json<Value> {
     let entries = state.log_buffer.recent(100);
     axum::Json(json!({ "logs": entries }))
+}
+
+async fn handle_reload(State(state): State<AppState>) -> axum::Json<Value> {
+    tracing::info!("Reload requested via /reload endpoint");
+
+    // Reload: tell all workers to re-read their config / re-check health
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let mut reloaded = 0;
+    let mut failed = 0;
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/health");
+        match client.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                state.pool.mark_healthy(port);
+                reloaded += 1;
+            }
+            _ => {
+                state.pool.mark_unhealthy(port);
+                failed += 1;
+            }
+        }
+    }
+
+    tracing::info!(reloaded, failed, "Reload complete — worker health refreshed");
+
+    axum::Json(json!({
+        "reloaded": true,
+        "workers_healthy": reloaded,
+        "workers_failed": failed,
+        "message": "Worker health refreshed. Use /v1/models/switch to change models."
+    }))
+}
+
+async fn handle_shutdown(State(_state): State<AppState>) -> axum::Json<Value> {
+    tracing::info!("Graceful shutdown requested via /shutdown endpoint");
+
+    // Spawn shutdown in background so we can return the response first
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        std::process::exit(0);
+    });
+
+    axum::Json(json!({
+        "shutting_down": true,
+        "message": "Server will stop in ~500ms. Restart with: mlx-flash --port 8080"
+    }))
+}
+
+async fn handle_workers_restart(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::Json<Value> {
+    // Parse optional {port: 8081} to restart a specific worker, or restart all unhealthy
+    let parsed: Option<Value> = serde_json::from_slice(&body).ok();
+    let target_port: Option<u16> = parsed
+        .as_ref()
+        .and_then(|v| v.get("port"))
+        .and_then(|v| v.as_u64())
+        .map(|p| p as u16);
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let ports_to_restart: Vec<u16> = if let Some(port) = target_port {
+        vec![port]
+    } else {
+        // Restart all unhealthy workers
+        let mut unhealthy = Vec::new();
+        for port in state.pool.ports() {
+            let url = format!("http://127.0.0.1:{port}/health");
+            let ok = client.get(&url).send().await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+            if !ok {
+                unhealthy.push(port);
+            }
+        }
+        unhealthy
+    };
+
+    // Send /shutdown to each, then they'll be auto-restarted by the health checker
+    let mut restarted = Vec::new();
+    for port in &ports_to_restart {
+        let url = format!("http://127.0.0.1:{port}/shutdown");
+        let _ = client.post(&url).send().await;
+        state.pool.mark_unhealthy(*port);
+        restarted.push(*port);
+        tracing::info!(port, "Sent restart signal to worker");
+    }
+
+    axum::Json(json!({
+        "restarting": restarted,
+        "message": "Workers will be auto-restarted by health checker within 10s",
+    }))
 }
 
 async fn handle_cache_stats(State(state): State<AppState>) -> axum::Json<Value> {

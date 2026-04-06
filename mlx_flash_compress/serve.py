@@ -297,6 +297,10 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._handle_chat()
         elif self.path in ("/switch", "/v1/models/switch"):
             self._handle_switch()
+        elif self.path == "/reload":
+            self._handle_reload()
+        elif self.path == "/shutdown":
+            self._handle_shutdown()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -347,6 +351,34 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "error": str(e),
                 "model": old_model,
             }, 500)
+
+    def _handle_reload(self):
+        """Reload: refresh memory state, log status."""
+        log = logger or __import__('logging').getLogger("mlx_flash")
+        log.info("Reload requested via /reload", extra={"action": "reload"})
+        mem = get_memory_state()
+        state = self.server_state
+        self._send_json({
+            "reloaded": True,
+            "model": state.model_name,
+            "model_loaded": state.model is not None,
+            "memory_available_gb": round(mem.available_gb, 1),
+            "pressure": mem.pressure_level,
+        })
+
+    def _handle_shutdown(self):
+        """Graceful shutdown via API."""
+        log = logger or __import__('logging').getLogger("mlx_flash")
+        log.info("Shutdown requested via /shutdown", extra={"action": "shutdown"})
+        self._send_json({
+            "shutting_down": True,
+            "message": "Server stopping in ~500ms",
+        })
+        import threading
+        def _stop():
+            time.sleep(0.5)
+            self.server.shutdown()
+        threading.Thread(target=_stop, daemon=True).start()
 
     def _handle_chat(self):
         content_length = int(self.headers.get("Content-Length", 0))

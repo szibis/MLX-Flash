@@ -282,20 +282,73 @@ async fn main() {
         None
     };
 
+    let model_for_restart = args.model.clone();
+    let preload_for_restart = args.preload;
+
     let state = server::AppState {
         python_port: args.python_port,
         model_name: std::sync::Arc::new(tokio::sync::RwLock::new(args.model)),
         cache: cache_arc,
-        pool: pool,
+        pool: pool.clone(),
         log_buffer: log_buf,
         ..Default::default()
     };
+
+    // Background: periodic health check + auto-restart dead workers
+    let health_pool = pool.clone();
+    let health_model = model_for_restart.clone();
+    let health_base_port = args.python_port;
+    let health_preload = preload_for_restart;
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+
+            for port in health_pool.ports() {
+                let url = format!("http://127.0.0.1:{port}/health");
+                match client.get(&url).send().await {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                                if body.get("model").is_some() {
+                                    health_pool.mark_healthy(port);
+                                    continue;
+                                }
+                            }
+                        }
+                        tracing::warn!(port, "Worker health check failed — marking unhealthy");
+                        health_pool.mark_unhealthy(port);
+                    }
+                    Err(_) => {
+                        tracing::warn!(port, "Worker unreachable — attempting auto-restart");
+                        health_pool.mark_unhealthy(port);
+                        // Auto-restart: launch a new worker on this port
+                        if !is_port_in_use(port) {
+                            if let Some(_child) = launch_python_worker(port, &health_model, health_preload) {
+                                tracing::info!(port, "Auto-restarted Python worker");
+                                // Wait for it to come up
+                                if wait_for_worker(port, 30).await {
+                                    health_pool.mark_healthy(port);
+                                    tracing::info!(port, "Auto-restarted worker is ready");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     let app = server::create_router(state);
     let addr = format!("{}:{}", args.host, args.port);
     let listener = TcpListener::bind(&addr).await.unwrap();
     tracing::info!("Listening on http://{}", addr);
     tracing::info!("Python worker expected at http://127.0.0.1:{}", args.python_port);
+    tracing::info!("Health checks every 10s — unhealthy workers auto-restart");
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {

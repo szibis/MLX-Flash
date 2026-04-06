@@ -175,6 +175,21 @@ impl WorkerPool {
         self.workers.iter().map(|w| w.port).collect()
     }
 
+    /// Session details: which sessions are pinned to which workers.
+    pub fn session_details(&self) -> serde_json::Value {
+        let sessions = self.sessions.lock().unwrap();
+        let details: Vec<serde_json::Value> = sessions
+            .iter()
+            .map(|(sid, port)| {
+                serde_json::json!({
+                    "session_id": sid,
+                    "worker_port": port,
+                })
+            })
+            .collect();
+        serde_json::json!(details)
+    }
+
     /// Status for /status endpoint.
     pub fn status(&self) -> serde_json::Value {
         let workers: Vec<_> = self.workers
