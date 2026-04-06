@@ -172,12 +172,19 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Row 4: Hints + Cache -->
-  <div class="card span3">
+  <!-- Row 4: GPU + Hints + Cache -->
+  <div class="card span2">
+    <div class="card-label">GPU (Metal)</div>
+    <div class="card-value" id="gpu-util"><span class="accent">--%</span></div>
+    <div class="bar"><div class="bar-fill bg-accent" id="gpu-bar" style="width:0%"></div></div>
+    <div class="card-sub"><span id="gpu-mem">--</span> GB used</div>
+    <div class="card-sub" style="margin-top:4px"><span id="gpu-renderer">--</span>% renderer / <span id="gpu-tiler">--</span>% tiler</div>
+  </div>
+  <div class="card span2">
     <div class="card-label">Optimization Hints</div>
     <div class="hints" id="hints"></div>
   </div>
-  <div class="card span3">
+  <div class="card span2">
     <div class="card-label">Cache <span id="cache-status" style="float:right;font-weight:400;text-transform:none;letter-spacing:0;color:var(--dim)"></span></div>
     <div id="cache-panel">
       <div style="display:flex;gap:20px;align-items:baseline">
@@ -199,7 +206,19 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 
 <script>
 const MAX = 120;
-let memH = [], tpsH = [], rpsH = [], lastTok = 0, lastReq = 0, lastT = Date.now();
+// Restore chart history from localStorage (survives page reload)
+let memH = [], tpsH = [], rpsH = [];
+try {
+  memH = JSON.parse(localStorage.getItem('mlx-dash-memH') || '[]');
+  tpsH = JSON.parse(localStorage.getItem('mlx-dash-tpsH') || '[]');
+} catch(e) {}
+let lastTok = 0, lastReq = 0, lastT = Date.now();
+function saveCharts() {
+  try {
+    localStorage.setItem('mlx-dash-memH', JSON.stringify(memH.slice(-MAX)));
+    localStorage.setItem('mlx-dash-tpsH', JSON.stringify(tpsH.slice(-MAX)));
+  } catch(e) {}
+}
 
 function drawChart(canvas, data, color, gradAlpha) {
   const dpr = window.devicePixelRatio || 1;
@@ -340,11 +359,12 @@ async function fetchWorkerPyStatus(ports) {
 
 async function poll() {
   try {
-    const [st, cache, workers, logs] = await Promise.all([
+    const [st, cache, workers, logs, gpu] = await Promise.all([
       fetch('/status').then(r=>r.json()),
       fetch('/cache/stats').then(r=>r.json()).catch(()=>null),
       fetch('/workers').then(r=>r.json()).catch(()=>null),
       fetch('/logs/recent').then(r=>r.json()).catch(()=>null),
+      fetch('/gpu').then(r=>r.json()).catch(()=>null),
     ]);
     const mem = st.memory || {}, stats = st.stats || {};
 
@@ -372,11 +392,10 @@ async function poll() {
     document.getElementById('swap').textContent = (mem.swap_used_gb||0).toFixed(1);
 
     // Requests + Tokens + Rates
-    // Use Python worker aggregated tokens if Rust counter is 0 (pre-fix requests)
-    let tok = stats.tokens_generated || 0;
-    if (tok === 0 && workerPyStatus) {
-      tok = Object.values(workerPyStatus).reduce((sum, w) => sum + (w.tokens || 0), 0);
-    }
+    // Use max of Rust counter and Python worker aggregated (handles both old and new requests)
+    const rustTok = stats.tokens_generated || 0;
+    const pyTok = Object.values(workerPyStatus).reduce((sum, w) => sum + (w.tokens || 0), 0);
+    let tok = Math.max(rustTok, pyTok);
     const req = stats.requests || 0;
     const now = Date.now(), dt = (now - lastT) / 1000;
     const tps = dt > 0 ? Math.max((tok - lastTok) / dt, 0) : 0;
@@ -399,8 +418,18 @@ async function poll() {
       document.getElementById('cache-hit').innerHTML = '<span class="green">'+hr.toFixed(0)+'%</span>';
       document.getElementById('cache-bar').style.width = hr+'%';
       document.getElementById('cache-entries').textContent = (cache.cached_experts||0);
+    } else if (cache && cache.capacity_bytes > 0 && cache.entries === 0) {
+      // Cache allocated but empty — standard mlx_lm inference doesn't use the Rust expert cache
+      document.getElementById('cache-status').textContent = 'allocated (standard inference mode)';
+      document.getElementById('cache-status').style.color = 'var(--dim)';
+      document.getElementById('cache-hit').innerHTML = '<span class="dim">0%</span>';
+      document.getElementById('cache-entries').textContent = '0';
+      // Show capacity info
+      const capMb = Math.round(cache.capacity_bytes / (1024*1024));
+      document.getElementById('cache-bar').parentElement.nextElementSibling?.remove();
     } else {
-      document.getElementById('cache-status').textContent = 'not enabled (start with --expert-dir)';
+      document.getElementById('cache-status').textContent = 'not enabled';
+      document.getElementById('cache-status').style.color = 'var(--dim)';
       document.getElementById('cache-hit').innerHTML = '<span class="dim">N/A</span>';
       document.getElementById('cache-entries').textContent = '—';
     }
@@ -422,11 +451,22 @@ async function poll() {
     // Logs
     if (logs && logs.logs) renderLogs(logs.logs);
 
+    // GPU
+    if (gpu && !gpu.error) {
+      const gUtil = gpu.device_utilization_pct || 0;
+      document.getElementById('gpu-util').innerHTML = '<span class="accent">'+gUtil+'%</span>';
+      document.getElementById('gpu-bar').style.width = gUtil+'%';
+      document.getElementById('gpu-mem').textContent = (gpu.gpu_memory_used_gb||0).toFixed(1);
+      document.getElementById('gpu-renderer').textContent = gpu.renderer_utilization_pct || 0;
+      document.getElementById('gpu-tiler').textContent = gpu.tiler_utilization_pct || 0;
+    }
+
     // Charts
     memH.push(pct); if (memH.length > MAX) memH.shift();
     tpsH.push(tps); if (tpsH.length > MAX) tpsH.shift();
     drawChart(document.getElementById('mem-chart'), memH, 'rgb(77,166,255)', 0.15);
     drawChart(document.getElementById('tps-chart'), tpsH, 'rgb(45,212,168)', 0.15);
+    saveCharts();
   } catch(e) {}
 }
 

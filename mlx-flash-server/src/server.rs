@@ -64,6 +64,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/reload", axum::routing::post(handle_reload))
         .route("/shutdown", axum::routing::post(handle_shutdown))
         .route("/workers/restart", axum::routing::post(handle_workers_restart))
+        .route("/gpu", get(handle_gpu))
         .route("/commands", get(handle_commands_list))
         .route("/commands/run", axum::routing::post(handle_command_run))
         .with_state(state)
@@ -104,6 +105,63 @@ async fn handle_hints(State(state): State<AppState>) -> axum::Json<Value> {
         .unwrap_or(json!([]));
 
     axum::Json(json!({ "hints": hints }))
+}
+
+async fn handle_gpu(_state: State<AppState>) -> axum::Json<Value> {
+    // Parse GPU stats from macOS ioreg (IOAccelerator)
+    let output = std::process::Command::new("ioreg")
+        .args(["-r", "-d", "1", "-c", "IOAccelerator"])
+        .output();
+
+    match output {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut device_util = 0u64;
+            let mut renderer_util = 0u64;
+            let mut tiler_util = 0u64;
+            let mut gpu_mem_used = 0u64;
+            let mut gpu_mem_alloc = 0u64;
+
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if let Some(val) = extract_ioreg_int(trimmed, "Device Utilization %") {
+                    device_util = val;
+                } else if let Some(val) = extract_ioreg_int(trimmed, "Renderer Utilization %") {
+                    renderer_util = val;
+                } else if let Some(val) = extract_ioreg_int(trimmed, "Tiler Utilization %") {
+                    tiler_util = val;
+                } else if let Some(val) = extract_ioreg_int(trimmed, "In use system memory\"=") {
+                    gpu_mem_used = val;
+                } else if let Some(val) = extract_ioreg_int(trimmed, "Alloc system memory\"=") {
+                    gpu_mem_alloc = val;
+                }
+            }
+
+            axum::Json(json!({
+                "device_utilization_pct": device_util,
+                "renderer_utilization_pct": renderer_util,
+                "tiler_utilization_pct": tiler_util,
+                "gpu_memory_used_bytes": gpu_mem_used,
+                "gpu_memory_allocated_bytes": gpu_mem_alloc,
+                "gpu_memory_used_gb": gpu_mem_used as f64 / 1073741824.0,
+                "gpu_memory_allocated_gb": gpu_mem_alloc as f64 / 1073741824.0,
+            }))
+        }
+        Err(e) => axum::Json(json!({"error": format!("Failed to read GPU stats: {e}")})),
+    }
+}
+
+fn extract_ioreg_int(line: &str, key: &str) -> Option<u64> {
+    if let Some(pos) = line.find(key) {
+        let after = &line[pos + key.len()..];
+        let num_str: String = after.chars()
+            .skip_while(|c| !c.is_ascii_digit())
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        num_str.parse().ok()
+    } else {
+        None
+    }
 }
 
 async fn handle_release(State(state): State<AppState>) -> axum::Json<Value> {
@@ -405,10 +463,47 @@ async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
     }
     let _ = write!(out, "\n");
 
+    // -- GPU (Metal) via ioreg --
+    if let Ok(gpu_out) = std::process::Command::new("ioreg")
+        .args(["-r", "-d", "1", "-c", "IOAccelerator"])
+        .output()
+    {
+        let gpu_text = String::from_utf8_lossy(&gpu_out.stdout);
+        let dev_util = extract_ioreg_int_from_text(&gpu_text, "Device Utilization %").unwrap_or(0);
+        let renderer = extract_ioreg_int_from_text(&gpu_text, "Renderer Utilization %").unwrap_or(0);
+        let tiler = extract_ioreg_int_from_text(&gpu_text, "Tiler Utilization %").unwrap_or(0);
+        let gpu_mem = extract_ioreg_int_from_text(&gpu_text, "In use system memory\"=").unwrap_or(0);
+
+        let _ = write!(out, "# HELP mlx_flash_gpu_utilization_pct Metal GPU device utilization.\n");
+        let _ = write!(out, "# TYPE mlx_flash_gpu_utilization_pct gauge\n");
+        let _ = write!(out, "mlx_flash_gpu_utilization_pct {dev_util}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_gpu_renderer_pct Metal renderer utilization.\n");
+        let _ = write!(out, "# TYPE mlx_flash_gpu_renderer_pct gauge\n");
+        let _ = write!(out, "mlx_flash_gpu_renderer_pct {renderer}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_gpu_tiler_pct Metal tiler utilization.\n");
+        let _ = write!(out, "# TYPE mlx_flash_gpu_tiler_pct gauge\n");
+        let _ = write!(out, "mlx_flash_gpu_tiler_pct {tiler}\n\n");
+
+        let _ = write!(out, "# HELP mlx_flash_gpu_memory_used_bytes Metal GPU memory in use.\n");
+        let _ = write!(out, "# TYPE mlx_flash_gpu_memory_used_bytes gauge\n");
+        let _ = write!(out, "mlx_flash_gpu_memory_used_bytes {gpu_mem}\n\n");
+    }
+
     axum::response::Response::builder()
         .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
         .body(axum::body::Body::from(out))
         .unwrap()
+}
+
+fn extract_ioreg_int_from_text(text: &str, key: &str) -> Option<u64> {
+    for line in text.lines() {
+        if let Some(val) = extract_ioreg_int(line.trim(), key) {
+            return Some(val);
+        }
+    }
+    None
 }
 
 async fn handle_logs_recent(State(state): State<AppState>) -> axum::Json<Value> {
