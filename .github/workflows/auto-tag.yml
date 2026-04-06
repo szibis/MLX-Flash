@@ -119,8 +119,10 @@ jobs:
             --base main)
           echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
 
-          # Enable auto-merge (merges when checks pass)
-          gh pr merge "${PR_URL}" --auto --squash
+          # Note: PR needs 1 approval per ruleset. Approve + merge manually,
+          # or set up a GitHub App to auto-approve release PRs.
+          echo "Version bump PR created: ${PR_URL}"
+          echo "Approve and merge to update version files."
         env:
           GH_TOKEN: ${{ github.token }}
 
