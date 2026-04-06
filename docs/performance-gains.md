@@ -225,12 +225,12 @@ Based on expert activation frequency (power-law distribution):
 
 Estimated tok/s for Gemma 4 models on various hardware:
 
-| Model | M3 Max 36GB | M4 Pro 24GB | M4 Max 48GB | M4 Ultra 192GB |
-|-------|-------------|-------------|-------------|----------------|
-| **E2B** (1.5GB) | ~85 tok/s | ~90 tok/s | ~95 tok/s | ~100 tok/s |
-| **E4B** (2.8GB) | ~60 tok/s | ~65 tok/s | ~70 tok/s | ~80 tok/s |
-| **26B MoE** (15GB) | ~15 tok/s | ~12 tok/s | ~25 tok/s | ~35 tok/s |
-| **31B** (20GB) | ~8 tok/s* | ~6 tok/s* | ~15 tok/s | ~20 tok/s |
+| Model | M4 Pro 24GB | M3 Max 36GB | M4 Max 48GB | M5 Max 128GB |
+|-------|-------------|-------------|-------------|--------------|
+| **E2B** (1.5GB) | ~90 tok/s | ~85 tok/s | ~95 tok/s | ~120 tok/s |
+| **E4B** (2.8GB) | ~65 tok/s | ~60 tok/s | ~70 tok/s | ~90 tok/s |
+| **26B MoE** (15GB) | ~12 tok/s | ~15 tok/s | ~25 tok/s | ~40 tok/s |
+| **31B** (20GB) | ~6 tok/s* | ~8 tok/s* | ~15 tok/s | ~25 tok/s |
 
 \* With MLX-Flash SSD streaming (model exceeds RAM)
 

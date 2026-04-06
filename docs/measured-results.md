@@ -70,7 +70,8 @@ With mixed precision (1.8x more experts fit):
 | 64GB M2 Max | 209GB | No | 72% | 4.2 |
 | 96GB M2 Max | 209GB | No | 82% | 5.2 |
 | 128GB M3 Ultra | 209GB | No | 89% | 6.4 |
-| 192GB M4 Ultra | 209GB | No | 95% | 7.8 |
+| 192GB M3 Ultra | 209GB | No | 95% | 7.8 |
+| 128GB M5 Max | 209GB | No | 89% | 9.0 |
 
 **Key insight**: Each doubling of available cache RAM adds ~15-20% hit rate, which translates to ~0.8-1.2 tok/s improvement. The diminishing returns curve flattens above 80% hit rate.
 

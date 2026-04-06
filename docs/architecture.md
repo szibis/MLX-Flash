@@ -56,4 +56,5 @@ Auto-detected via `python -m mlx_flash_compress.hardware`:
 | M3 Max | 36GB | 3.3 tok/s (58% hit rate) |
 | M3 Max | 128GB | 6.4 tok/s (82% hit rate) |
 | M4 Max | 128GB | 7.2 tok/s (82% hit rate, TB5) |
-| M4 Ultra | 192GB | 8.5 tok/s (93% hit rate) |
+| M5 Max | 128GB | 9.0 tok/s (82% hit rate, 614 GB/s bandwidth) |
+| M3 Ultra | 192GB | 8.5 tok/s (93% hit rate) |
