@@ -284,11 +284,126 @@ function updatePressureBanner(pressure, availGb, swapGb) {
   }
 }
 
+// Session persistence — survive page reload / tab switch
+function saveSession() {
+  try { localStorage.setItem('mlx-flash-messages', JSON.stringify(messages)); } catch(e) {}
+}
+function loadSession() {
+  try {
+    const saved = localStorage.getItem('mlx-flash-messages');
+    if (saved) {
+      const restored = JSON.parse(saved);
+      if (restored.length > 0) {
+        document.getElementById('empty')?.remove();
+        restored.forEach(m => addMessage(m.role, m.content));
+      }
+    }
+  } catch(e) {}
+}
+loadSession();
+
+async function handleSlashCommand(text) {
+  const cmd = text.toLowerCase().trim();
+
+  // /clear — local only
+  if (cmd === '/clear') {
+    messages = [];
+    localStorage.removeItem('mlx-flash-messages');
+    messagesEl.innerHTML = '';
+    document.getElementById('status-text').textContent = 'Conversation cleared';
+    return true;
+  }
+
+  // /model <name> — use switch endpoint
+  if (cmd.startsWith('/model ') && cmd !== '/models') {
+    const modelName = text.slice(7).trim();
+    addMessage('user', text);
+    document.getElementById('status-text').textContent = 'Switching to ' + modelName + '...';
+    try {
+      const resp = await fetch('/v1/models/switch', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({model: modelName}),
+      });
+      const result = await resp.json();
+      if (result.switched) {
+        addMessage('assistant', '**Model switched** to `' + result.model + '`');
+        document.getElementById('status-text').textContent = 'Switched to ' + result.model.split('/').pop();
+      } else {
+        addMessage('assistant', '**Switch failed:** ' + (result.error || 'unknown error'));
+      }
+    } catch(e) {
+      addMessage('assistant', '**Error:** ' + e.message);
+    }
+    saveSession();
+    return true;
+  }
+
+  // All other / commands → /commands/run
+  if (cmd.startsWith('/')) {
+    addMessage('user', text);
+    try {
+      const resp = await fetch('/commands/run', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({command: text}),
+      });
+      const result = await resp.json();
+      const type = result.type || 'unknown';
+
+      if (type === 'status') {
+        const mem = result.memory || {};
+        const w = result.workers || {};
+        let md = '### Status\n\n';
+        md += '| | |\n|---|---|\n';
+        md += '| **Model** | `' + (result.model||'?') + '` |\n';
+        md += '| **Memory** | ' + (mem.available_gb||0).toFixed(1) + 'GB available (' + (mem.pressure||'?') + ') |\n';
+        if ((mem.swap_gb||0) > 0.1) md += '| **Swap** | ' + mem.swap_gb.toFixed(1) + 'GB (causes slowdown) |\n';
+        md += '| **Workers** | ' + (w.healthy||0) + '/' + (w.total||0) + ' healthy, ' + (w.sessions||0) + ' sessions |\n';
+        md += '| **Requests** | ' + (result.requests||0) + ' |\n';
+        md += '| **Tokens** | ' + (result.tokens_generated||0) + ' |\n';
+        md += '| **Uptime** | ' + Math.floor((result.uptime_s||0)/60) + 'm |\n';
+        addMessage('assistant', md);
+      } else if (type === 'models') {
+        let md = '### Available Models\n\n';
+        md += '| # | Model | Size | |\n|---|---|---|---|\n';
+        (result.available||[]).forEach((m,i) => {
+          const active = m.id === result.current ? ' **active**' : '';
+          md += '| ' + (i+1) + ' | ' + m.label + ' | ' + m.size_gb + 'GB |' + active + ' |\n';
+        });
+        md += '\nSwitch: `/model <number>` or `/model <name>`';
+        addMessage('assistant', md);
+      } else if (type === 'help') {
+        let md = '### Commands\n\n';
+        md += '| Command | Description |\n|---|---|\n';
+        Object.entries(result.commands||{}).forEach(([k,v]) => { md += '| `' + k + '` | ' + v + ' |\n'; });
+        md += '| `/quit` | Exit the chat |\n';
+        addMessage('assistant', md);
+      } else if (type === 'error') {
+        addMessage('assistant', '**Error:** ' + (result.error||'Unknown'));
+      } else {
+        addMessage('assistant', '```json\n' + JSON.stringify(result, null, 2) + '\n```');
+      }
+    } catch(e) {
+      addMessage('assistant', '**Error:** ' + e.message);
+    }
+    saveSession();
+    return true;
+  }
+
+  return false; // not a command
+}
+
 async function sendMessage() {
   const text = textarea.value.trim();
   if (!text || generating) return;
 
   textarea.value = ''; textarea.style.height = 'auto';
+
+  // Handle slash commands
+  if (text.startsWith('/')) {
+    await handleSlashCommand(text);
+    return;
+  }
+
   addMessage('user', text);
   const aiEl = addMessage('assistant', '');
   generating = true;
@@ -350,6 +465,7 @@ async function sendMessage() {
 
     aiEl.innerHTML = formatContent(fullText);
     messages[messages.length-1].content = fullText;
+    saveSession();
 
     // Show generation stats in status bar
     const stats = [elapsed + 's'];
