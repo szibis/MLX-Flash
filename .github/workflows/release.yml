@@ -93,12 +93,12 @@ jobs:
     steps:
       - name: Update formula
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           SHA=$(curl -sL https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz | shasum -a 256 | cut -d' ' -f1)
 
-          gh repo clone ${{ github.repository_owner }}/homebrew-mlx-flash /tmp/homebrew-tap
+          git clone https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository_owner }}/homebrew-mlx-flash.git /tmp/homebrew-tap
           cd /tmp/homebrew-tap
 
           sed -i "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz\"|" Formula/mlx-flash.rb
