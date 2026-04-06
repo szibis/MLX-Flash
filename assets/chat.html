@@ -161,8 +161,10 @@ async function sendMessage() {
   document.getElementById('status-text').textContent = 'Generating...';
 
   try {
+    const sel = document.getElementById('model-select');
+    const currentModel = sel.value || localStorage.getItem('mlx-flash-model') || 'local';
     const payload = {
-      model: 'local',
+      model: currentModel,
       messages: messages.map(m => ({role: m.role, content: m.content})),
       stream: false, max_tokens: 1024,
     };
@@ -226,9 +228,17 @@ const KNOWN_MODELS = [
 
 function populateModelSelect(currentModel) {
   const sel = document.getElementById('model-select');
-  sel.innerHTML = KNOWN_MODELS.map(m =>
+  const isKnown = KNOWN_MODELS.some(m => m.id === currentModel);
+  let opts = '';
+  if (currentModel && !isKnown) {
+    const short = currentModel.split('/').pop() || currentModel;
+    opts += '<option value="'+currentModel+'" selected>'+short+' (active)</option>';
+  }
+  opts += KNOWN_MODELS.map(m =>
     '<option value="'+m.id+'" '+(m.id===currentModel?'selected':'')+'>'+m.label+'</option>'
-  ).join('') + '<option value="_custom">Custom model...</option>';
+  ).join('');
+  opts += '<option value="_custom">Custom model...</option>';
+  sel.innerHTML = opts;
 }
 
 async function switchModel(modelId) {

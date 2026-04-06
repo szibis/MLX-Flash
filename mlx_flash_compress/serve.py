@@ -269,7 +269,7 @@ class ChatHandler(BaseHTTPRequestHandler):
         elif self.path == "/chat":
             self._serve_chat_html()
         elif self.path == "/admin":
-            self._serve_chat_html()  # same UI for standalone mode
+            self._serve_dashboard_html()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -485,6 +485,44 @@ async function send(){
   msgs.push({role:'assistant',content:reply});
   msgsEl.innerHTML+=`<p><b style="color:#7b61ff">AI:</b> ${reply}</p>`;
 }
+</script></body></html>"""
+
+    def _serve_dashboard_html(self):
+        """Serve the admin dashboard — loads from assets/dashboard.html or inline fallback."""
+        import pathlib
+        dash_path = pathlib.Path(__file__).parent.parent / "assets" / "dashboard.html"
+        if dash_path.exists():
+            html = dash_path.read_text()
+        else:
+            html = self._fallback_dashboard_html()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(html.encode())
+
+    @staticmethod
+    def _fallback_dashboard_html():
+        return """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>MLX-Flash Dashboard</title></head>
+<body style="background:#0a0e14;color:#d4dce8;font-family:system-ui;max-width:900px;margin:40px auto;padding:0 20px">
+<h1 style="background:linear-gradient(135deg,#4da6ff,#7b61ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">MLX-Flash Dashboard</h1>
+<p style="color:#5c6a7a">assets/dashboard.html not found — using fallback</p>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:24px">
+<div id="model-card" style="background:#1a2029;border:1px solid #262d38;border-radius:12px;padding:18px"><div style="color:#5c6a7a;font-size:0.75rem;text-transform:uppercase">Model</div><div id="model" style="font-size:1.1rem;font-weight:600;margin-top:8px">loading...</div></div>
+<div style="background:#1a2029;border:1px solid #262d38;border-radius:12px;padding:18px"><div style="color:#5c6a7a;font-size:0.75rem;text-transform:uppercase">Memory</div><div id="mem" style="font-size:1.8rem;font-weight:700;margin-top:8px;color:#2dd4a8">--%</div></div>
+<div style="background:#1a2029;border:1px solid #262d38;border-radius:12px;padding:18px"><div style="color:#5c6a7a;font-size:0.75rem;text-transform:uppercase">Tokens</div><div id="tok" style="font-size:1.8rem;font-weight:700;margin-top:8px;color:#4da6ff">0</div></div>
+</div>
+<div style="margin-top:16px;background:#1a2029;border:1px solid #262d38;border-radius:12px;padding:18px">
+<div style="color:#5c6a7a;font-size:0.75rem;text-transform:uppercase;margin-bottom:12px">Memory Chart</div>
+<canvas id="mem-chart" style="width:100%;height:150px"></canvas>
+</div>
+<div style="margin-top:12px;text-align:center"><a href="/chat" style="color:#4da6ff;text-decoration:none;font-size:0.85rem">Open Chat UI &rarr;</a></div>
+<script>
+const MAX=60;let memH=[];
+function draw(c,d,col){const dpr=devicePixelRatio||1,r=c.getBoundingClientRect();c.width=r.width*dpr;c.height=r.height*dpr;const x=c.getContext('2d');x.scale(dpr,dpr);const w=r.width,h=r.height;x.clearRect(0,0,w,h);if(d.length<2)return;const mx=Math.max(...d,1)*1.15;const p=d.map((v,i)=>[i/(MAX-1)*w,h-(v/mx)*(h-30)-4]);x.beginPath();x.strokeStyle=col;x.lineWidth=2;p.forEach((pt,i)=>i?x.lineTo(pt[0],pt[1]):x.moveTo(pt[0],pt[1]));x.stroke()}
+async function poll(){try{const s=await fetch('/status').then(r=>r.json()),m=s.memory||{},st=s.stats||{};document.getElementById('model').textContent=(s.model||'none').split('/').pop();const a=Math.max((m.free_gb||0)+(m.inactive_gb||0)*0.5,0),t=m.total_gb||1,p=((1-a/t)*100);document.getElementById('mem').textContent=p.toFixed(0)+'%';document.getElementById('tok').textContent=(st.tokens_generated||0).toLocaleString();memH.push(p);if(memH.length>MAX)memH.shift();draw(document.getElementById('mem-chart'),memH,'#4da6ff')}catch(e){}}
+poll();setInterval(poll,2000);
 </script></body></html>"""
 
     def _send_json(self, data: dict, status: int = 200):
