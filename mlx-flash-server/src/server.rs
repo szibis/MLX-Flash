@@ -64,6 +64,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/reload", axum::routing::post(handle_reload))
         .route("/shutdown", axum::routing::post(handle_shutdown))
         .route("/workers/restart", axum::routing::post(handle_workers_restart))
+        .route("/commands", get(handle_commands_list))
+        .route("/commands/run", axum::routing::post(handle_command_run))
         .with_state(state)
         .layer(cors)
 }
@@ -511,6 +513,124 @@ async fn handle_workers_restart(
     axum::Json(json!({
         "restarting": restarted,
         "message": "Workers will be auto-restarted by health checker within 10s",
+    }))
+}
+
+async fn handle_commands_list(_state: State<AppState>) -> axum::Json<Value> {
+    axum::Json(json!({
+        "commands": [
+            {"name": "/models", "description": "List available models with sizes"},
+            {"name": "/model <name|number>", "description": "Switch to a different model"},
+            {"name": "/status", "description": "Show memory, pressure, worker status"},
+            {"name": "/workers", "description": "Show worker pool details"},
+            {"name": "/clear", "description": "Clear conversation history"},
+            {"name": "/help", "description": "Show all available commands"},
+        ]
+    }))
+}
+
+async fn handle_command_run(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::Json<Value> {
+    let parsed: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return axum::Json(json!({"error": format!("Invalid JSON: {e}")})),
+    };
+
+    let cmd = parsed["command"].as_str().unwrap_or("").trim().to_lowercase();
+
+    // /status
+    if cmd == "/status" || cmd == "/mem" || cmd == "/memory" {
+        let mem = memory::get_memory_state().ok();
+        let model = state.model_name.read().await.clone();
+        let uptime = state.start_time.elapsed().as_secs_f64();
+        let requests = state.request_count.load(Ordering::Relaxed);
+        let tokens = state.tokens_generated.load(Ordering::Relaxed);
+        return axum::Json(json!({
+            "type": "status",
+            "model": model,
+            "uptime_s": uptime as u64,
+            "requests": requests,
+            "tokens_generated": tokens,
+            "memory": mem.as_ref().map(|m| json!({
+                "total_gb": m.total_gb,
+                "available_gb": m.available_gb(),
+                "pressure": format!("{:?}", m.pressure),
+                "swap_gb": m.swap_used_gb,
+            })),
+            "workers": {
+                "healthy": state.pool.healthy_count(),
+                "total": state.pool.len(),
+                "sessions": state.pool.session_count(),
+            },
+        }));
+    }
+
+    // /models
+    if cmd == "/models" || cmd == "/model" {
+        let current = state.model_name.read().await.clone();
+        let models = vec![
+            json!({"id": "mlx-community/gemma-4-E2B-it-4bit", "label": "Gemma 4 E2B", "size_gb": 1.5}),
+            json!({"id": "mlx-community/gemma-4-E4B-it-4bit", "label": "Gemma 4 E4B", "size_gb": 2.8}),
+            json!({"id": "mlx-community/Qwen3-4B-4bit", "label": "Qwen3 4B", "size_gb": 2.5}),
+            json!({"id": "mlx-community/Qwen3-8B-4bit", "label": "Qwen3 8B", "size_gb": 5.0}),
+            json!({"id": "mlx-community/gemma-4-26b-it-4bit", "label": "Gemma 4 26B MoE", "size_gb": 15.0}),
+            json!({"id": "mlx-community/Qwen3-30B-A3B-4bit", "label": "Qwen3 30B MoE", "size_gb": 18.0}),
+            json!({"id": "mlx-community/gemma-4-31b-it-4bit", "label": "Gemma 4 31B", "size_gb": 20.0}),
+            json!({"id": "mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit", "label": "Mixtral 8x7B", "size_gb": 26.0}),
+        ];
+        return axum::Json(json!({
+            "type": "models",
+            "current": current,
+            "available": models,
+        }));
+    }
+
+    // /model <name>
+    if cmd.starts_with("/model ") {
+        let choice = cmd[7..].trim();
+        return axum::Json(json!({
+            "type": "switch",
+            "message": format!("Use POST /v1/models/switch with model: {}", choice),
+            "hint": "The chat UI handles this automatically via the model dropdown.",
+        }));
+    }
+
+    // /workers
+    if cmd == "/workers" {
+        let mut status = state.pool.status();
+        status["type"] = json!("workers");
+        status["sessions"] = state.pool.session_details();
+        return axum::Json(status);
+    }
+
+    // /help
+    if cmd == "/help" {
+        return axum::Json(json!({
+            "type": "help",
+            "commands": {
+                "/models": "List available models with RAM requirements",
+                "/model <name|N>": "Switch model (by name or number from /models)",
+                "/status": "Memory pressure, workers, uptime, token count",
+                "/workers": "Worker pool details (health, inflight, sessions)",
+                "/clear": "Clear conversation history",
+                "/help": "Show this help",
+            }
+        }));
+    }
+
+    // /clear
+    if cmd == "/clear" {
+        return axum::Json(json!({
+            "type": "clear",
+            "message": "Conversation cleared",
+        }));
+    }
+
+    axum::Json(json!({
+        "type": "error",
+        "error": format!("Unknown command: {}. Type /help for available commands.", cmd),
     }))
 }
 

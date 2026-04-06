@@ -42,9 +42,30 @@
   .msg-content code { background: var(--surface); padding: 2px 6px; border-radius: 4px; font-size: 0.85em; font-family: 'SF Mono', Menlo, monospace; }
   .msg-content pre { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; overflow-x: auto; margin: 8px 0; }
   .msg-content pre code { background: none; padding: 0; }
+  .msg-content h1,.msg-content h2,.msg-content h3 { font-weight: 600; margin: 12px 0 6px; }
+  .msg-content h1 { font-size: 1.2em; } .msg-content h2 { font-size: 1.1em; } .msg-content h3 { font-size: 1em; color: var(--accent); }
+  .msg-content strong { font-weight: 600; color: #fff; }
+  .msg-content em { font-style: italic; color: var(--dim); }
+  .msg-content ul,.msg-content ol { margin: 6px 0 6px 20px; } .msg-content li { margin: 3px 0; }
+  .msg-content table { border-collapse: collapse; margin: 8px 0; font-size: 0.85em; width: 100%; }
+  .msg-content th { background: var(--surface); font-weight: 600; text-align: left; }
+  .msg-content th,.msg-content td { padding: 6px 12px; border: 1px solid var(--border); }
+  .msg-content tr:nth-child(even) { background: rgba(19,25,32,0.5); }
+  .msg-content hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+  .msg-content blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--dim); margin: 8px 0; }
   .typing { display: inline-block; }
   .typing::after { content: ''; display: inline-block; width: 2px; height: 1em; background: var(--accent); margin-left: 1px; animation: blink 0.8s infinite; vertical-align: text-bottom; }
   @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+  .pressure-banner { max-width: 800px; margin: 0 auto 8px; padding: 8px 16px; border-radius: 8px; font-size: 0.78rem; line-height: 1.4; display: none; }
+  .pressure-warning { background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.2); color: var(--yellow); display: block; }
+  .pressure-critical { background: rgba(239,68,68,0.08); border: 1px solid rgba(239,68,68,0.2); color: var(--red); display: block; }
+  .gen-progress { display: none; align-items: center; gap: 8px; font-size: 0.72rem; color: var(--dim); }
+  .gen-progress.active { display: flex; }
+  .gen-progress .tok-counter { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .gen-progress .mem-indicator { font-variant-numeric: tabular-nums; }
+  .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse-gen 1s infinite; }
+  @keyframes pulse-gen { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.8); } }
 
   .empty { text-align: center; padding: 80px 24px; }
   .empty h2 { font-size: 1.5rem; font-weight: 600; margin-bottom: 8px; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
@@ -80,6 +101,8 @@
   </div>
 </div>
 
+<div id="pressure-banner" class="pressure-banner"></div>
+
 <div class="messages" id="messages">
   <div class="empty" id="empty">
     <h2>MLX-Flash Chat</h2>
@@ -100,8 +123,13 @@
     </button>
   </div>
   <div class="status-bar">
-    <div class="status-dot"></div>
+    <div class="status-dot" id="status-dot"></div>
     <span id="status-text">Ready</span>
+    <div class="gen-progress" id="gen-progress">
+      <div class="pulse-dot"></div>
+      <span class="tok-counter" id="gen-tokens">0 tok</span>
+      <span class="mem-indicator" id="gen-mem"></span>
+    </div>
     <span style="margin-left:auto" id="mem-info"></span>
   </div>
 </div>
@@ -142,11 +170,215 @@ function addMessage(role, content) {
 
 function formatContent(text) {
   if (!text) return '<span class="typing"></span>';
-  // Basic markdown: code blocks, inline code, paragraphs
-  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
-  text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
-  text = text.replace(/\n\n/g, '</p><p>');
-  return '<p>' + text + '</p>';
+  // Markdown renderer: code blocks, tables, lists, bold, italic, headers, hr, blockquotes
+  let html = text;
+  // Code blocks (must be first — protect from other transforms)
+  const codeBlocks = [];
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const idx = codeBlocks.length;
+    codeBlocks.push('<pre><code>' + code.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</code></pre>');
+    return '\x00CB' + idx + '\x00';
+  });
+  // Tables (pipe-delimited)
+  html = html.replace(/(?:^|\n)(\|.+\|)\n(\|[-| :]+\|)\n((?:\|.+\|\n?)+)/gm, (_, header, sep, body) => {
+    const ths = header.split('|').filter(c=>c.trim()).map(c=>'<th>'+c.trim()+'</th>').join('');
+    const rows = body.trim().split('\n').map(r => {
+      const tds = r.split('|').filter(c=>c.trim()).map(c=>'<td>'+c.trim()+'</td>').join('');
+      return '<tr>'+tds+'</tr>';
+    }).join('');
+    return '<table><thead><tr>'+ths+'</tr></thead><tbody>'+rows+'</tbody></table>';
+  });
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  // Horizontal rules
+  html = html.replace(/^---+$/gm, '<hr>');
+  // Blockquotes
+  html = html.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+  // Unordered lists
+  html = html.replace(/(?:^|\n)((?:- .+\n?)+)/gm, (_, block) => {
+    const items = block.trim().split('\n').map(l => '<li>'+l.replace(/^- /,'')+'</li>').join('');
+    return '<ul>'+items+'</ul>';
+  });
+  // Ordered lists
+  html = html.replace(/(?:^|\n)((?:\d+\. .+\n?)+)/gm, (_, block) => {
+    const items = block.trim().split('\n').map(l => '<li>'+l.replace(/^\d+\. /,'')+'</li>').join('');
+    return '<ol>'+items+'</ol>';
+  });
+  // Bold + italic
+  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Paragraphs (double newline)
+  html = html.replace(/\n\n+/g, '</p><p>');
+  // Single newlines to <br> (except inside block elements)
+  html = html.replace(/\n/g, '<br>');
+  // Restore code blocks
+  html = html.replace(/\x00CB(\d+)\x00/g, (_, idx) => codeBlocks[parseInt(idx)]);
+  return '<p>' + html + '</p>';
+}
+
+let genPollInterval = null;
+let tokBefore = 0;
+
+function startGenProgress() {
+  const el = document.getElementById('gen-progress');
+  el.classList.add('active');
+  document.getElementById('status-dot').style.background = 'var(--accent)';
+  tokBefore = 0;
+  // Snapshot current tokens
+  fetch('/status').then(r=>r.json()).then(st => { tokBefore = (st.stats||{}).tokens_generated||0; }).catch(()=>{});
+  // Poll every 500ms during generation
+  genPollInterval = setInterval(async () => {
+    try {
+      const st = await fetch('/status').then(r=>r.json());
+      const tokNow = (st.stats||{}).tokens_generated||0;
+      const genTok = tokNow - tokBefore;
+      document.getElementById('gen-tokens').textContent = genTok + ' tok';
+      const mem = st.memory||{};
+      const avail = ((mem.free_gb||0)+(mem.inactive_gb||0)*0.5).toFixed(1);
+      const pressure = (mem.pressure||'Normal').toString();
+      document.getElementById('gen-mem').textContent = avail+'GB free';
+      document.getElementById('gen-mem').style.color = pressure==='Critical'?'var(--red)':pressure==='Warning'?'var(--yellow)':'var(--dim)';
+      // Pressure banner
+      updatePressureBanner(pressure, avail, mem.swap_used_gb||0);
+    } catch(e) {}
+  }, 500);
+}
+
+function stopGenProgress() {
+  if (genPollInterval) { clearInterval(genPollInterval); genPollInterval = null; }
+  document.getElementById('gen-progress').classList.remove('active');
+  document.getElementById('status-dot').style.background = 'var(--green)';
+}
+
+function updatePressureBanner(pressure, availGb, swapGb) {
+  const banner = document.getElementById('pressure-banner');
+  if (pressure === 'Critical') {
+    banner.className = 'pressure-banner pressure-critical';
+    let msg = '<strong>Memory pressure critical</strong> — generation may be slow. ';
+    msg += 'Only ' + availGb + 'GB RAM available. ';
+    if (swapGb > 0) msg += swapGb.toFixed(1) + 'GB in swap (causes slowdown). ';
+    msg += 'Close other apps to free RAM, or switch to a smaller model.';
+    banner.innerHTML = msg;
+  } else if (pressure === 'Warning') {
+    banner.className = 'pressure-banner pressure-warning';
+    banner.innerHTML = '<strong>Memory pressure elevated</strong> — ' + availGb + 'GB available. '
+      + 'Performance may degrade if more apps are opened.';
+  } else {
+    banner.className = 'pressure-banner';
+  }
+}
+
+// Session persistence — survive page reload / tab switch
+function saveSession() {
+  try { localStorage.setItem('mlx-flash-messages', JSON.stringify(messages)); } catch(e) {}
+}
+function loadSession() {
+  try {
+    const saved = localStorage.getItem('mlx-flash-messages');
+    if (saved) {
+      const restored = JSON.parse(saved);
+      if (restored.length > 0) {
+        document.getElementById('empty')?.remove();
+        restored.forEach(m => addMessage(m.role, m.content));
+      }
+    }
+  } catch(e) {}
+}
+loadSession();
+
+async function handleSlashCommand(text) {
+  const cmd = text.toLowerCase().trim();
+
+  // /clear — local only
+  if (cmd === '/clear') {
+    messages = [];
+    localStorage.removeItem('mlx-flash-messages');
+    messagesEl.innerHTML = '';
+    document.getElementById('status-text').textContent = 'Conversation cleared';
+    return true;
+  }
+
+  // /model <name> — use switch endpoint
+  if (cmd.startsWith('/model ') && cmd !== '/models') {
+    const modelName = text.slice(7).trim();
+    addMessage('user', text);
+    document.getElementById('status-text').textContent = 'Switching to ' + modelName + '...';
+    try {
+      const resp = await fetch('/v1/models/switch', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({model: modelName}),
+      });
+      const result = await resp.json();
+      if (result.switched) {
+        addMessage('assistant', '**Model switched** to `' + result.model + '`');
+        document.getElementById('status-text').textContent = 'Switched to ' + result.model.split('/').pop();
+      } else {
+        addMessage('assistant', '**Switch failed:** ' + (result.error || 'unknown error'));
+      }
+    } catch(e) {
+      addMessage('assistant', '**Error:** ' + e.message);
+    }
+    saveSession();
+    return true;
+  }
+
+  // All other / commands → /commands/run
+  if (cmd.startsWith('/')) {
+    addMessage('user', text);
+    try {
+      const resp = await fetch('/commands/run', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({command: text}),
+      });
+      const result = await resp.json();
+      const type = result.type || 'unknown';
+
+      if (type === 'status') {
+        const mem = result.memory || {};
+        const w = result.workers || {};
+        let md = '### Status\n\n';
+        md += '| | |\n|---|---|\n';
+        md += '| **Model** | `' + (result.model||'?') + '` |\n';
+        md += '| **Memory** | ' + (mem.available_gb||0).toFixed(1) + 'GB available (' + (mem.pressure||'?') + ') |\n';
+        if ((mem.swap_gb||0) > 0.1) md += '| **Swap** | ' + mem.swap_gb.toFixed(1) + 'GB (causes slowdown) |\n';
+        md += '| **Workers** | ' + (w.healthy||0) + '/' + (w.total||0) + ' healthy, ' + (w.sessions||0) + ' sessions |\n';
+        md += '| **Requests** | ' + (result.requests||0) + ' |\n';
+        md += '| **Tokens** | ' + (result.tokens_generated||0) + ' |\n';
+        md += '| **Uptime** | ' + Math.floor((result.uptime_s||0)/60) + 'm |\n';
+        addMessage('assistant', md);
+      } else if (type === 'models') {
+        let md = '### Available Models\n\n';
+        md += '| # | Model | Size | |\n|---|---|---|---|\n';
+        (result.available||[]).forEach((m,i) => {
+          const active = m.id === result.current ? ' **active**' : '';
+          md += '| ' + (i+1) + ' | ' + m.label + ' | ' + m.size_gb + 'GB |' + active + ' |\n';
+        });
+        md += '\nSwitch: `/model <number>` or `/model <name>`';
+        addMessage('assistant', md);
+      } else if (type === 'help') {
+        let md = '### Commands\n\n';
+        md += '| Command | Description |\n|---|---|\n';
+        Object.entries(result.commands||{}).forEach(([k,v]) => { md += '| `' + k + '` | ' + v + ' |\n'; });
+        md += '| `/quit` | Exit the chat |\n';
+        addMessage('assistant', md);
+      } else if (type === 'error') {
+        addMessage('assistant', '**Error:** ' + (result.error||'Unknown'));
+      } else {
+        addMessage('assistant', '```json\n' + JSON.stringify(result, null, 2) + '\n```');
+      }
+    } catch(e) {
+      addMessage('assistant', '**Error:** ' + e.message);
+    }
+    saveSession();
+    return true;
+  }
+
+  return false; // not a command
 }
 
 async function sendMessage() {
@@ -154,11 +386,19 @@ async function sendMessage() {
   if (!text || generating) return;
 
   textarea.value = ''; textarea.style.height = 'auto';
+
+  // Handle slash commands
+  if (text.startsWith('/')) {
+    await handleSlashCommand(text);
+    return;
+  }
+
   addMessage('user', text);
   const aiEl = addMessage('assistant', '');
   generating = true;
   sendBtn.disabled = true;
   document.getElementById('status-text').textContent = 'Generating...';
+  startGenProgress();
 
   try {
     const sel = document.getElementById('model-select');
@@ -169,11 +409,13 @@ async function sendMessage() {
       stream: false, max_tokens: 1024,
     };
 
+    const t0 = Date.now();
     const resp = await fetch('/v1/chat/completions', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
     });
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
     let fullText = '';
 
@@ -193,24 +435,39 @@ async function sendMessage() {
       return;
     }
 
+    let tokPerSec = '';
     try {
       const json = await resp.json();
       fullText = json.choices?.[0]?.message?.content
         || json.choices?.[0]?.text
         || JSON.stringify(json);
+      // Extract MLX-Flash performance data if present
+      const mlxData = json.mlx_flash_compress || {};
+      if (mlxData.tok_per_s) tokPerSec = mlxData.tok_per_s.toFixed(1) + ' tok/s';
+      const usage = json.usage || {};
+      if (usage.completion_tokens && !tokPerSec) {
+        tokPerSec = (usage.completion_tokens / parseFloat(elapsed)).toFixed(1) + ' tok/s';
+      }
     } catch(e) {
       fullText = 'Failed to parse response';
     }
 
     aiEl.innerHTML = formatContent(fullText);
     messages[messages.length-1].content = fullText;
+    saveSession();
+
+    // Show generation stats in status bar
+    const stats = [elapsed + 's'];
+    if (tokPerSec) stats.push(tokPerSec);
+    document.getElementById('status-text').textContent = 'Done — ' + stats.join(', ');
+    setTimeout(() => { if (!generating) document.getElementById('status-text').textContent = 'Ready'; }, 5000);
 
   } catch(e) {
     aiEl.innerHTML = '<p style="color:var(--red)">Connection error — is the Python worker running?</p>';
   } finally {
     generating = false;
     sendBtn.disabled = false;
-    document.getElementById('status-text').textContent = 'Ready';
+    stopGenProgress();
   }
 }
 
@@ -262,18 +519,16 @@ async function switchModel(modelId) {
     } else if (result.error) {
       document.getElementById('status-text').textContent = 'Switch failed: ' + result.error;
     } else {
-      // Fallback for Python-only mode (no /v1/models/switch)
       localStorage.setItem('mlx-flash-model', modelId);
       document.getElementById('status-text').textContent = 'Model set: ' + shortName + ' (restart to apply)';
     }
   } catch(e) {
-    // Server doesn't support switch (Python standalone) — save preference
     localStorage.setItem('mlx-flash-model', modelId);
     document.getElementById('status-text').textContent = 'Model set: ' + shortName + ' (restart to apply)';
   }
 }
 
-// Poll model + memory for status bar
+// Poll model + memory for status bar + pressure detection
 async function updateStatus() {
   try {
     const st = await fetch('/status').then(r=>r.json());
@@ -281,7 +536,10 @@ async function updateStatus() {
     populateModelSelect(model);
     const mem = st.memory || {};
     const avail = Math.max((mem.free_gb||0)+(mem.inactive_gb||0)*0.5, 0);
+    const pressure = (mem.pressure||'Normal').toString();
     document.getElementById('mem-info').textContent = avail.toFixed(1)+'GB free / '+((mem.total_gb||0).toFixed(0))+'GB';
+    // Update pressure banner (visible even when not generating)
+    if (!generating) updatePressureBanner(pressure, avail.toFixed(1), mem.swap_used_gb||0);
   } catch(e) {}
 }
 updateStatus(); setInterval(updateStatus, 5000);
