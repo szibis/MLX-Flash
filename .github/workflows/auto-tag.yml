@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   auto-tag:
@@ -58,4 +59,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "${TAG}" -m "Release ${TAG}"
           git push origin "${TAG}"
-          echo "Tagged ${TAG} — release workflow will trigger automatically"
+          echo "Tagged ${TAG}"
+
+      - name: Trigger release workflow
+        if: steps.version.outputs.changed == 'true' && steps.check_tag.outputs.exists == 'false'
+        run: |
+          TAG="v${{ steps.version.outputs.current }}"
+          gh workflow run release.yml -f tag="${TAG}"
+        env:
+          GH_TOKEN: ${{ github.token }}
