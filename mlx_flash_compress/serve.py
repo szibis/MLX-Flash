@@ -197,9 +197,15 @@ class InferenceState:
             self.load_model()
 
         # Check memory before generation — auto-release if needed
+        log = logger or __import__('logging').getLogger("mlx_flash")
         mem = get_memory_state()
         release_info = None
         if mem.pressure_level in ("critical", "warning"):
+            log.warning("Memory pressure before generation", extra={
+                "action": "pressure_pre_generate",
+                "pressure": mem.pressure_level,
+                "memory_gb": round(mem.available_gb, 1),
+            })
             release_info = self.mem_mgr.auto_release_if_needed()
             mem = get_memory_state()  # re-check after release
 
@@ -235,8 +241,21 @@ class InferenceState:
         self.total_requests += 1
         self.total_tokens += tokens
 
+        log.info("Inference complete", extra={
+            "action": "inference_complete",
+            "tokens": tokens,
+            "tok_per_s": round(tps, 1),
+            "latency_ms": round(elapsed * 1000),
+        })
+
         # Check memory after generation
         mem_after = get_memory_state()
+        if mem_after.pressure_level in ("critical", "warning"):
+            log.warning("Memory pressure after generation", extra={
+                "action": "pressure_post_generate",
+                "pressure": mem_after.pressure_level,
+                "memory_gb": round(mem_after.available_gb, 1),
+            })
 
         return {
             "output": output,
