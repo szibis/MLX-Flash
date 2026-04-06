@@ -1,70 +1,130 @@
 name: Auto-Tag Release
 
-# Triggers when a PR is merged to main that changes the version
+# Triggers on merge to main. Determines version bump from PR labels:
+#   release:major → X.0.0 (breaking changes)
+#   release:minor → 0.X.0 (new features)
+#   release:patch → 0.0.X (bug fixes)
+#   no label      → no release
 on:
   push:
     branches: [main]
-    paths:
-      - "pyproject.toml"
 
 permissions:
   contents: write
   actions: write
+  pull-requests: read
 
 jobs:
   auto-tag:
-    name: Create tag if version changed
+    name: Determine version and tag
     runs-on: ubuntu-latest
+    # Skip if commit message starts with "chore:" or has [skip release]
+    if: "!contains(github.event.head_commit.message, '[skip release]') && !startsWith(github.event.head_commit.message, 'chore:')"
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2  # need previous commit to detect change
+          fetch-depth: 0
 
-      - name: Check if version changed
+      - name: Find merged PR and its labels
+        id: pr
+        run: |
+          # Get the PR that was merged in this push
+          PR_NUM=$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/pulls --jq '.[0].number // empty' 2>/dev/null || echo "")
+          echo "number=${PR_NUM}" >> $GITHUB_OUTPUT
+
+          if [ -z "$PR_NUM" ]; then
+            echo "bump=none" >> $GITHUB_OUTPUT
+            echo "No PR found for this commit"
+            exit 0
+          fi
+
+          LABELS=$(gh api repos/${{ github.repository }}/issues/${PR_NUM}/labels --jq '.[].name' 2>/dev/null || echo "")
+          echo "labels=${LABELS}" >> $GITHUB_OUTPUT
+          echo "PR #${PR_NUM} labels: ${LABELS}"
+
+          if echo "$LABELS" | grep -q "release:major"; then
+            echo "bump=major" >> $GITHUB_OUTPUT
+          elif echo "$LABELS" | grep -q "release:minor"; then
+            echo "bump=minor" >> $GITHUB_OUTPUT
+          elif echo "$LABELS" | grep -q "release:patch"; then
+            echo "bump=patch" >> $GITHUB_OUTPUT
+          else
+            echo "bump=none" >> $GITHUB_OUTPUT
+            echo "No release label found — skipping release"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Calculate next version
+        if: steps.pr.outputs.bump != 'none'
         id: version
         run: |
           # Get current version from pyproject.toml
           CURRENT=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
           echo "current=${CURRENT}" >> $GITHUB_OUTPUT
 
-          # Get previous version
-          PREVIOUS=$(git show HEAD~1:pyproject.toml 2>/dev/null | grep '^version = ' | head -1 | sed 's/version = "\(.*\)"/\1/' || echo "")
-          echo "previous=${PREVIOUS}" >> $GITHUB_OUTPUT
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          BUMP="${{ steps.pr.outputs.bump }}"
 
-          if [ "$CURRENT" != "$PREVIOUS" ] && [ -n "$CURRENT" ]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-            echo "Version changed: ${PREVIOUS} → ${CURRENT}"
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-            echo "Version unchanged: ${CURRENT}"
+          if [ "$BUMP" = "major" ]; then
+            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+          elif [ "$BUMP" = "minor" ]; then
+            MINOR=$((MINOR + 1)); PATCH=0
+          elif [ "$BUMP" = "patch" ]; then
+            PATCH=$((PATCH + 1))
           fi
 
+          NEXT="${MAJOR}.${MINOR}.${PATCH}"
+          echo "next=${NEXT}" >> $GITHUB_OUTPUT
+          echo "Version: ${CURRENT} → ${NEXT} (${BUMP})"
+
       - name: Check tag doesn't exist
-        if: steps.version.outputs.changed == 'true'
+        if: steps.pr.outputs.bump != 'none'
         id: check_tag
         run: |
-          TAG="v${{ steps.version.outputs.current }}"
+          TAG="v${{ steps.version.outputs.next }}"
           if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "Tag ${TAG} already exists"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Create and push tag
-        if: steps.version.outputs.changed == 'true' && steps.check_tag.outputs.exists == 'false'
+      - name: Bump version in files
+        if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
         run: |
-          TAG="v${{ steps.version.outputs.current }}"
+          NEXT="${{ steps.version.outputs.next }}"
+          sed -i "s/^version = \".*\"/version = \"${NEXT}\"/" pyproject.toml
+          sed -i "s/__version__ = \".*\"/__version__ = \"${NEXT}\"/" mlx_flash_compress/__init__.py
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml mlx_flash_compress/__init__.py
+          git diff --cached --quiet && echo "No version change needed" && exit 0
+          git commit -m "release: v${NEXT} [skip release]"
+          git push origin main
+
+      - name: Create and push tag
+        if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
+        run: |
+          TAG="v${{ steps.version.outputs.next }}"
           git tag -a "${TAG}" -m "Release ${TAG}"
           git push origin "${TAG}"
           echo "Tagged ${TAG}"
 
       - name: Trigger release workflow
-        if: steps.version.outputs.changed == 'true' && steps.check_tag.outputs.exists == 'false'
+        if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
         run: |
-          TAG="v${{ steps.version.outputs.current }}"
+          TAG="v${{ steps.version.outputs.next }}"
           gh workflow run release.yml -f tag="${TAG}"
         env:
           GH_TOKEN: ${{ github.token }}
+
+      - name: Add labels to PR if missing
+        if: steps.pr.outputs.bump == 'none' && steps.pr.outputs.number != ''
+        run: |
+          echo "PR #${{ steps.pr.outputs.number }} has no release label. Add one of:"
+          echo "  release:major — breaking changes (X.0.0)"
+          echo "  release:minor — new features (0.X.0)"
+          echo "  release:patch — bug fixes (0.0.X)"
+          echo ""
+          echo "No release will be created for this merge."
