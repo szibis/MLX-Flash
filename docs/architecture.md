@@ -23,6 +23,63 @@ flowchart TB
     CACHE --> SSD
 ```
 
+## Server Architecture
+
+```mermaid
+flowchart TB
+    CLIENT["Clients\n(LM Studio, Cursor, Claude Code, SDK)"]
+
+    subgraph RUST["Rust Proxy :8080"]
+        ROUTER[Session Router\nleast-connections + cache-affinity]
+        METRICS[/metrics\nPrometheus]
+        DASH[/admin\nDashboard]
+        HEALTH[Health Checker\nevery 10s + auto-restart]
+        LOGS[Log Buffer\n/logs/recent]
+    end
+
+    subgraph WORKERS["Python Workers"]
+        W1["Worker :8081\nModel + KV cache"]
+        W2["Worker :8082\nModel + KV cache"]
+        WN["Worker :808N"]
+    end
+
+    CLIENT --> RUST
+    ROUTER -->|session sticky| W1
+    ROUTER -->|least loaded| W2
+    ROUTER -->|overflow| WN
+    HEALTH -.->|poll /health| W1
+    HEALTH -.->|poll /health| W2
+    HEALTH -.->|auto-restart if dead| WN
+    METRICS -.->|aggregate /status| W1
+    METRICS -.->|aggregate /status| W2
+```
+
+**Single command starts everything:**
+```bash
+mlx-flash-server --port 8080 --model mlx-community/Qwen3-30B-A3B-4bit --workers 2
+```
+- Auto-detects Python venv, launches workers, health-checks until ready
+- Workers auto-restart if they crash (health checker every 10s)
+- `/metrics` aggregates Rust + all Python stats (single Prometheus scrape target)
+- `/admin` dashboard shows live logs, worker controls, memory breakdown
+
+**Endpoints:**
+
+| Endpoint | Method | What |
+|----------|--------|------|
+| `/v1/chat/completions` | POST | OpenAI-compatible inference (proxied to workers) |
+| `/v1/models/switch` | POST | Hot-swap model across all workers |
+| `/admin` | GET | Live dashboard (charts, workers, logs) |
+| `/chat` | GET | Chat UI with model switching |
+| `/metrics` | GET | Prometheus metrics (35+ metrics) |
+| `/workers` | GET | Worker pool status + session mapping |
+| `/workers/restart` | POST | Restart specific or all unhealthy workers |
+| `/reload` | POST | Refresh worker health |
+| `/shutdown` | POST | Graceful shutdown |
+| `/logs/recent` | GET | Last 100 structured log entries |
+| `/health` | GET | Health check (JSON) |
+| `/status` | GET | Full status (memory, stats, hints) |
+
 ## Key Technologies
 
 | Component | What It Does | Performance |
