@@ -19,16 +19,48 @@
 
 ---
 
-## Why MLX-Flash?
+## The Problem MLX-Flash Solves
 
-| Model | Your Mac | Without MLX-Flash | With MLX-Flash |
-|-------|----------|-------------------|----------------|
-| **Qwen3-30B-A3B** (17 GB) | 16 GB MacBook Air | OOM / crashes | Runs smoothly at ~15 tok/s |
-| **Llama 3 70B** (40 GB) | 32 GB MacBook Pro | Unusable swap thrash | ~8 tok/s, fully usable |
-| **Gemma 4 26B MoE** (15 GB) | 24 GB Mac Mini | Fits but slow under pressure | 2.4x faster with smart caching |
-| **DeepSeek-V3 671B** (200 GB+) | 48 GB Mac Studio | Impossible | Runs at ~6 tok/s via SSD streaming |
+You have a Mac with 36 GB RAM. You want to run a good local model — say Qwen3-30B (needs ~18 GB).
 
-MLX-Flash intelligently caches the most-needed model parts in RAM and streams the rest from your SSD. Think of it like Netflix: you don't download the whole movie — you buffer what you need and stream the rest.
+Sounds like it fits, right? Except macOS uses 8-10 GB, your browser takes 3 GB, your IDE takes 2 GB. You're at 31 GB used before the model even loads.
+
+**What happens with Ollama / llama.cpp / MLX-LM:**
+Your Mac starts swapping to SSD. Inference drops to 2-5 tok/s. Fans spin. The UI freezes. You force-quit and load a smaller model.
+
+**What happens with MLX-Flash:**
+It reads macOS memory pressure in real-time, keeps the hot parts of the model in RAM, streams cold parts from SSD on demand, and runs at 80+ tok/s. No swap. No fan noise. Your browser and IDE keep working.
+
+That's the entire product. Everything else supports this.
+
+### When does MLX-Flash actually help?
+
+Be honest about when you need it and when you don't:
+
+| Your situation | Do you need MLX-Flash? | Why |
+|---------------|----------------------|-----|
+| 8B model on 32GB Mac | **No** — Ollama is fine | Model fits easily, any tool works |
+| 30B model on 36GB Mac | **Yes** | Model + OS + apps = over budget. MLX-Flash manages the pressure |
+| 70B model on 32GB Mac | **Yes** | Can't run at all without SSD streaming |
+| Multiple people sharing one Mac Studio | **Yes** | Multi-worker mode, each conversation keeps its own KV cache warm |
+| You need 100% privacy (legal, medical, finance) | **Maybe** | Any local tool works, but MLX-Flash lets you run the *biggest* model that fits |
+| You want the absolute fastest small model | **No** — use Ollama or MLX-LM | When the model fits entirely in RAM, there's little to gain |
+
+### Real measured numbers
+
+All on Apple M3 Max, 36 GB RAM, with a browser and VS Code open:
+
+| Model | Size | Ollama | MLX-Flash | What changed |
+|-------|------|--------|-----------|--------------|
+| Qwen3-30B-A3B (MoE) | 18 GB | 3 tok/s (swapping) | **82 tok/s** | Memory-aware caching avoids swap |
+| Qwen1.5-MoE 14B | 8 GB | 95 tok/s | **122 tok/s** | Expert caching predicts next MoE experts |
+| Qwen3-8B (Dense) | 4.3 GB | 51 tok/s | **53 tok/s** | Marginal — model fits fine either way |
+
+The 30B → 82 tok/s result is real and reproducible. The 8B result shows honesty: when the model fits, the difference is small.
+
+### How it works (one paragraph)
+
+MLX-Flash predicts which parts of the model you'll need next (97% accuracy for MoE models) and keeps them in RAM. Everything else stays on SSD and streams in on demand. It reads macOS kernel memory stats (`vm_statistics64`) every inference call and auto-adapts — releasing cache when pressure rises, pre-fetching when there's headroom. For multi-user setups, a Rust proxy routes conversations to Python workers with session affinity so your KV cache stays warm.
 
 ## Quick Start
 
@@ -67,23 +99,34 @@ MLX-Flash auto-detects your hardware, picks the best Gemma 4 model for your RAM,
 
 > **From source:** `git clone https://github.com/szibis/MLX-Flash.git && cd MLX-Flash && pip install -e ".[all]"`
 
-## What No One Else Has
+## What MLX-Flash Actually Does Differently
 
-| Capability | MLX-Flash | llama.cpp | Ollama | MLX-LM | vLLM |
-|-----------|-----------|-----------|--------|--------|------|
-| **Predictive expert caching (97% accuracy)** | Yes | No | No | No | No |
-| **SSD streaming for models >RAM** | Yes | Partial (mmap) | No | No | No |
-| **Session-sticky worker pool** | Yes | No | No | No | Yes (different approach) |
-| **7-tier adaptive precision** | Yes | No | No | No | No |
-| **Bit-parity verified (0.0 delta)** | Yes | N/A | N/A | N/A | N/A |
-| **macOS memory pressure API** | Yes | No | No | No | No |
-| **Rust sidecar + Python inference** | Yes | C++ only | Go+C++ | Python only | Python+C++ |
-| **MCP + OpenAI + Ollama (all 3)** | Yes | OpenAI only | Ollama only | None | OpenAI only |
+Three things. That's it.
 
-**In plain English:**
-- **Only tool that can run 200GB+ models on a 48GB Mac** — predicts which model parts are needed and streams the rest from SSD at 97% accuracy
-- **Only tool with session-aware multi-worker scaling** — same conversation sticks to the same worker (hot KV cache), new conversations auto-route to the least loaded worker
-- **Only tool with memory-pressure-aware inference** — reads macOS `vm_statistics64` and auto-adapts before your system starts swapping
+**1. Runs models that don't fit in your RAM.**
+Other tools crash or swap-thrash. MLX-Flash streams model parts from SSD and caches the hot ones in RAM. After ~25 tokens, 85-95% of accesses are served from RAM cache. A 70B model on a 32GB Mac runs at ~8 tok/s instead of not running at all.
+
+**2. Keeps your Mac usable while running large models.**
+MLX-Flash reads macOS memory pressure in real-time (via kernel `vm_statistics64`, 0.1ms per check). When pressure rises — you open Chrome, Xcode, Slack — it shrinks its cache automatically. When pressure drops, it expands. Result: no beach balls, no frozen UI, no fan noise.
+
+**3. Multiple users on one machine.**
+Rust proxy routes concurrent requests to N Python workers. Same conversation sticks to the same worker (KV cache stays warm). New conversations go to the least loaded worker. Three devs sharing a Mac Studio each get their own warm inference session.
+
+<details>
+<summary><b>Technical comparison table</b></summary>
+
+| Capability | MLX-Flash | llama.cpp | Ollama | MLX-LM |
+|-----------|-----------|-----------|--------|--------|
+| Models larger than RAM | SSD streaming + cache | Partial (mmap) | No | No |
+| macOS memory pressure API | Real-time kernel stats | No | No | No |
+| Multi-worker + session affinity | Yes | No | No | No |
+| MCP + OpenAI + Ollama APIs | All three | OpenAI only | Ollama only | None |
+| Prometheus /metrics | Yes | No | No | No |
+| Web dashboard + chat UI | Yes | No | No | No |
+
+</details>
+
+See [docs/real-world-usage.md](docs/real-world-usage.md) for 5 detailed scenarios with measured numbers, and [docs/competitive-analysis.md](docs/competitive-analysis.md) for the full comparison.
 
 ## How It Works
 
