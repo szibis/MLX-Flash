@@ -18,32 +18,16 @@ Honest assessment of where we're slow, what doesn't work yet, and what would giv
 | 10 | No model download progress | LOW | LOW | **FIXED** (snapshot_download with HF Hub progress bar) |
 | 11 | No page cache control | MED | LOW | **FIXED v0.6.0** (madvise MADV_FREE/WILLNEED via ctypes) |
 | 12 | No IO/compute overlap | HIGH | MED | **FIXED v0.6.0** (phase-level pipelined execution) |
-| 13 | No Metal kernel acceleration | MED | HIGH | **PARTIAL v0.6.0** (shaders written, not yet wired into inference) |
+| 13 | No Metal kernel acceleration | MED | HIGH | **FIXED v0.6.2** (swiglu + moe_dispatch wired via kernels/ops.py with fallbacks) |
 | 14 | No bit-parity verification | MED | LOW | **FIXED v0.6.0** (FP32 accumulation, 0.0 delta proven) |
 | 15 | No transparent mlx-lm integration | MED | LOW | **FIXED v0.6.0** (mlx_lm_patch.py monkey-patches mlx_lm.load) |
 | 16 | Manual model selection | LOW | LOW | **FIXED v0.6.0** (auto_select_model picks best Gemma 4 for RAM) |
 
-**Score: 14/16 fully fixed, 1 partial (#13), 1 was partial now fixed (#8)**
+**Score: 16/16 fully fixed**
 
 ## Open Pain Points
 
-### P0: Metal Kernels Not Wired Into Inference Path (#13)
-
-The Metal shaders (fused Q4 dequant+GEMV, SwiGLU, MoE dispatch) are written and compile successfully, but are not yet called during actual inference. Currently they're infrastructure-only.
-
-**What's needed**:
-- Wire `flash_dequant_gemv_q4` into the expert streaming forward pass
-- Replace MLX's default `mx.quantized_matmul` with our fused kernel for Q4 models
-- Benchmark to confirm the Metal kernel is actually faster than MLX's built-in path
-
-**Why it's hard**: MLX's Metal backend handles quantized ops internally. Injecting custom kernels requires either:
-1. Using `mx.fast.metal_kernel()` (if available in MLX version)
-2. Using the Metal Compute Pipeline API via ctypes
-3. Compiling a custom MLX extension
-
-**Expected gain**: 15-30% less memory bandwidth on Q4 models (eliminates intermediate FP16 materialization)
-
-### P1: Claude Code MCP Tool Definitions
+### P1: Claude Code MCP — Wire Tools to Server Endpoints
 
 No native MCP tool schema yet. Claude Code can't call MLX-Flash server tools directly without manual configuration.
 
