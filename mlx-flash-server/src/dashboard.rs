@@ -1,4 +1,4 @@
-//! Web dashboard served at /admin with live charts for memory, cache, and performance.
+//! Web dashboard served at /admin with live charts, worker pool, memory breakdown, and logs.
 
 use axum::response::Html;
 
@@ -51,7 +51,7 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   .green { color: var(--green); } .yellow { color: var(--yellow); } .red { color: var(--red); } .accent { color: var(--accent); }
   .bg-green { background: var(--green); } .bg-yellow { background: var(--yellow); } .bg-red { background: var(--red); } .bg-accent { background: var(--accent); }
 
-  .chart-wrap { position: relative; height: 180px; }
+  .chart-wrap { position: relative; height: 160px; }
   .chart-wrap canvas { position: absolute; top: 0; left: 0; width: 100% !important; height: 100% !important; }
   .chart-label { position: absolute; top: 8px; left: 12px; font-size: 0.7rem; color: var(--dim); text-transform: uppercase; letter-spacing: 0.8px; z-index: 1; }
   .chart-value { position: absolute; top: 22px; left: 12px; font-size: 1.3rem; font-weight: 700; z-index: 1; font-variant-numeric: tabular-nums; }
@@ -66,6 +66,21 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   .badge-row { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .badge { padding: 3px 10px; border-radius: 6px; font-size: 0.7rem; font-weight: 500; background: var(--border); }
   .badge-active { background: rgba(45,212,168,0.12); color: var(--green); border: 1px solid rgba(45,212,168,0.2); }
+  .badge-warning { background: rgba(239,68,68,0.12); color: var(--red); border: 1px solid rgba(239,68,68,0.2); }
+
+  .worker-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.82rem; }
+  .worker-row:last-child { border-bottom: none; }
+  .worker-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  .log-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; max-height: 280px; overflow-y: auto; font-family: 'SF Mono', Menlo, monospace; font-size: 0.75rem; line-height: 1.6; }
+  .log-panel::-webkit-scrollbar { width: 6px; } .log-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .log-line { padding: 2px 12px; border-bottom: 1px solid rgba(38,45,56,0.3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .log-line:hover { background: rgba(77,166,255,0.05); white-space: normal; }
+  .log-info { color: var(--accent); } .log-warn { color: var(--yellow); } .log-error { color: var(--red); } .log-debug { color: var(--dim); }
+
+  .mem-breakdown { display: flex; gap: 4px; height: 20px; border-radius: 6px; overflow: hidden; margin-top: 8px; }
+  .mem-seg { height: 100%; transition: width 0.6s; position: relative; }
+  .mem-seg:hover::after { content: attr(data-label); position: absolute; top: -24px; left: 50%; transform: translateX(-50%); font-size: 0.65rem; color: var(--text); background: var(--card); padding: 2px 6px; border-radius: 4px; white-space: nowrap; border: 1px solid var(--border); }
 
   @media (max-width: 900px) { .grid { grid-template-columns: repeat(2, 1fr); } .span2,.span3,.span6 { grid-column: span 2; } }
   @media (max-width: 500px) { .grid { grid-template-columns: 1fr; } .span2,.span3,.span6 { grid-column: span 1; } .container { padding: 12px 16px; } }
@@ -75,45 +90,42 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 <div class="header">
   <h1>MLX-Flash</h1>
   <div class="status"><div class="dot"></div> Live</div>
-  <div class="nav"><a href="/admin">Dashboard</a><a href="/chat">Chat</a></div>
+  <div class="nav"><a href="/admin">Dashboard</a><a href="/chat">Chat</a><a href="/metrics">Metrics</a></div>
   <div class="uptime" id="uptime">0:00</div>
 </div>
 
 <div class="container">
 <div class="grid">
 
+  <!-- Row 1: Key stats -->
   <div class="card span2">
     <div class="card-label">Model</div>
     <div class="card-sm" id="model">loading...</div>
     <div class="card-sub" id="model-sub"></div>
   </div>
-
-  <div class="card">
-    <div class="card-label">Hardware</div>
-    <div class="card-sm" id="hw">detecting...</div>
-    <div class="card-sub" id="hw-sub"></div>
-  </div>
-
   <div class="card">
     <div class="card-label">Memory</div>
     <div class="card-value" id="mem-pct"><span class="green">--%</span></div>
     <div class="bar"><div class="bar-fill bg-green" id="mem-bar" style="width:0%"></div></div>
     <div class="card-sub"><span id="mem-avail">--</span> / <span id="mem-total">--</span> GB</div>
   </div>
-
+  <div class="card">
+    <div class="card-label">Requests</div>
+    <div class="card-value accent" id="requests">0</div>
+    <div class="card-sub"><span id="req-rate">0</span> req/s</div>
+  </div>
   <div class="card">
     <div class="card-label">Tokens</div>
-    <div class="card-value accent" id="tokens">0</div>
-    <div class="card-sub"><span id="requests">0</span> requests</div>
+    <div class="card-value" id="tokens"><span class="accent">0</span></div>
+    <div class="card-sub"><span id="tok-rate">0</span> tok/s</div>
   </div>
-
   <div class="card">
-    <div class="card-label">Cache Hit</div>
-    <div class="card-value" id="cache-hit"><span class="green">--%</span></div>
-    <div class="bar"><div class="bar-fill bg-green" id="cache-bar" style="width:0%"></div></div>
-    <div class="card-sub"><span id="cache-info">no cache</span></div>
+    <div class="card-label">Pressure</div>
+    <div class="card-value" id="pressure"><span class="green">OK</span></div>
+    <div class="card-sub">Swap: <span id="swap">0</span> GB</div>
   </div>
 
+  <!-- Row 2: Charts -->
   <div class="card span3">
     <div class="chart-wrap">
       <div class="chart-label">Memory Usage</div>
@@ -121,7 +133,6 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
       <canvas id="mem-chart"></canvas>
     </div>
   </div>
-
   <div class="card span3">
     <div class="chart-wrap">
       <div class="chart-label">Tokens / sec</div>
@@ -130,27 +141,43 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
+  <!-- Row 3: Memory breakdown + Workers -->
+  <div class="card span3">
+    <div class="card-label">Memory Breakdown</div>
+    <div class="mem-breakdown" id="mem-breakdown"></div>
+    <div class="card-sub" style="margin-top:10px">
+      <span style="color:var(--red)">&#9632;</span> Active
+      <span style="color:var(--orange)">&#9632;</span> Wired
+      <span style="color:var(--yellow)">&#9632;</span> Compressed
+      <span style="color:var(--dim)">&#9632;</span> Inactive
+      <span style="color:var(--green)">&#9632;</span> Free
+    </div>
+    <div class="card-sub" id="mem-detail"></div>
+  </div>
+  <div class="card span3">
+    <div class="card-label">Workers <span id="worker-summary" style="float:right;color:var(--green)"></span></div>
+    <div id="workers"></div>
+    <div class="card-sub" style="margin-top:8px">Sessions: <span id="sessions">0</span> | Strategy: least-connections + cache-affinity</div>
+  </div>
+
+  <!-- Row 4: Hints + Cache -->
   <div class="card span3">
     <div class="card-label">Optimization Hints</div>
     <div class="hints" id="hints"></div>
   </div>
-
   <div class="card span3">
-    <div class="card-label">Integrations</div>
-    <div class="badge-row">
-      <span class="badge badge-active">OpenAI API</span>
-      <span class="badge badge-active">Ollama API</span>
-      <span class="badge badge-active">MCP Tools</span>
-      <span class="badge badge-active">SSE Streaming</span>
+    <div class="card-label">Cache</div>
+    <div style="display:flex;gap:20px;align-items:baseline">
+      <div><span class="card-value" id="cache-hit" style="font-size:1.5rem"><span class="green">--%</span></span><div class="card-sub">hit rate</div></div>
+      <div><span class="card-sm" id="cache-entries" style="color:var(--orange)">0</span><div class="card-sub">entries</div></div>
     </div>
-    <div class="card-sub" style="margin-top:12px">Serving on port <span id="port">8080</span></div>
-    <div class="badge-row" style="margin-top:8px">
-      <span class="badge">Claude Code</span>
-      <span class="badge">Cursor</span>
-      <span class="badge">LM Studio</span>
-      <span class="badge">Codex</span>
-      <span class="badge">Open WebUI</span>
-    </div>
+    <div class="bar"><div class="bar-fill bg-green" id="cache-bar" style="width:0%"></div></div>
+  </div>
+
+  <!-- Row 5: Live Logs -->
+  <div class="card span6">
+    <div class="card-label">Live Logs <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">last 100 entries</span></div>
+    <div class="log-panel" id="log-panel"></div>
   </div>
 
 </div>
@@ -158,7 +185,7 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 
 <script>
 const MAX = 120;
-let memH = [], tpsH = [], lastTok = 0, lastT = Date.now();
+let memH = [], tpsH = [], rpsH = [], lastTok = 0, lastReq = 0, lastT = Date.now();
 
 function drawChart(canvas, data, color, gradAlpha) {
   const dpr = window.devicePixelRatio || 1;
@@ -169,15 +196,10 @@ function drawChart(canvas, data, color, gradAlpha) {
   const w = rect.width, h = rect.height;
   ctx.clearRect(0, 0, w, h);
   if (data.length < 2) return;
-
   const max = Math.max(...data, 1) * 1.15;
   const pts = data.map((v, i) => [i / (MAX - 1) * w, h - (v / max) * (h - 50) - 4]);
-
-  // Grid lines
   ctx.strokeStyle = 'rgba(92,106,122,0.12)'; ctx.lineWidth = 1;
   for (let i = 1; i < 4; i++) { const y = h * i / 4; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
-
-  // Gradient fill
   const grad = ctx.createLinearGradient(0, 0, 0, h);
   grad.addColorStop(0, color.replace(')', `,${gradAlpha})`).replace('rgb', 'rgba'));
   grad.addColorStop(1, color.replace(')', ',0)').replace('rgb', 'rgba'));
@@ -185,28 +207,22 @@ function drawChart(canvas, data, color, gradAlpha) {
   pts.forEach(p => ctx.lineTo(p[0], p[1]));
   ctx.lineTo(pts[pts.length-1][0], h); ctx.closePath();
   ctx.fillStyle = grad; ctx.fill();
-
-  // Line
   ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round';
   pts.forEach((p, i) => i === 0 ? ctx.moveTo(p[0], p[1]) : ctx.lineTo(p[0], p[1]));
   ctx.stroke();
-
-  // Current value dot
   const last = pts[pts.length - 1];
   ctx.beginPath(); ctx.arc(last[0], last[1], 4, 0, Math.PI * 2);
   ctx.fillStyle = color; ctx.fill();
-  ctx.beginPath(); ctx.arc(last[0], last[1], 6, 0, Math.PI * 2);
-  ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.globalAlpha = 0.3; ctx.stroke(); ctx.globalAlpha = 1;
 }
 
 function pressureColor(pct) { return pct > 90 ? 'red' : pct > 70 ? 'yellow' : 'green'; }
 function pressureBg(pct) { return pct > 90 ? 'bg-red' : pct > 70 ? 'bg-yellow' : 'bg-green'; }
-function fmtTime(s) { const m = Math.floor(s/60), sec = Math.floor(s%60); return m > 0 ? m+'m '+sec+'s' : sec+'s'; }
+function fmtTime(s) { const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60); return h > 0 ? h+'h '+m+'m' : m > 0 ? m+'m '+sec+'s' : sec+'s'; }
 
 function renderHints(hints) {
   const el = document.getElementById('hints');
   if (!hints || hints.length === 0) {
-    el.innerHTML = '<div class="hint hint-info"><span class="hint-icon">&#10003;</span>All systems nominal — no optimization needed</div>';
+    el.innerHTML = '<div class="hint hint-info"><span class="hint-icon">&#10003;</span>All systems nominal</div>';
     return;
   }
   el.innerHTML = hints.map(h => {
@@ -216,10 +232,56 @@ function renderHints(hints) {
   }).join('');
 }
 
+function renderWorkers(wdata) {
+  const el = document.getElementById('workers');
+  if (!wdata || !wdata.workers) { el.innerHTML = '<div class="card-sub">No worker data</div>'; return; }
+  el.innerHTML = wdata.workers.map(w => {
+    const dotColor = w.healthy ? 'var(--green)' : 'var(--red)';
+    const status = w.healthy ? 'healthy' : 'down';
+    return '<div class="worker-row">'
+      + '<div class="worker-dot" style="background:'+dotColor+'"></div>'
+      + '<span>:'+w.port+'</span>'
+      + '<span style="color:var(--dim);margin-left:auto">'+w.inflight+' inflight</span>'
+      + '<span style="color:var(--dim);margin-left:12px">'+w.total_requests+' total</span>'
+      + '</div>';
+  }).join('');
+  document.getElementById('worker-summary').textContent = wdata.healthy_count + '/' + wdata.total_count + ' healthy';
+}
+
+function renderMemBreakdown(mem) {
+  const el = document.getElementById('mem-breakdown');
+  const total = mem.total_gb || 1;
+  const pct = v => ((v||0) / total * 100).toFixed(1);
+  el.innerHTML = [
+    {v: mem.active_gb, c: 'var(--red)', l: 'Active '+pct(mem.active_gb)+'%'},
+    {v: mem.wired_gb, c: 'var(--orange)', l: 'Wired '+pct(mem.wired_gb)+'%'},
+    {v: mem.compressed_gb, c: 'var(--yellow)', l: 'Compressed '+pct(mem.compressed_gb)+'%'},
+    {v: mem.inactive_gb, c: 'var(--dim)', l: 'Inactive '+pct(mem.inactive_gb)+'%'},
+    {v: mem.free_gb, c: 'var(--green)', l: 'Free '+pct(mem.free_gb)+'%'},
+  ].map(s => '<div class="mem-seg" style="width:'+pct(s.v)+'%;background:'+s.c+'" data-label="'+s.l+'"></div>').join('');
+  document.getElementById('mem-detail').textContent =
+    'Active: '+(mem.active_gb||0).toFixed(1)+'G | Wired: '+(mem.wired_gb||0).toFixed(1)+'G | Compressed: '+(mem.compressed_gb||0).toFixed(1)+'G | Inactive: '+(mem.inactive_gb||0).toFixed(1)+'G | Free: '+(mem.free_gb||0).toFixed(1)+'G';
+}
+
+function renderLogs(logs) {
+  const el = document.getElementById('log-panel');
+  if (!logs || logs.length === 0) { el.innerHTML = '<div class="log-line" style="color:var(--dim)">No logs yet</div>'; return; }
+  const wasAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+  el.innerHTML = logs.reverse().map(l => {
+    const cls = l.level === 'error' ? 'log-error' : l.level === 'warn' || l.level === 'warning' ? 'log-warn' : l.level === 'debug' ? 'log-debug' : 'log-info';
+    const ts = l.timestamp || '';
+    return '<div class="log-line"><span class="'+cls+'">['+l.level.toUpperCase().padEnd(5)+']</span> <span style="color:var(--dim)">'+l.component+'</span> '+l.message+'</div>';
+  }).join('');
+  if (wasAtBottom) el.scrollTop = el.scrollHeight;
+}
+
 async function poll() {
   try {
-    const [st, cache] = await Promise.all([
-      fetch('/status').then(r=>r.json()), fetch('/cache/stats').then(r=>r.json()).catch(()=>null)
+    const [st, cache, workers, logs] = await Promise.all([
+      fetch('/status').then(r=>r.json()),
+      fetch('/cache/stats').then(r=>r.json()).catch(()=>null),
+      fetch('/workers').then(r=>r.json()).catch(()=>null),
+      fetch('/logs/recent').then(r=>r.json()).catch(()=>null),
     ]);
     const mem = st.memory || {}, stats = st.stats || {};
 
@@ -227,10 +289,6 @@ async function poll() {
     const mname = st.model || 'none';
     document.getElementById('model').textContent = mname.split('/').pop();
     document.getElementById('model-sub').textContent = mname;
-
-    // Hardware
-    document.getElementById('hw').textContent = (mem.total_gb||0).toFixed(0) + 'GB RAM';
-    document.getElementById('hw-sub').textContent = 'Apple Silicon • ' + (mem.pressure || 'Unknown');
 
     // Memory
     const avail = Math.max((mem.free_gb||0) + (mem.inactive_gb||0) * 0.5, 0);
@@ -244,17 +302,25 @@ async function poll() {
     document.getElementById('mem-total').textContent = total.toFixed(0);
     document.getElementById('mem-chart-val').innerHTML = '<span class="'+pc+'">'+pct.toFixed(0)+'%</span>';
 
-    // Tokens
-    const tok = stats.tokens_generated || 0;
-    document.getElementById('tokens').textContent = tok.toLocaleString();
-    document.getElementById('requests').textContent = (stats.requests||0).toLocaleString();
-    document.getElementById('uptime').textContent = fmtTime(stats.uptime_secs||0);
+    // Pressure + Swap
+    const pressure = (mem.pressure||'Normal').toString();
+    const pClass = pressure === 'Critical' ? 'red' : pressure === 'Warning' ? 'yellow' : 'green';
+    document.getElementById('pressure').innerHTML = '<span class="'+pClass+'">'+pressure+'</span>';
+    document.getElementById('swap').textContent = (mem.swap_used_gb||0).toFixed(1);
 
-    // TPS
+    // Requests + Tokens + Rates
+    const tok = stats.tokens_generated || 0;
+    const req = stats.requests || 0;
     const now = Date.now(), dt = (now - lastT) / 1000;
     const tps = dt > 0 ? Math.max((tok - lastTok) / dt, 0) : 0;
-    lastTok = tok; lastT = now;
+    const rps = dt > 0 ? Math.max((req - lastReq) / dt, 0) : 0;
+    lastTok = tok; lastReq = req; lastT = now;
+    document.getElementById('tokens').innerHTML = '<span class="accent">'+tok.toLocaleString()+'</span>';
+    document.getElementById('requests').textContent = req.toLocaleString();
+    document.getElementById('tok-rate').textContent = tps > 0 ? tps.toFixed(1) : '0';
+    document.getElementById('req-rate').textContent = rps > 0 ? rps.toFixed(2) : '0';
     document.getElementById('tps-chart-val').textContent = tps > 0 ? tps.toFixed(1) : '0';
+    document.getElementById('uptime').textContent = fmtTime(stats.uptime_secs||0);
 
     // Cache
     if (cache && !cache.error) {
@@ -263,20 +329,27 @@ async function poll() {
       const hr = t > 0 ? hits/t*100 : 0;
       document.getElementById('cache-hit').innerHTML = '<span class="green">'+hr.toFixed(0)+'%</span>';
       document.getElementById('cache-bar').style.width = hr+'%';
-      document.getElementById('cache-info').textContent = (cache.cached_experts||0)+' experts';
+      document.getElementById('cache-entries').textContent = (cache.cached_experts||0);
     }
 
     // Hints
     renderHints(st.optimization_hints);
+
+    // Workers
+    renderWorkers(workers || st.workers);
+    if (workers) document.getElementById('sessions').textContent = workers.sessions_active || st.workers?.sessions_active || '0';
+
+    // Memory breakdown
+    renderMemBreakdown(mem);
+
+    // Logs
+    if (logs && logs.logs) renderLogs(logs.logs);
 
     // Charts
     memH.push(pct); if (memH.length > MAX) memH.shift();
     tpsH.push(tps); if (tpsH.length > MAX) tpsH.shift();
     drawChart(document.getElementById('mem-chart'), memH, 'rgb(77,166,255)', 0.15);
     drawChart(document.getElementById('tps-chart'), tpsH, 'rgb(45,212,168)', 0.15);
-
-    // Port
-    document.getElementById('port').textContent = location.port || '8080';
   } catch(e) {}
 }
 

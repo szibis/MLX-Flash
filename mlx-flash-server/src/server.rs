@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::cache::LcpCache;
+use crate::log_buffer::LogBuffer;
 use crate::memory;
 use crate::proxy;
 use crate::worker_pool::WorkerPool;
@@ -22,6 +23,7 @@ pub struct AppState {
     pub tokens_generated: Arc<AtomicU64>,
     pub cache: Option<Arc<LcpCache>>,
     pub pool: Arc<WorkerPool>,
+    pub log_buffer: LogBuffer,
 }
 
 impl Default for AppState {
@@ -34,6 +36,7 @@ impl Default for AppState {
             tokens_generated: Arc::new(AtomicU64::new(0)),
             cache: None,
             pool: Arc::new(WorkerPool::single(8081)),
+            log_buffer: LogBuffer::new(),
         }
     }
 }
@@ -57,6 +60,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/workers", get(handle_workers))
         .route("/v1/models/switch", axum::routing::post(handle_model_switch))
         .route("/metrics", get(handle_metrics))
+        .route("/logs/recent", get(handle_logs_recent))
         .with_state(state)
         .layer(cors)
 }
@@ -352,6 +356,11 @@ async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
         .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
         .body(axum::body::Body::from(out))
         .unwrap()
+}
+
+async fn handle_logs_recent(State(state): State<AppState>) -> axum::Json<Value> {
+    let entries = state.log_buffer.recent(100);
+    axum::Json(json!({ "logs": entries }))
 }
 
 async fn handle_cache_stats(State(state): State<AppState>) -> axum::Json<Value> {

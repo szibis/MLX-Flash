@@ -3,6 +3,7 @@ mod chat_ui;
 mod cli_chat;
 mod dashboard;
 mod expert_store;
+mod log_buffer;
 mod mcp;
 mod memory;
 mod protocol;
@@ -150,6 +151,10 @@ async fn main() {
         return;
     }
 
+    // Log buffer for /logs/recent endpoint (dashboard live logs)
+    let log_buf = log_buffer::LogBuffer::new();
+    let buf_layer = log_buffer::BufferLayer::new(log_buf.clone());
+
     // Structured logging: JSON or text, stdout + optional file
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -162,6 +167,7 @@ async fn main() {
             let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
             tracing_subscriber::registry()
                 .with(env_filter)
+                .with(buf_layer)
                 .with(tracing_subscriber::fmt::layer().json()
                     .with_target(true)
                     .with_thread_ids(true)
@@ -171,11 +177,11 @@ async fn main() {
                     .with_target(true)
                     .flatten_event(true))
                 .init();
-            // Keep _guard alive for the duration of main
             Box::leak(Box::new(_guard));
         } else {
             tracing_subscriber::registry()
                 .with(env_filter)
+                .with(buf_layer)
                 .with(tracing_subscriber::fmt::layer().json()
                     .with_target(true)
                     .with_thread_ids(true)
@@ -190,13 +196,16 @@ async fn main() {
             let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
             tracing_subscriber::registry()
                 .with(env_filter)
+                .with(buf_layer)
                 .with(tracing_subscriber::fmt::layer())
                 .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
                 .init();
             Box::leak(Box::new(_guard));
         } else {
-            tracing_subscriber::fmt()
-                .with_env_filter(env_filter)
+            tracing_subscriber::registry()
+                .with(env_filter)
+                .with(buf_layer)
+                .with(tracing_subscriber::fmt::layer())
                 .init();
         }
     }
@@ -278,6 +287,7 @@ async fn main() {
         model_name: std::sync::Arc::new(tokio::sync::RwLock::new(args.model)),
         cache: cache_arc,
         pool: pool,
+        log_buffer: log_buf,
         ..Default::default()
     };
 
