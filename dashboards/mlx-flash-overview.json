@@ -186,6 +186,65 @@
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
       "targets": [{ "expr": "mlx_flash_cache_entries", "legendFormat": "experts cached" }],
       "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 20 }, "color": { "mode": "fixed", "fixedColor": "orange" } } }
+    },
+    {
+      "type": "row",
+      "title": "Python Workers (per-worker detail)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
+      "collapsed": false
+    },
+    {
+      "type": "timeseries",
+      "title": "Python Worker Token Rate",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 42 },
+      "targets": [{ "expr": "rate(mlx_flash_python_worker_tokens_total[1m])", "legendFormat": "worker:{{worker}} ({{model}})" }],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "drawStyle": "line", "fillOpacity": 20, "gradientMode": "scheme" } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Python Worker Request Rate",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 42 },
+      "targets": [{ "expr": "rate(mlx_flash_python_worker_requests_total[1m])", "legendFormat": "worker:{{worker}}" }],
+      "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "drawStyle": "line", "fillOpacity": 20 } } }
+    },
+    {
+      "type": "stat",
+      "title": "Python Worker Memory Pressure",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 50 },
+      "targets": [{ "expr": "mlx_flash_python_worker_memory_pressure", "legendFormat": "worker:{{worker}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Normal", "color": "green" }, "1": { "text": "Warning", "color": "yellow" }, "2": { "text": "Critical", "color": "red" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "yellow" }, { "value": 2, "color": "red" }] }
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Python Worker Model Loaded",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 50 },
+      "targets": [{ "expr": "mlx_flash_python_worker_model_loaded", "legendFormat": "worker:{{worker}} {{model}}" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "Not loaded", "color": "red" }, "1": { "text": "Loaded", "color": "green" } } }
+          ]
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Python Worker Uptime",
+      "datasource": "${DS_PROMETHEUS}",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 54 },
+      "targets": [{ "expr": "mlx_flash_python_worker_uptime_seconds", "legendFormat": "worker:{{worker}}" }],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } } }
     }
   ],
   "schemaVersion": 39,

@@ -70,6 +70,13 @@
   .log-line:hover { background: rgba(77,166,255,0.05); white-space: normal; }
   .log-info { color: var(--accent); } .log-warn { color: var(--yellow); } .log-error { color: var(--red); } .log-debug { color: var(--dim); }
 
+  .btn { padding: 4px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 0.72rem; cursor: pointer; transition: all 0.15s; font-family: inherit; }
+  .btn:hover { border-color: var(--accent); background: rgba(77,166,255,0.1); }
+  .btn-danger { border-color: var(--red); color: var(--red); }
+  .btn-danger:hover { background: rgba(239,68,68,0.1); }
+  .btn-sm { padding: 2px 8px; font-size: 0.68rem; }
+  .action-bar { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+
   .mem-breakdown { display: flex; gap: 4px; height: 20px; border-radius: 6px; overflow: hidden; margin-top: 8px; }
   .mem-seg { height: 100%; transition: width 0.6s; position: relative; }
   .mem-seg:hover::after { content: attr(data-label); position: absolute; top: -24px; left: 50%; transform: translateX(-50%); font-size: 0.65rem; color: var(--text); background: var(--card); padding: 2px 6px; border-radius: 4px; white-space: nowrap; border: 1px solid var(--border); }
@@ -150,6 +157,11 @@
     <div class="card-label">Workers <span id="worker-summary" style="float:right;color:var(--green)"></span></div>
     <div id="workers"></div>
     <div class="card-sub" style="margin-top:8px">Sessions: <span id="sessions">0</span> | Strategy: least-connections + cache-affinity</div>
+    <div class="action-bar">
+      <button class="btn" onclick="apiAction('/reload','POST')">Reload All</button>
+      <button class="btn" onclick="apiAction('/workers/restart','POST')">Restart Unhealthy</button>
+      <button class="btn btn-danger" onclick="if(confirm('Shutdown server?'))apiAction('/shutdown','POST')">Shutdown</button>
+    </div>
   </div>
 
   <!-- Row 4: Hints + Cache -->
@@ -224,20 +236,37 @@ function renderHints(hints) {
   }).join('');
 }
 
+let workerPyStatus = {}; // port -> {model, tokens, uptime, pressure}
+
 function renderWorkers(wdata) {
   const el = document.getElementById('workers');
   if (!wdata || !wdata.workers) { el.innerHTML = '<div class="card-sub">No worker data</div>'; return; }
   el.innerHTML = wdata.workers.map(w => {
     const dotColor = w.healthy ? 'var(--green)' : 'var(--red)';
-    const status = w.healthy ? 'healthy' : 'down';
-    return '<div class="worker-row">'
+    const py = workerPyStatus[w.port] || {};
+    const modelShort = py.model ? py.model.split('/').pop() : '—';
+    const pyTokens = py.tokens != null ? py.tokens.toLocaleString() : '—';
+    const pyUptime = py.uptime != null ? fmtTime(py.uptime) : '—';
+    const pyPressure = py.pressure || '—';
+    const pressureClass = pyPressure === 'critical' ? 'red' : pyPressure === 'warning' ? 'yellow' : 'dim';
+    return '<div class="worker-row" style="flex-wrap:wrap">'
       + '<div class="worker-dot" style="background:'+dotColor+'"></div>'
-      + '<span>:'+w.port+'</span>'
-      + '<span style="color:var(--dim);margin-left:auto">'+w.inflight+' inflight</span>'
-      + '<span style="color:var(--dim);margin-left:12px">'+w.total_requests+' total</span>'
+      + '<span style="font-weight:600">:'+w.port+'</span>'
+      + '<span style="color:var(--dim);font-size:0.75rem;margin-left:8px">'+modelShort+'</span>'
+      + '<span style="color:var(--dim);margin-left:auto;font-size:0.75rem">'+w.inflight+' inflight</span>'
+      + '<span style="color:var(--dim);margin-left:8px;font-size:0.75rem">'+w.total_requests+' routed</span>'
+      + '<span style="color:var(--dim);margin-left:8px;font-size:0.75rem">'+pyTokens+' tok</span>'
+      + '<span style="color:var(--'+pressureClass+');margin-left:8px;font-size:0.75rem">'+pyPressure+'</span>'
+      + '<button class="btn btn-sm" style="margin-left:8px" onclick="apiAction(\'/workers/restart\',\'POST\',{port:'+w.port+'})">restart</button>'
       + '</div>';
   }).join('');
   document.getElementById('worker-summary').textContent = wdata.healthy_count + '/' + wdata.total_count + ' healthy';
+  // Show sessions
+  if (wdata.sessions && wdata.sessions.length > 0) {
+    document.getElementById('sessions').textContent = wdata.sessions_active + ' (' + wdata.sessions.map(s => s.session_id.substring(0,8)+'→:'+s.worker_port).join(', ') + ')';
+  } else {
+    document.getElementById('sessions').textContent = wdata.sessions_active || '0';
+  }
 }
 
 function renderMemBreakdown(mem) {
@@ -265,6 +294,38 @@ function renderLogs(logs) {
     return '<div class="log-line"><span class="'+cls+'">['+l.level.toUpperCase().padEnd(5)+']</span> <span style="color:var(--dim)">'+l.component+'</span> '+l.message+'</div>';
   }).join('');
   if (wasAtBottom) el.scrollTop = el.scrollHeight;
+}
+
+async function apiAction(url, method, body) {
+  try {
+    const opts = {method};
+    if (body) { opts.headers = {'Content-Type':'application/json'}; opts.body = JSON.stringify(body); }
+    const r = await fetch(url, opts);
+    const j = await r.json();
+    const msg = j.message || JSON.stringify(j);
+    // Flash a brief status in the uptime area
+    const el = document.getElementById('uptime');
+    const prev = el.textContent;
+    el.textContent = msg.substring(0, 40);
+    el.style.color = 'var(--green)';
+    setTimeout(() => { el.style.color = ''; }, 3000);
+  } catch(e) { console.error('API action failed:', e); }
+}
+
+async function fetchWorkerPyStatus(ports) {
+  for (const port of ports) {
+    try {
+      const st = await fetch('http://127.0.0.1:'+port+'/status').then(r=>r.json());
+      workerPyStatus[port] = {
+        model: st.model || '',
+        tokens: (st.stats||{}).tokens_generated || 0,
+        requests: (st.stats||{}).requests || 0,
+        uptime: (st.stats||{}).uptime_s || 0,
+        pressure: (st.memory||{}).pressure || 'unknown',
+        memory_available_gb: (st.memory||{}).available_gb || 0,
+      };
+    } catch(e) { workerPyStatus[port] = {model:'unreachable', pressure:'unknown'}; }
+  }
 }
 
 async function poll() {
@@ -327,9 +388,13 @@ async function poll() {
     // Hints
     renderHints(st.optimization_hints);
 
-    // Workers
-    renderWorkers(workers || st.workers);
-    if (workers) document.getElementById('sessions').textContent = workers.sessions_active || st.workers?.sessions_active || '0';
+    // Workers — fetch Python status for each, then render
+    const wdata = workers || st.workers;
+    if (wdata && wdata.workers) {
+      const ports = wdata.workers.map(w => w.port);
+      await fetchWorkerPyStatus(ports);
+    }
+    renderWorkers(wdata);
 
     // Memory breakdown
     renderMemBreakdown(mem);
