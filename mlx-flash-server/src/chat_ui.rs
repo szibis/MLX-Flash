@@ -175,7 +175,7 @@ async function sendMessage() {
     const payload = {
       model: 'local',
       messages: messages.map(m => ({role: m.role, content: m.content})),
-      stream: true, max_tokens: 1024,
+      stream: false, max_tokens: 1024,
     };
 
     const resp = await fetch('/v1/chat/completions', {
@@ -184,62 +184,34 @@ async function sendMessage() {
       body: JSON.stringify(payload),
     });
 
+    let fullText = '';
+
     if (!resp.ok) {
       let errMsg = 'Server error ' + resp.status;
-      try {
-        const errJson = await resp.json();
-        errMsg = errJson.error || errMsg;
-      } catch(e) { errMsg = await resp.text().catch(()=>errMsg); }
+      try { const j = await resp.json(); errMsg = j.error || errMsg; } catch(e) {}
 
       if (resp.status === 502) {
-        aiEl.innerHTML = '<p style="color:var(--red)">Python worker not running.</p>'
-          + '<p style="color:var(--dim);font-size:0.85rem;margin-top:8px">Start it with: <code>mlx-flash --port 8081 --preload</code></p>'
-          + '<p style="color:var(--dim);font-size:0.85rem">Or: <code>python -m mlx_flash_compress.serve --port 8081 --preload</code></p>';
+        aiEl.innerHTML = '<p style="color:var(--red)"><strong>Python worker not running</strong></p>'
+          + '<p style="color:var(--dim);font-size:0.85rem;margin-top:8px">Start it in another terminal:</p>'
+          + '<pre style="background:var(--surface);padding:10px 14px;border-radius:8px;margin-top:6px;font-size:0.82rem;border:1px solid var(--border)">'
+          + '<code>pip install mlx mlx-lm mlx-flash\nmlx-flash --port 8081 --preload</code></pre>';
       } else {
         aiEl.innerHTML = '<p style="color:var(--red)">' + errMsg + '</p>';
       }
-      messages[messages.length-1].content = 'Error';
+      messages[messages.length-1].content = 'Error: ' + errMsg;
       return;
     }
 
-    // SSE streaming
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let fullText = '';
-    let buffer = '';
-
-    while (true) {
-      const {done, value} = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, {stream: true});
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        const data = line.slice(6).trim();
-        if (data === '[DONE]') continue;
-        try {
-          const json = JSON.parse(data);
-          const delta = json.choices?.[0]?.delta?.content || '';
-          if (delta) {
-            fullText += delta;
-            aiEl.innerHTML = formatContent(fullText) + '<span class="typing"></span>';
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-          }
-        } catch(e) {}
-      }
+    try {
+      const json = await resp.json();
+      fullText = json.choices?.[0]?.message?.content
+        || json.choices?.[0]?.text
+        || JSON.stringify(json);
+    } catch(e) {
+      fullText = 'Failed to parse response';
     }
 
-    // If no SSE, try plain JSON response
-    if (!fullText && resp.headers.get('content-type')?.includes('json')) {
-      try {
-        const json = JSON.parse(buffer || await resp.text());
-        fullText = json.choices?.[0]?.message?.content || json.choices?.[0]?.text || '';
-      } catch(e) {}
-    }
-
-    aiEl.innerHTML = formatContent(fullText || 'No response received.');
+    aiEl.innerHTML = formatContent(fullText);
     messages[messages.length-1].content = fullText;
 
   } catch(e) {
