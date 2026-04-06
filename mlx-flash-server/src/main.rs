@@ -1,5 +1,6 @@
 mod cache;
 mod chat_ui;
+mod cli_chat;
 mod dashboard;
 mod expert_store;
 mod mcp;
@@ -38,6 +39,8 @@ struct Args {
     socket_path: String,
     #[arg(long, help = "Run as MCP stdio server for Claude Code / Codex")]
     mcp: bool,
+    #[arg(long, help = "Start interactive CLI chat (connects to local server)")]
+    chat: bool,
 }
 
 fn run_mcp_stdio(python_port: u16) {
@@ -92,6 +95,12 @@ async fn main() {
     // MCP stdio mode — no HTTP, just JSON-RPC over stdin/stdout
     if args.mcp {
         run_mcp_stdio(args.python_port);
+        return;
+    }
+
+    // CLI chat mode — connects to running server
+    if args.chat {
+        cli_chat::run_chat(args.port).await;
         return;
     }
 
