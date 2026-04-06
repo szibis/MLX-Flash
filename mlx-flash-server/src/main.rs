@@ -9,9 +9,11 @@ mod protocol;
 mod proxy;
 mod server;
 mod socket_server;
+mod worker_pool;
 
 use clap::Parser;
 use std::io::BufRead as _;
+use std::net::TcpStream;
 use std::process::{Child, Command};
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -41,6 +43,8 @@ struct Args {
     mcp: bool,
     #[arg(long, help = "Start interactive CLI chat (connects to local server)")]
     chat: bool,
+    #[arg(long, default_value = "1", help = "Number of Python inference workers")]
+    workers: usize,
 }
 
 fn run_mcp_stdio(python_port: u16) {
@@ -63,6 +67,43 @@ fn run_mcp_stdio(python_port: u16) {
             println!("{}", serde_json::to_string(&response).unwrap_or_default());
         }
     }
+}
+
+/// Check if a port is already in use by attempting a TCP connect.
+fn is_port_in_use(port: u16) -> bool {
+    TcpStream::connect(("127.0.0.1", port)).is_ok()
+}
+
+/// Probe the /health endpoint to check if the existing listener is our worker.
+async fn is_our_worker(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{port}/health");
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .unwrap();
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                // Our serve.py returns "model" in the status/health response
+                body.get("model").is_some()
+            } else {
+                false
+            }
+        }
+        Err(_) => false,
+    }
+}
+
+/// Wait for the Python worker to become ready, polling /health.
+async fn wait_for_worker(port: u16, timeout_secs: u64) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    while std::time::Instant::now() < deadline {
+        if is_our_worker(port).await {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+    false
 }
 
 fn launch_python_worker(port: u16, model: &str, preload: bool) -> Option<Child> {
@@ -114,11 +155,54 @@ async fn main() {
         Err(e) => tracing::warn!("Could not read memory state: {}", e),
     }
 
-    let mut _worker: Option<Child> = None;
+    let mut _workers: Vec<Child> = Vec::new();
+    let worker_count = args.workers.max(1);
+
     if args.launch_worker {
-        _worker = launch_python_worker(args.python_port, &args.model, args.preload);
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        for i in 0..worker_count {
+            let port = args.python_port + i as u16;
+            if is_port_in_use(port) {
+                if is_our_worker(port).await {
+                    tracing::info!("Reusing existing MLX-Flash worker on port {}", port);
+                    continue;
+                } else {
+                    tracing::error!(
+                        "Port {} is already in use by another process. \
+                         Free the port or use --python-port to pick a different base port.",
+                        port
+                    );
+                    std::process::exit(1);
+                }
+            }
+
+            if let Some(child) = launch_python_worker(port, &args.model, args.preload) {
+                _workers.push(child);
+            }
+        }
+
+        // Wait for all workers to become ready
+        let timeout = if args.preload { 120 } else { 15 };
+        for i in 0..worker_count {
+            let port = args.python_port + i as u16;
+            tracing::info!("Waiting for worker on port {} (up to {}s)...", port, timeout);
+            if wait_for_worker(port, timeout).await {
+                tracing::info!("Worker on port {} is ready", port);
+            } else {
+                tracing::warn!(
+                    "Worker on port {} not yet responding — may still be loading model",
+                    port
+                );
+            }
+        }
     }
+
+    let pool = Arc::new(worker_pool::WorkerPool::new(args.python_port, worker_count));
+    tracing::info!(
+        "Worker pool: {} worker(s) on ports {}-{}, strategy: least-connections + cache-affinity",
+        worker_count,
+        args.python_port,
+        args.python_port + worker_count as u16 - 1,
+    );
 
     let cache_arc = if let Some(ref expert_dir) = args.expert_dir {
         let cache = Arc::new(cache::LcpCache::new(args.cache_mb as usize * 1024 * 1024));
@@ -137,8 +221,9 @@ async fn main() {
 
     let state = server::AppState {
         python_port: args.python_port,
-        model_name: args.model,
+        model_name: std::sync::Arc::new(tokio::sync::RwLock::new(args.model)),
         cache: cache_arc,
+        pool: pool,
         ..Default::default()
     };
 
@@ -156,4 +241,108 @@ async fn main() {
         .unwrap();
 
     tracing::info!("Shutting down");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener as StdTcpListener;
+
+    #[test]
+    fn test_is_port_in_use_detects_occupied_port() {
+        // Bind a port, then check it's detected as in use
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(is_port_in_use(port));
+        drop(listener);
+    }
+
+    #[test]
+    fn test_is_port_in_use_returns_false_for_free_port() {
+        // Bind and immediately release to get a known-free port
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!is_port_in_use(port));
+    }
+
+    #[tokio::test]
+    async fn test_is_our_worker_returns_false_for_non_worker() {
+        // Start a bare TCP listener (no HTTP) — should not be recognized as our worker
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Keep listener alive but don't serve HTTP
+        assert!(!is_our_worker(port).await);
+        drop(listener);
+    }
+
+    #[tokio::test]
+    async fn test_is_our_worker_returns_false_for_closed_port() {
+        assert!(!is_our_worker(19876).await);
+    }
+
+    #[tokio::test]
+    async fn test_is_our_worker_recognizes_health_with_model() {
+        // Spin up a minimal axum server that returns {"model": "test"} on /health
+        let app = axum::Router::new().route(
+            "/health",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"model": "test-model"}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        // Give the server a moment to start
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(is_our_worker(port).await);
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_is_our_worker_rejects_health_without_model() {
+        // Server returns valid JSON but without "model" key
+        let app = axum::Router::new().route(
+            "/health",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"status": "ok"}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!is_our_worker(port).await);
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_worker_times_out_on_closed_port() {
+        // Should return false quickly (1s timeout, no server)
+        let result = wait_for_worker(19877, 1).await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_worker_succeeds_when_ready() {
+        let app = axum::Router::new().route(
+            "/health",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({"model": "test"}))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let result = wait_for_worker(port, 5).await;
+        assert!(result);
+        handle.abort();
+    }
 }

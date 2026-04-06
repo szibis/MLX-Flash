@@ -266,14 +266,67 @@ class ChatHandler(BaseHTTPRequestHandler):
         elif self.path == "/release":
             result = self.server_state.mem_mgr.auto_release_if_needed()
             self._send_json(result)
+        elif self.path == "/chat":
+            self._serve_chat_html()
+        elif self.path == "/admin":
+            self._serve_chat_html()  # same UI for standalone mode
         else:
             self._send_json({"error": "Not found"}, 404)
 
     def do_POST(self):
         if self.path == "/v1/chat/completions":
             self._handle_chat()
+        elif self.path in ("/switch", "/v1/models/switch"):
+            self._handle_switch()
         else:
             self._send_json({"error": "Not found"}, 404)
+
+    def _handle_switch(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+
+        new_model = data.get("model")
+        if not new_model:
+            self._send_json({"error": "Missing 'model' field"}, 400)
+            return
+
+        state = self.server_state
+        old_model = state.model_name
+        print(f"  Switching model: {old_model} -> {new_model}")
+
+        # Unload current model
+        state.model = None
+        state.tokenizer = None
+        import gc
+        gc.collect()
+        try:
+            mx.clear_cache()
+        except AttributeError:
+            pass
+
+        # Load new model
+        state.model_name = new_model
+        try:
+            state.load_model()
+            self._send_json({
+                "switched": True,
+                "model": new_model,
+                "previous": old_model,
+            })
+        except Exception as e:
+            # Rollback on failure
+            state.model_name = old_model
+            self._send_json({
+                "switched": False,
+                "error": str(e),
+                "model": old_model,
+            }, 500)
 
     def _handle_chat(self):
         content_length = int(self.headers.get("Content-Length", 0))
@@ -392,6 +445,47 @@ class ChatHandler(BaseHTTPRequestHandler):
         tokens = len(state.tokenizer.encode(output))
         state.total_requests += 1
         state.total_tokens += tokens
+
+    def _serve_chat_html(self):
+        """Serve the web chat UI — loads from the shared HTML file."""
+        import pathlib
+        chat_html_path = pathlib.Path(__file__).parent.parent / "assets" / "chat.html"
+        if chat_html_path.exists():
+            html = chat_html_path.read_text()
+        else:
+            html = self._fallback_chat_html()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(html.encode())
+
+    @staticmethod
+    def _fallback_chat_html():
+        return """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>MLX-Flash Chat</title></head>
+<body style="background:#0a0e14;color:#d4dce8;font-family:system-ui;max-width:700px;margin:40px auto;padding:0 20px">
+<h1 style="background:linear-gradient(135deg,#4da6ff,#7b61ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent">MLX-Flash Chat</h1>
+<p style="color:#5c6a7a">assets/chat.html not found — using fallback UI</p>
+<div id="msgs"></div>
+<div style="display:flex;gap:8px;margin-top:20px">
+<input id="inp" style="flex:1;background:#131920;border:1px solid #262d38;border-radius:8px;padding:10px;color:#d4dce8;font-size:14px" placeholder="Type a message..." autofocus>
+<button onclick="send()" style="background:linear-gradient(135deg,#4da6ff,#7b61ff);border:none;color:#fff;padding:10px 20px;border-radius:8px;cursor:pointer">Send</button>
+</div>
+<script>
+const msgs=[],msgsEl=document.getElementById('msgs'),inp=document.getElementById('inp');
+inp.addEventListener('keydown',e=>{if(e.key==='Enter')send()});
+async function send(){
+  const t=inp.value.trim();if(!t)return;inp.value='';
+  msgs.push({role:'user',content:t});
+  msgsEl.innerHTML+=`<p><b style="color:#4da6ff">You:</b> ${t}</p>`;
+  const r=await fetch('/v1/chat/completions',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'local',messages:msgs,max_tokens:512})});
+  const j=await r.json();
+  const reply=j.choices?.[0]?.message?.content||j.error||'No response';
+  msgs.push({role:'assistant',content:reply});
+  msgsEl.innerHTML+=`<p><b style="color:#7b61ff">AI:</b> ${reply}</p>`;
+}
+</script></body></html>"""
 
     def _send_json(self, data: dict, status: int = 200):
         self.send_response(status)

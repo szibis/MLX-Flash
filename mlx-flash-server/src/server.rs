@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+use tokio::sync::RwLock;
 
 use axum::{Router, extract::State, routing::get};
 use axum::http::Method;
@@ -10,26 +11,29 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::cache::LcpCache;
 use crate::memory;
 use crate::proxy;
+use crate::worker_pool::WorkerPool;
 
 #[derive(Clone)]
 pub struct AppState {
     pub python_port: u16,
-    pub model_name: String,
+    pub model_name: Arc<RwLock<String>>,
     pub start_time: Instant,
     pub request_count: Arc<AtomicU64>,
     pub tokens_generated: Arc<AtomicU64>,
     pub cache: Option<Arc<LcpCache>>,
+    pub pool: Arc<WorkerPool>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
         Self {
             python_port: 8081,
-            model_name: "local".to_string(),
+            model_name: Arc::new(RwLock::new("local".to_string())),
             start_time: Instant::now(),
             request_count: Arc::new(AtomicU64::new(0)),
             tokens_generated: Arc::new(AtomicU64::new(0)),
             cache: None,
+            pool: Arc::new(WorkerPool::single(8081)),
         }
     }
 }
@@ -50,6 +54,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/models", get(handle_models))
         .route("/v1/chat/completions", axum::routing::post(proxy::handle_chat))
         .route("/cache/stats", get(handle_cache_stats))
+        .route("/workers", get(handle_workers))
+        .route("/v1/models/switch", axum::routing::post(handle_model_switch))
         .with_state(state)
         .layer(cors)
 }
@@ -63,15 +69,17 @@ async fn handle_status(State(state): State<AppState>) -> axum::Json<Value> {
     };
 
     let uptime_secs = state.start_time.elapsed().as_secs_f64();
+    let model_name = state.model_name.read().await.clone();
 
     axum::Json(json!({
-        "model": state.model_name,
+        "model": model_name,
         "memory": memory,
         "stats": {
             "requests": state.request_count.load(Ordering::Relaxed),
             "tokens_generated": state.tokens_generated.load(Ordering::Relaxed),
             "uptime_secs": uptime_secs,
         },
+        "workers": state.pool.status(),
         "optimization_hints": memory::get_memory_state()
             .map(|m| serde_json::to_value(m.optimization_hints()).unwrap_or(json!([])))
             .unwrap_or(json!([])),
@@ -99,15 +107,96 @@ async fn handle_release(State(state): State<AppState>) -> axum::Json<Value> {
 
 async fn handle_models(State(state): State<AppState>) -> axum::Json<Value> {
     state.request_count.fetch_add(1, Ordering::Relaxed);
+    let model_name = state.model_name.read().await.clone();
 
     axum::Json(json!({
         "data": [
             {
-                "id": state.model_name,
+                "id": model_name,
                 "object": "model",
                 "owned_by": "mlx-flash-compress",
             }
         ]
+    }))
+}
+
+async fn handle_workers(State(state): State<AppState>) -> axum::Json<Value> {
+    axum::Json(state.pool.status())
+}
+
+async fn handle_model_switch(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::Json<Value> {
+    // Parse request
+    let parsed: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return axum::Json(json!({
+                "error": format!("Invalid JSON: {e}"),
+            }));
+        }
+    };
+
+    let new_model = match parsed.get("model").and_then(|v| v.as_str()) {
+        Some(m) => m.to_string(),
+        None => {
+            return axum::Json(json!({
+                "error": "Missing required field: model",
+                "usage": {"model": "mlx-community/Qwen3-8B-4bit"},
+            }));
+        }
+    };
+
+    let old_model = state.model_name.read().await.clone();
+
+    // Forward switch request to all healthy workers
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300)) // model loading can be slow
+        .build()
+        .unwrap();
+
+    let mut successes = 0;
+    let mut failures = Vec::new();
+
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/switch");
+        let switch_body = serde_json::json!({"model": &new_model}).to_string();
+        match client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(switch_body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                successes += 1;
+            }
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                failures.push(json!({"port": port, "status": status, "error": body}));
+                state.pool.mark_unhealthy(port);
+            }
+            Err(e) => {
+                failures.push(json!({"port": port, "error": format!("{e}")}));
+                state.pool.mark_unhealthy(port);
+            }
+        }
+    }
+
+    // Update model name if at least one worker succeeded
+    if successes > 0 {
+        *state.model_name.write().await = new_model.clone();
+    }
+
+    axum::Json(json!({
+        "switched": successes > 0,
+        "model": if successes > 0 { &new_model } else { &old_model },
+        "previous": old_model,
+        "workers_updated": successes,
+        "workers_failed": failures.len(),
+        "failures": failures,
     }))
 }
 
@@ -196,6 +285,76 @@ mod tests {
             response.headers().contains_key("access-control-allow-origin"),
             "expected access-control-allow-origin header"
         );
+    }
+
+    async fn post_json(router: Router, path: &str, body: &str) -> (StatusCode, serde_json::Value) {
+        let req = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("Content-Type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = router.oneshot(req).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn test_model_switch_requires_model_field() {
+        let router = create_router(test_state());
+        let (status, json) = post_json(router, "/v1/models/switch", r#"{"foo": "bar"}"#).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json["error"].as_str().unwrap().contains("model"));
+    }
+
+    #[tokio::test]
+    async fn test_model_switch_rejects_invalid_json() {
+        let router = create_router(test_state());
+        let (status, json) = post_json(router, "/v1/models/switch", "not json").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json["error"].as_str().unwrap().contains("Invalid JSON"));
+    }
+
+    #[tokio::test]
+    async fn test_model_switch_reports_worker_failures() {
+        // No Python worker running — switch should fail but not crash
+        let router = create_router(test_state());
+        let (status, json) = post_json(
+            router,
+            "/v1/models/switch",
+            r#"{"model": "mlx-community/Qwen3-8B-4bit"}"#,
+        ).await;
+        assert_eq!(status, StatusCode::OK);
+        // Workers unreachable → switched = false
+        assert_eq!(json["switched"], false);
+        assert!(json["workers_failed"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn test_model_name_unchanged_on_failed_switch() {
+        let state = test_state();
+        let router = create_router(state.clone());
+        let _ = post_json(
+            router,
+            "/v1/models/switch",
+            r#"{"model": "new-model"}"#,
+        ).await;
+        // Model name should remain "local" since no worker accepted the switch
+        let current = state.model_name.read().await.clone();
+        assert_eq!(current, "local");
+    }
+
+    #[tokio::test]
+    async fn test_workers_endpoint() {
+        let router = create_router(test_state());
+        let (status, json) = get_json(router, "/workers").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(json["workers"].is_array());
+        assert_eq!(json["total_count"], 1);
     }
 
     #[tokio::test]

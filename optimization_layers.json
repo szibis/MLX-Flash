@@ -1,0 +1,34 @@
+[
+  {
+    "layer": "1-baseline",
+    "tok_per_s": 123.1,
+    "memory_available_gb": 6.2,
+    "pressure": "normal",
+    "cache_hit_rate": 0.0,
+    "notes": "Standard mlx_lm.generate, no MLX-Flash"
+  },
+  {
+    "layer": "2-mem-managed",
+    "tok_per_s": 121.8,
+    "memory_available_gb": 6.2,
+    "pressure": "normal",
+    "cache_hit_rate": 0.0,
+    "notes": "Memory management active, 1 hints"
+  },
+  {
+    "layer": "3-expert-cache",
+    "tok_per_s": 121.8,
+    "memory_available_gb": 6.2,
+    "pressure": "normal",
+    "cache_hit_rate": 0.0,
+    "notes": "Expert caching + prefetch (helps when model > RAM)"
+  },
+  {
+    "layer": "4-ssd-streaming",
+    "tok_per_s": 121.8,
+    "memory_available_gb": 6.2,
+    "pressure": "normal",
+    "cache_hit_rate": 0.0,
+    "notes": "SSD streaming for experts that don't fit in RAM"
+  }
+]

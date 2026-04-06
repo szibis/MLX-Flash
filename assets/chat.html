@@ -1,15 +1,4 @@
-//! Web chat UI served at /chat — modern conversational interface.
-//!
-//! Sends messages to /v1/chat/completions with SSE streaming,
-//! renders responses token-by-token with typing animation.
-
-use axum::response::Html;
-
-pub async fn serve_chat() -> Html<&'static str> {
-    Html(CHAT_HTML)
-}
-
-const CHAT_HTML: &str = r##"<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -263,10 +252,12 @@ async function switchModel(modelId) {
     } else if (result.error) {
       document.getElementById('status-text').textContent = 'Switch failed: ' + result.error;
     } else {
+      // Fallback for Python-only mode (no /v1/models/switch)
       localStorage.setItem('mlx-flash-model', modelId);
       document.getElementById('status-text').textContent = 'Model set: ' + shortName + ' (restart to apply)';
     }
   } catch(e) {
+    // Server doesn't support switch (Python standalone) — save preference
     localStorage.setItem('mlx-flash-model', modelId);
     document.getElementById('status-text').textContent = 'Model set: ' + shortName + ' (restart to apply)';
   }
@@ -287,4 +278,3 @@ updateStatus(); setInterval(updateStatus, 5000);
 </script>
 </body>
 </html>
-"##;
