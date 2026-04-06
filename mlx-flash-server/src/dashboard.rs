@@ -26,6 +26,9 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   .header .status { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--dim); }
   .header .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .header .nav { display: flex; gap: 8px; }
+  .header .nav a { color: var(--dim); text-decoration: none; font-size: 0.8rem; padding: 4px 10px; border-radius: 6px; transition: all 0.15s; }
+  .header .nav a:hover { color: var(--text); background: rgba(77,166,255,0.1); }
   .header .uptime { margin-left: auto; font-size: 0.8rem; color: var(--dim); font-variant-numeric: tabular-nums; }
 
   .container { padding: 20px 32px; }
@@ -72,6 +75,7 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 <div class="header">
   <h1>MLX-Flash</h1>
   <div class="status"><div class="dot"></div> Live</div>
+  <div class="nav"><a href="/admin">Dashboard</a><a href="/chat">Chat</a></div>
   <div class="uptime" id="uptime">0:00</div>
 </div>
 

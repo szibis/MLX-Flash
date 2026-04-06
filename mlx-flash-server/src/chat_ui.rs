@@ -32,6 +32,9 @@ const CHAT_HTML: &str = r##"<!DOCTYPE html>
   .topbar .nav { margin-left: auto; display: flex; gap: 8px; }
   .topbar .nav a { color: var(--dim); text-decoration: none; font-size: 0.8rem; padding: 4px 10px; border-radius: 6px; transition: all 0.15s; }
   .topbar .nav a:hover { color: var(--text); background: var(--hover); }
+  .model-select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 12px; font-size: 0.8rem; font-family: inherit; cursor: pointer; outline: none; -webkit-appearance: none; max-width: 280px; }
+  .model-select:focus { border-color: var(--accent); }
+  .model-select option { background: var(--card); color: var(--text); }
 
   .messages { flex: 1; overflow-y: auto; padding: 20px 0; scroll-behavior: smooth; }
   .messages::-webkit-scrollbar { width: 6px; }
@@ -79,7 +82,9 @@ const CHAT_HTML: &str = r##"<!DOCTYPE html>
 
 <div class="topbar">
   <h1>MLX-Flash</h1>
-  <span class="model-name" id="model-badge">loading...</span>
+  <select id="model-select" class="model-select" onchange="switchModel(this.value)">
+    <option value="">Loading models...</option>
+  </select>
   <div class="nav">
     <a href="/admin">Dashboard</a>
     <a href="/chat">Chat</a>
@@ -180,8 +185,19 @@ async function sendMessage() {
     });
 
     if (!resp.ok) {
-      const err = await resp.text();
-      aiEl.innerHTML = '<p style="color:var(--red)">Error: ' + resp.status + ' — ' + err.substring(0, 200) + '</p>';
+      let errMsg = 'Server error ' + resp.status;
+      try {
+        const errJson = await resp.json();
+        errMsg = errJson.error || errMsg;
+      } catch(e) { errMsg = await resp.text().catch(()=>errMsg); }
+
+      if (resp.status === 502) {
+        aiEl.innerHTML = '<p style="color:var(--red)">Python worker not running.</p>'
+          + '<p style="color:var(--dim);font-size:0.85rem;margin-top:8px">Start it with: <code>mlx-flash --port 8081 --preload</code></p>'
+          + '<p style="color:var(--dim);font-size:0.85rem">Or: <code>python -m mlx_flash_compress.serve --port 8081 --preload</code></p>';
+      } else {
+        aiEl.innerHTML = '<p style="color:var(--red)">' + errMsg + '</p>';
+      }
       messages[messages.length-1].content = 'Error';
       return;
     }
@@ -235,12 +251,43 @@ async function sendMessage() {
   }
 }
 
+// Known models catalog (matches Python MODELS list)
+const KNOWN_MODELS = [
+  {id:'mlx-community/gemma-4-E2B-it-4bit', label:'Gemma 4 E2B (1.5GB)', size:1.5},
+  {id:'mlx-community/gemma-4-E4B-it-4bit', label:'Gemma 4 E4B (2.8GB)', size:2.8},
+  {id:'mlx-community/Qwen3-4B-4bit', label:'Qwen3 4B (2.5GB)', size:2.5},
+  {id:'mlx-community/Qwen3-8B-4bit', label:'Qwen3 8B (5GB)', size:5.0},
+  {id:'mlx-community/gemma-4-26b-it-4bit', label:'Gemma 4 26B MoE (15GB)', size:15.0},
+  {id:'mlx-community/Qwen3-30B-A3B-4bit', label:'Qwen3 30B MoE (18GB)', size:18.0},
+  {id:'mlx-community/gemma-4-31b-it-4bit', label:'Gemma 4 31B (20GB)', size:20.0},
+  {id:'mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit', label:'Mixtral 8x7B (26GB)', size:26.0},
+];
+
+function populateModelSelect(currentModel) {
+  const sel = document.getElementById('model-select');
+  sel.innerHTML = KNOWN_MODELS.map(m =>
+    '<option value="'+m.id+'" '+(m.id===currentModel?'selected':'')+'>'+m.label+'</option>'
+  ).join('') + '<option value="_custom">Custom model...</option>';
+}
+
+async function switchModel(modelId) {
+  if (modelId === '_custom') {
+    const custom = prompt('Enter HuggingFace model ID (e.g., mlx-community/gemma-4-31b-it-4bit):');
+    if (!custom) return;
+    modelId = custom;
+  }
+  document.getElementById('status-text').textContent = 'Switching to ' + modelId.split('/').pop() + '...';
+  // TODO: call /v1/models/switch endpoint when available
+  localStorage.setItem('mlx-flash-model', modelId);
+  document.getElementById('status-text').textContent = 'Model set: ' + modelId.split('/').pop();
+}
+
 // Poll model + memory for status bar
 async function updateStatus() {
   try {
     const st = await fetch('/status').then(r=>r.json());
-    const model = (st.model||'').split('/').pop();
-    document.getElementById('model-badge').textContent = model || 'no model';
+    const model = st.model || '';
+    populateModelSelect(model);
     const mem = st.memory || {};
     const avail = Math.max((mem.free_gb||0)+(mem.inactive_gb||0)*0.5, 0);
     document.getElementById('mem-info').textContent = avail.toFixed(1)+'GB free / '+((mem.total_gb||0).toFixed(0))+'GB';
