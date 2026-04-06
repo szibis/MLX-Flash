@@ -152,9 +152,20 @@ fn find_python(explicit: &Option<String>) -> String {
     "python3".to_string()
 }
 
+fn check_python_module(python: &str) -> bool {
+    let project_root = std::env::current_dir().unwrap_or_default();
+    Command::new(python)
+        .env("PYTHONPATH", &project_root)
+        .args(["-c", "import mlx_flash_compress"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 fn launch_python_worker(port: u16, model: &str, preload: bool, python: &str) -> Option<Child> {
     let mut cmd = Command::new(python);
-    // Set PYTHONPATH to project root so mlx_flash_compress is importable
     let project_root = std::env::current_dir().unwrap_or_default();
     cmd.env("PYTHONPATH", &project_root);
     cmd.args([
@@ -270,6 +281,18 @@ async fn main() {
 
     let should_launch = args.launch_worker && !args.no_launch_worker;
     if should_launch {
+        // Pre-flight: verify Python can import mlx_flash_compress
+        if !check_python_module(&python_path) {
+            tracing::error!(
+                "Python at '{}' cannot import mlx_flash_compress. Install it:\n\
+                 \n  pip install mlx-flash          # from PyPI\n\
+                 \n  pip install -e .               # from source\n\
+                 \n  brew install mlx-flash         # via Homebrew\n\
+                 \nOr use --no-launch-worker to connect to an existing Python worker.",
+                python_path
+            );
+            std::process::exit(1);
+        }
         for i in 0..worker_count {
             let port = args.python_port + i as u16;
             if is_port_in_use(port) {
