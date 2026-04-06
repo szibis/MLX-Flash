@@ -497,6 +497,11 @@ open http://localhost:3000   # admin / mlxflash
 | `mlx_flash_worker_healthy{worker}` | gauge | Per-worker health status |
 | `mlx_flash_sessions_active` | gauge | Sticky sessions (conversation affinity count) |
 | `mlx_flash_cache_hit_ratio` | gauge | Expert cache hit rate (target > 0.85) |
+| `mlx_flash_python_worker_tokens_total{worker,model}` | counter | Per-Python-worker tokens (aggregated at Rust proxy) |
+| `mlx_flash_python_worker_memory_pressure{worker}` | gauge | Per-Python-worker memory pressure |
+| `mlx_flash_python_worker_model_loaded{worker,model}` | gauge | Whether each Python worker has a model loaded |
+
+Single scrape target: Prometheus only needs to scrape `:8080/metrics` — the Rust proxy aggregates all Python worker stats automatically.
 
 Pre-built Grafana dashboard at `dashboards/mlx-flash-overview.json` — auto-provisioned with `docker compose --profile monitoring up`.
 
@@ -522,13 +527,26 @@ MLX-Flash includes built-in web interfaces — no extra setup needed:
 
 | URL | What |
 |-----|------|
-| `http://localhost:8080/admin` | **Dashboard** — live memory charts, token rate, cache stats, optimization hints |
+| `http://localhost:8080/admin` | **Dashboard** — live memory/token charts, worker management panel, memory breakdown, live logs |
 | `http://localhost:8080/chat` | **Chat UI** — conversational interface with model switching, SSE streaming |
-| `http://localhost:8080/metrics` | **Prometheus metrics** — scrape target for Grafana/Prometheus |
+| `http://localhost:8080/metrics` | **Prometheus metrics** — single scrape target aggregating Rust + all Python workers |
+| `http://localhost:8080/workers` | **Worker pool** — per-worker health, inflight, sessions, Python status |
+| `http://localhost:8080/logs/recent` | **Live logs** — last 100 structured log entries (JSON) |
 | `http://localhost:8080/status` | **JSON status** — programmatic health check |
-| `http://localhost:8080/workers` | **Worker pool** — per-worker health and load |
 
 The dashboard and chat UI also work on standalone Python workers (`:8081/admin`, `:8081/chat`).
+
+**Worker management** — control workers without restarting the server:
+
+| Action | API | Dashboard |
+|--------|-----|-----------|
+| Restart specific worker | `POST /workers/restart {"port":8081}` | Per-worker restart button |
+| Restart all unhealthy | `POST /workers/restart` | "Restart Unhealthy" button |
+| Reload worker health | `POST /reload` | "Reload All" button |
+| Switch model (all workers) | `POST /v1/models/switch {"model":"..."}` | Chat UI model dropdown |
+| Graceful shutdown | `POST /shutdown` | "Shutdown" button (with confirm) |
+
+Workers are auto-health-checked every 10 seconds. If a worker dies, the Rust proxy automatically relaunches it.
 
 ## Requirements
 
