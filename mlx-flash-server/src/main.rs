@@ -39,7 +39,7 @@ struct Args {
     preload: bool,
     #[arg(long, help = "Directory with expert weight files")]
     expert_dir: Option<String>,
-    #[arg(long, default_value = "512", help = "Cache size in MB")]
+    #[arg(long, default_value = "2048", help = "Cache size in MB (default 2GB)")]
     cache_mb: u32,
     #[arg(long, default_value = "/tmp/mlx-flash-cache.sock", help = "Unix socket path for expert cache")]
     socket_path: String,
@@ -338,7 +338,39 @@ async fn main() {
         args.python_port + worker_count as u16 - 1,
     );
 
-    let cache_arc = if let Some(ref expert_dir) = args.expert_dir {
+    // Auto-detect expert dir from HuggingFace cache if not specified
+    let effective_expert_dir = args.expert_dir.clone().or_else(|| {
+        // Look for model weights in HF cache: ~/.cache/huggingface/hub/models--<org>--<model>/snapshots/*/
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let hf_cache = std::path::PathBuf::from(&home).join(".cache/huggingface/hub");
+        let model_dir_name = format!("models--{}", args.model.replace('/', "--"));
+        let model_dir = hf_cache.join(&model_dir_name).join("snapshots");
+        if model_dir.exists() {
+            // Find the latest snapshot
+            if let Ok(entries) = std::fs::read_dir(&model_dir) {
+                let mut latest: Option<std::path::PathBuf> = None;
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        // Check if it has safetensors files
+                        if std::fs::read_dir(&path).ok()
+                            .map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".safetensors")))
+                            .unwrap_or(false)
+                        {
+                            latest = Some(path);
+                        }
+                    }
+                }
+                if let Some(p) = latest {
+                    tracing::info!("Auto-detected expert dir from HF cache: {}", p.display());
+                    return Some(p.to_string_lossy().to_string());
+                }
+            }
+        }
+        None
+    });
+
+    let cache_arc = if let Some(ref expert_dir) = effective_expert_dir {
         let cache = Arc::new(cache::LcpCache::new(args.cache_mb as usize * 1024 * 1024));
         let store = Arc::new(expert_store::ExpertStore::new(std::path::PathBuf::from(expert_dir)));
         let socket_cache = cache.clone();
@@ -347,9 +379,10 @@ async fn main() {
         tokio::spawn(async move {
             socket_server::run_socket_server(&socket_path, socket_cache, socket_store).await;
         });
-        tracing::info!("Expert cache: {}MB, socket: {}", args.cache_mb, args.socket_path);
+        tracing::info!("Expert cache: {}MB, dir: {}, socket: {}", args.cache_mb, expert_dir, args.socket_path);
         Some(cache)
     } else {
+        tracing::info!("Expert cache: disabled (no model weights found in HF cache)");
         None
     };
 

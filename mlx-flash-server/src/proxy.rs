@@ -135,6 +135,19 @@ pub async fn handle_chat(
                         );
                     }
                 };
+                // Extract token count from response to update Rust-side counter
+                if let Ok(resp_json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    let completion_tokens = resp_json["usage"]["completion_tokens"]
+                        .as_u64()
+                        .or_else(|| resp_json["mlx_flash_compress"]["tok_per_s"].as_f64().map(|_| {
+                            // Fallback: estimate from mlx_flash_compress data
+                            resp_json["usage"]["total_tokens"].as_u64().unwrap_or(0)
+                        }))
+                        .unwrap_or(0);
+                    if completion_tokens > 0 {
+                        state.tokens_generated.fetch_add(completion_tokens, Ordering::Relaxed);
+                    }
+                }
                 axum::response::Response::builder()
                     .status(status.as_u16())
                     .header("Content-Type", "application/json")

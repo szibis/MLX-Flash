@@ -85,6 +85,18 @@ const CHAT_HTML: &str = r##"<!DOCTYPE html>
   .suggestion { padding: 8px 16px; border-radius: 10px; border: 1px solid var(--border); background: var(--card); color: var(--text); font-size: 0.82rem; cursor: pointer; transition: all 0.15s; }
   .suggestion:hover { border-color: var(--accent); background: var(--hover); }
 
+  .msg-meta { display: flex; gap: 10px; padding: 2px 0 4px 46px; font-size: 0.7rem; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .msg-meta .meta-item { display: flex; align-items: center; gap: 3px; }
+  .msg-meta .meta-model { color: var(--accent); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .msg-meta .meta-speed { color: var(--green); }
+  .msg-meta .meta-tokens { color: var(--accent2); }
+  .msg-meta .meta-time { color: var(--dim); }
+  .msg-meta .meta-pressure { padding: 1px 6px; border-radius: 4px; font-size: 0.65rem; font-weight: 500; }
+  .msg-meta .pressure-normal { background: rgba(45,212,168,0.1); color: var(--green); }
+  .msg-meta .pressure-warning { background: rgba(251,191,36,0.1); color: var(--yellow); }
+  .msg-meta .pressure-critical { background: rgba(239,68,68,0.1); color: var(--red); }
+  .msg-meta .meta-savings { color: var(--green); font-weight: 500; }
+
   .input-area { flex-shrink: 0; border-top: 1px solid var(--border); padding: 16px 24px; background: var(--surface); }
   .input-wrap { max-width: 800px; margin: 0 auto; display: flex; gap: 10px; align-items: flex-end; }
   .input-wrap textarea { flex: 1; background: var(--input-bg); border: 1px solid var(--border); border-radius: 12px; padding: 12px 16px; color: var(--text); font-size: 0.92rem; font-family: inherit; resize: none; outline: none; min-height: 46px; max-height: 200px; line-height: 1.5; transition: border-color 0.15s; }
@@ -141,6 +153,7 @@ const CHAT_HTML: &str = r##"<!DOCTYPE html>
       <span class="tok-counter" id="gen-tokens">0 tok</span>
       <span class="mem-indicator" id="gen-mem"></span>
     </div>
+    <span id="total-savings" style="color:var(--green);font-weight:500"></span>
     <span style="margin-left:auto" id="mem-info"></span>
   </div>
 </div>
@@ -148,6 +161,25 @@ const CHAT_HTML: &str = r##"<!DOCTYPE html>
 <script>
 let messages = [];
 let generating = false;
+
+// Cost calculator — what this conversation would cost on cloud APIs
+// Prices per 1M tokens (output) as of April 2026
+const API_PRICES = {
+  'claude-sonnet': {name: 'Claude Sonnet', per1M: 15.0},
+  'claude-opus': {name: 'Claude Opus', per1M: 75.0},
+  'gpt-4o': {name: 'GPT-4o', per1M: 10.0},
+  'gpt-4-turbo': {name: 'GPT-4 Turbo', per1M: 30.0},
+};
+let totalTokensSession = 0;
+try { totalTokensSession = parseInt(localStorage.getItem('mlx-flash-total-tokens') || '0'); } catch(e) {}
+function calcSavings(tokens) {
+  const cost = tokens / 1000000 * API_PRICES['claude-sonnet'].per1M;
+  return cost;
+}
+function formatSavings(cost) {
+  if (cost < 0.01) return '<$0.01';
+  return '$' + cost.toFixed(2);
+}
 
 const textarea = document.getElementById('input');
 const sendBtn = document.getElementById('send');
@@ -169,14 +201,45 @@ function addMessage(role, content) {
   const row = document.createElement('div');
   row.className = 'msg';
   const isUser = role === 'user';
+  const msgIdx = messages.length;
   row.innerHTML = `<div class="msg-row">
     <div class="avatar ${isUser?'avatar-user':'avatar-ai'}">${isUser?'You':'AI'}</div>
-    <div class="msg-content" id="msg-${messages.length}">${formatContent(content)}</div>
-  </div>`;
+    <div class="msg-content" id="msg-${msgIdx}">${formatContent(content)}</div>
+  </div><div class="msg-meta" id="meta-${msgIdx}"></div>`;
   messagesEl.appendChild(row);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   messages.push({role, content});
-  return document.getElementById('msg-' + (messages.length - 1));
+  return document.getElementById('msg-' + msgIdx);
+}
+
+function setMessageMeta(msgIdx, meta) {
+  const el = document.getElementById('meta-' + msgIdx);
+  if (!el) return;
+  let html = '';
+  if (meta.model) {
+    const short = meta.model.split('/').pop();
+    html += '<span class="meta-item"><span class="meta-model">' + short + '</span></span>';
+  }
+  if (meta.tokens) {
+    html += '<span class="meta-item"><span class="meta-tokens">' + meta.tokens + ' tokens</span></span>';
+  }
+  if (meta.tokPerSec) {
+    // tokPerSec may already include "tok/s" suffix
+    const speed = meta.tokPerSec.toString().includes('tok/s') ? meta.tokPerSec : meta.tokPerSec + ' tok/s';
+    html += '<span class="meta-item"><span class="meta-speed">' + speed + '</span></span>';
+  }
+  if (meta.elapsed) {
+    html += '<span class="meta-item"><span class="meta-time">' + meta.elapsed + 's</span></span>';
+  }
+  if (meta.pressure && meta.pressure !== 'Normal') {
+    const cls = meta.pressure === 'Critical' ? 'pressure-critical' : 'pressure-warning';
+    html += '<span class="meta-item"><span class="meta-pressure ' + cls + '">' + meta.pressure + '</span></span>';
+  }
+  if (meta.tokens && meta.tokens > 0) {
+    const saved = calcSavings(meta.tokens);
+    html += '<span class="meta-item"><span class="meta-savings">saved ' + formatSavings(saved) + '</span></span>';
+  }
+  el.innerHTML = html;
 }
 
 function formatContent(text) {
@@ -429,6 +492,7 @@ async function sendMessage() {
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
 
     let fullText = '';
+    let respTokens = 0;
 
     if (!resp.ok) {
       let errMsg = 'Server error ' + resp.status;
@@ -456,8 +520,9 @@ async function sendMessage() {
       const mlxData = json.mlx_flash_compress || {};
       if (mlxData.tok_per_s) tokPerSec = mlxData.tok_per_s.toFixed(1) + ' tok/s';
       const usage = json.usage || {};
-      if (usage.completion_tokens && !tokPerSec) {
-        tokPerSec = (usage.completion_tokens / parseFloat(elapsed)).toFixed(1) + ' tok/s';
+      respTokens = usage.completion_tokens || 0;
+      if (respTokens && !tokPerSec) {
+        tokPerSec = (respTokens / parseFloat(elapsed)).toFixed(1) + ' tok/s';
       }
     } catch(e) {
       fullText = 'Failed to parse response';
@@ -465,7 +530,30 @@ async function sendMessage() {
 
     aiEl.innerHTML = formatContent(fullText);
     messages[messages.length-1].content = fullText;
+    // Track cumulative tokens for savings calculator
+    if (respTokens > 0) {
+      totalTokensSession += respTokens;
+      try { localStorage.setItem('mlx-flash-total-tokens', totalTokensSession.toString()); } catch(e) {}
+    }
     saveSession();
+
+    // Get current model + pressure for metadata bar
+    let currentPressure = 'Normal';
+    let currentModelName = currentModel;
+    try {
+      const st = await fetch('/status').then(r=>r.json());
+      currentPressure = (st.memory||{}).pressure || 'Normal';
+      currentModelName = st.model || currentModel;
+    } catch(e) {}
+
+    // Set metadata bar under the AI message
+    setMessageMeta(messages.length - 1, {
+      model: currentModelName,
+      tokens: respTokens || null,
+      tokPerSec: tokPerSec || null,
+      elapsed: elapsed,
+      pressure: currentPressure.toString(),
+    });
 
     // Show generation stats in status bar
     const stats = [elapsed + 's'];
@@ -549,6 +637,11 @@ async function updateStatus() {
     const avail = Math.max((mem.free_gb||0)+(mem.inactive_gb||0)*0.5, 0);
     const pressure = (mem.pressure||'Normal').toString();
     document.getElementById('mem-info').textContent = avail.toFixed(1)+'GB free / '+((mem.total_gb||0).toFixed(0))+'GB';
+    // Cumulative savings
+    if (totalTokensSession > 0) {
+      const totalSaved = calcSavings(totalTokensSession);
+      document.getElementById('total-savings').textContent = 'saved ' + formatSavings(totalSaved) + ' vs Claude API';
+    }
     // Update pressure banner (visible even when not generating)
     if (!generating) updatePressureBanner(pressure, avail.toFixed(1), mem.swap_used_gb||0);
   } catch(e) {}
