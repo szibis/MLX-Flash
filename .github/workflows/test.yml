@@ -38,9 +38,16 @@ jobs:
             --cov-report=xml:coverage.xml \
             --cov-fail-under=90
 
-      - name: Print coverage summary
+      - name: Print coverage and test summary
         if: always()
-        run: python -m coverage report --rcfile=.coveragerc | tail -5
+        run: |
+          python -m coverage report --rcfile=.coveragerc | tail -5
+          echo ""
+          echo "=== Test & Coverage Summary ==="
+          TOTAL=$(python -m pytest tests/ --co -q 2>/dev/null | tail -1 | grep -oP '\d+' || echo "?")
+          COV=$(python -m coverage report --rcfile=.coveragerc 2>/dev/null | tail -1 | awk '{print $NF}' | tr -d '%' || echo "?")
+          echo "Total tests collected: ${TOTAL}"
+          echo "Coverage: ${COV}%"
 
   test-rust:
     name: Rust Tests
