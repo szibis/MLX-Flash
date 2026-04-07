@@ -107,6 +107,9 @@ jobs:
           NEXT="${{ steps.version.outputs.next }}"
           BRANCH="release/v${NEXT}"
 
+          # Clean up stale release branch from previous failed run
+          git push origin --delete "${BRANCH}" 2>/dev/null || true
+
           # Create release branch
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -122,17 +125,17 @@ jobs:
           git commit -m "release: v${NEXT} [skip release]"
           git push origin "${BRANCH}"
 
-          # Create PR with auto-merge
+          # Create PR (label added separately to avoid failure if label doesn't exist)
           PR_URL=$(gh pr create \
             --title "release: v${NEXT}" \
             --body "Automated version bump: ${{ steps.version.outputs.current }} → ${NEXT} (${{ steps.pr.outputs.bump }})" \
-            --label "release:automated" \
             --head "${BRANCH}" \
             --base main)
           echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
 
-          # Note: PR needs 1 approval per ruleset. Approve + merge manually,
-          # or set up a GitHub App to auto-approve release PRs.
+          # Best-effort label — don't fail if label doesn't exist
+          gh pr edit "${PR_URL}" --add-label "release:automated" 2>/dev/null || true
+
           echo "Version bump PR created: ${PR_URL}"
           echo "Approve and merge to update version files."
         env:
