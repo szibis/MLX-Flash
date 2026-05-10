@@ -20,4 +20,16 @@ def __getattr__(name):
     if name == "InferenceMode":
         from mlx_flash_compress.engine import InferenceMode
         return InferenceMode
+    if name == "DFlashEngine":
+        from mlx_flash_compress.dflash import DFlashEngine
+        return DFlashEngine
+    if name == "DFlashConfig":
+        from mlx_flash_compress.dflash import DFlashConfig
+        return DFlashConfig
+    if name == "DDTreeBuilder":
+        from mlx_flash_compress.ddtree import DDTreeBuilder
+        return DDTreeBuilder
+    if name == "DDTreeConfig":
+        from mlx_flash_compress.ddtree import DDTreeConfig
+        return DDTreeConfig
     raise AttributeError(f"module 'mlx_flash_compress' has no attribute {name!r}")

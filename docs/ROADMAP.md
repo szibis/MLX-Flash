@@ -65,6 +65,34 @@ Based on competitive analysis of oMLX, SwiftLM, Flash-MoE, Ollama 0.19, and Anub
 - Per-layer execution timing (which layers are IO-bound)
 - Inspired by: Anubis OSS (11 live charts)
 
+## v0.10.0 — DFlash + DDTree Speculative Decoding
+
+### DFlash Block Diffusion Drafter
+- Lightweight 5-layer drafter generates 15 tokens in ONE forward pass
+- Conditioned on target model hidden states at checkpoint layers
+- Block diffusion denoising (2 steps) produces draft candidates
+- Target: 6x+ lossless acceleration on structured content (code, reasoning)
+- Paper: arXiv:2602.06036 (ICLR 2026)
+- Implementation: `mlx_flash_compress/dflash.py`
+
+### DDTree (Dynamic Draft Trees)
+- Build tree of candidates from DFlash logits (top-k branching)
+- Tree attention mask for single-pass verification of entire tree
+- Target: 96%+ acceptance rate → 6-9x effective speedup
+- Implementation: `mlx_flash_compress/ddtree.py`
+
+### DeepSeek V4 Flash MoE Support
+- 284B total / 13B active — ideal for expert streaming
+- MLX models: `mlx-community/DeepSeek-V4-Flash-4bit` (80 GB), `2bit-DQ` (35 GB)
+- Expert streaming profile: ~256 experts, top-2 routing
+- Benchmark script: `scripts/bench_deepseek_v4_flash.py`
+- Target: Run on 36 GB Mac (2-bit) with expert streaming + DFlash
+
+### Expert Prefetch from Draft Predictions
+- DFlash drafts predict future tokens → infer which experts needed next
+- Prefetch experts during target verification pass (overlapped I/O)
+- Expected: +15-30% cache hit rate improvement from speculative prefetch
+
 ## v1.0.0 — Production Ready
 
 ### Community Benchmark Leaderboard

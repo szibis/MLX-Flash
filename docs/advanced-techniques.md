@@ -1,6 +1,70 @@
 # Advanced Techniques: Research Frontier
 
-Three techniques that could deliver 2-12x additional compression beyond our current mixed precision approach. Each is at a different maturity level.
+Four techniques that could deliver 2-12x additional speedup beyond our current optimizations. Each is at a different maturity level.
+
+## 0. DFlash + DDTree: Block Diffusion Speculative Decoding (HIGHEST Impact, Proven)
+
+**Paper:** arXiv:2602.06036 (ICLR 2026) | **Impl:** github.com/AEON-7/vllm-dflash
+
+### The Idea
+
+Standard autoregressive decoding generates 1 token per forward pass. DFlash uses a lightweight block diffusion drafter (5 layers) to generate **15 tokens in a single forward pass** via discrete denoising, conditioned on the target model's intermediate hidden states. Combined with DDTree (dynamic draft trees that branch top-k at each position), acceptance rates reach **96.4%** for a **6-9x lossless speedup**.
+
+### How It Works
+
+1. Target model runs one step → emits hidden states at checkpoint layers [1, L/4, L/2, 3L/4, L]
+2. DFlash drafter takes hidden states → block diffusion generates 15 tokens in ONE pass
+3. DDTree builds tree of candidates (top-3 branching → ~45 nodes)
+4. Target model verifies entire tree in ONE forward pass (tree attention mask)
+5. Accept longest valid path → typically 5-8 tokens on code, 2-3 on prose
+
+### Numbers (NVIDIA DGX Spark Reference — NOT Mac)
+
+All numbers below are from AEON-7/vllm-dflash on DGX Spark (Blackwell GB10, 128 GB, 273 GB/s). **No MLX benchmarks exist yet.**
+
+| Config | Code tok/s | Prose tok/s | Acceptance | Hardware |
+|--------|-----------|------------|------------|----------|
+| Vanilla AR (Qwen3.5-27B) | ~12 | ~12 | 100% (1 tok/step) | DGX Spark |
+| DFlash k=15 | 64 | 29.5 | 60-78% | DGX Spark |
+| DFlash + DDTree | 91 | ~40 | 96.4% | DGX Spark |
+
+Effective decode speedup on Spark: ~2.1x (code), ~1.3x (prose). The "6x" figure includes prefill amortization.
+
+### Applicability to MLX-Flash
+
+```mermaid
+flowchart LR
+    subgraph Current["Current: 1 token/step"]
+        A[Target forward] -->|1 token| B[Next step]
+    end
+    subgraph DFlash["+ DFlash: 5-8 tokens/step"]
+        C[Target forward] -->|hidden states| D[DFlash drafter]
+        D -->|15 drafts, 1 pass| E[DDTree builder]
+        E -->|45-node tree| F[Target verify, 1 pass]
+        F -->|accept 5-8| G[Next step]
+    end
+```
+
+**Potential impact on our system (unverified on MLX):**
+- Up to ~2x decode speedup per target forward pass on structured content (conservative, based on NVIDIA reference)
+- Expert streaming benefits: draft predictions could hint which experts to prefetch
+- Unified memory: no PCIe transfer overhead for speculative loads
+- Stacks with mixed precision: smaller weights = faster verification pass
+
+**Implementation path:** Framework code exists (`mlx_flash_compress/dflash.py`, `ddtree.py`). Needs:
+1. Port/train DFlash drafter for target models (5-layer block diffusion model)
+2. Integrate tree attention mask into MLX's attention kernel
+3. Wire into serve.py generation loop
+
+### Honest Assessment
+
+**What's real:** ~2x decode speedup measured on NVIDIA DGX Spark (Blackwell). The technique is architecture-agnostic. ICLR 2026 peer-reviewed paper (arXiv:2602.06036). Reference implementation exists (AEON-7/vllm-dflash, vLLM 0.19.1).
+
+**What's uncertain:** No MLX/Apple Silicon implementation or benchmark exists. The drafter needs training per target model family (~4 GB model). Tree attention mask requires custom MLX kernel work. Speedup is content-dependent: code benefits most, prose benefits least. Apple Silicon's Metal compute vs NVIDIA's CUDA may yield different drafter overhead ratios.
+
+**Priority: HIGH** — promising technique but requires significant engineering work before we can measure real Mac numbers.
+
+---
 
 ## Overview
 
