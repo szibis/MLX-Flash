@@ -32,4 +32,13 @@ def __getattr__(name):
     if name == "DDTreeConfig":
         from mlx_flash_compress.ddtree import DDTreeConfig
         return DDTreeConfig
+    if name == "DFlashDraftModel":
+        from mlx_flash_compress.dflash_model import DFlashDraftModel
+        return DFlashDraftModel
+    if name == "DFlashModelConfig":
+        from mlx_flash_compress.dflash_model import DFlashModelConfig
+        return DFlashModelConfig
+    if name == "DFlashRunner":
+        from mlx_flash_compress.dflash_model import DFlashRunner
+        return DFlashRunner
     raise AttributeError(f"module 'mlx_flash_compress' has no attribute {name!r}")
