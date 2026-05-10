@@ -48,7 +48,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 class InferenceState:
     """Shared state for the inference server."""
 
-    def __init__(self, model_name: str, cache_budget_pct: float = 0.8, kv_bits: int = 0):
+    def __init__(self, model_name: str, cache_budget_pct: float = 0.8, kv_bits: int = 0, batching: bool = False):
         self.model_name = model_name
         self.model = None
         self.tokenizer = None
@@ -56,6 +56,8 @@ class InferenceState:
         self.hw = detect_hardware()
         self.mem_mgr = MemoryManager(safety_margin_gb=2.0)
         self.cache_budget_pct = cache_budget_pct
+        self.batching = batching
+        self.engine = None  # ContinuousBatchingEngine, created after model load
 
         # Stats
         self.total_requests = 0
@@ -169,6 +171,14 @@ class InferenceState:
                 print("  Hint: run with --mixed-precision to reduce footprint by ~20%")
         except AttributeError:
             pass
+
+        # Initialize continuous batching engine if enabled
+        if self.batching and self.engine is None:
+            from mlx_flash_compress.continuous_batching import ContinuousBatchingEngine
+
+            log.info("Starting continuous batching engine", extra={"action": "batching_start"})
+            self.engine = ContinuousBatchingEngine(self.model, self.tokenizer)
+            self.engine.start()
 
     def _suggest_memory_actions(self, mem):
         """Suggest actions to reduce memory pressure."""
@@ -461,12 +471,21 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
 
         stream = data.get("stream", False)
+        state = self.server_state
+
+        # Route through continuous batching engine when enabled
+        if state.batching and state.engine is not None:
+            if stream:
+                self._handle_stream_batched(messages, max_tokens, temperature)
+            else:
+                self._handle_chat_batched(messages, max_tokens, temperature)
+            return
 
         if stream:
             self._handle_stream(messages, max_tokens, temperature)
             return
 
-        result = self.server_state.generate(messages, max_tokens, temperature)
+        result = state.generate(messages, max_tokens, temperature)
 
         if "error" in result:
             self._send_json({"error": result["error"]}, 503)
@@ -566,6 +585,114 @@ class ChatHandler(BaseHTTPRequestHandler):
         tokens = len(state.tokenizer.encode(output))
         state.total_requests += 1
         state.total_tokens += tokens
+
+    def _handle_chat_batched(self, messages, max_tokens, temperature):
+        """Handle non-streaming chat via continuous batching engine."""
+        state = self.server_state
+        if state.model is None:
+            state.load_model()
+
+        prompt = state._format_messages(messages)
+        t0 = time.monotonic()
+
+        req = state.engine.submit(prompt, max_tokens=max_tokens, temperature=temperature)
+        result = state.engine.wait_for_completion(req, timeout=60.0)
+
+        elapsed = time.monotonic() - t0
+
+        from mlx_flash_compress.continuous_batching import RequestStatus
+
+        if result.status != RequestStatus.COMPLETED:
+            self._send_json({"error": "Request timed out or was cancelled"}, 503)
+            return
+
+        output = state.tokenizer.decode(result.generated_tokens)
+        tokens = len(result.generated_tokens)
+        tps = tokens / elapsed if elapsed > 0 else 0
+
+        state.total_requests += 1
+        state.total_tokens += tokens
+
+        response = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": "local",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": output,
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": len(req.prompt_tokens),
+                "completion_tokens": tokens,
+                "total_tokens": len(req.prompt_tokens) + tokens,
+            },
+            "mlx_flash_compress": {
+                "tok_per_s": round(tps, 1),
+                "batched": True,
+            },
+        }
+        self._send_json(response)
+
+    def _handle_stream_batched(self, messages, max_tokens, temperature):
+        """Handle streaming (SSE) response via continuous batching engine."""
+        state = self.server_state
+        if state.model is None:
+            state.load_model()
+
+        prompt = state._format_messages(messages)
+        chat_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+
+        req = state.engine.submit(prompt, max_tokens=max_tokens, temperature=temperature)
+
+        # Start SSE response
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        token_count = 0
+        for token_id in state.engine.stream_tokens(req):
+            chunk_text = state.tokenizer.decode([token_id])
+            token_count += 1
+            event = {
+                "id": chat_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": "local",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": chunk_text},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+            self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
+            self.wfile.flush()
+
+        # Final chunk with finish_reason
+        final = {
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": "local",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+        self.wfile.write(f"data: {json.dumps(final)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
+        state.total_requests += 1
+        state.total_tokens += token_count
 
     def _serve_chat_html(self):
         """Serve the web chat UI — loads from the shared HTML file."""
@@ -759,6 +886,11 @@ def main():
         "--log-format", default="text", choices=["text", "json"], help="Log format: text (human) or json (structured)"
     )
     parser.add_argument("--log-file", default=None, help="Log file path (also logs to stdout)")
+    parser.add_argument(
+        "--batching",
+        action="store_true",
+        help="Enable continuous batching engine for concurrent request handling",
+    )
     args = parser.parse_args()
 
     # Initialize structured logging
@@ -783,7 +915,7 @@ def main():
         else:
             args.model = "mlx-community/Qwen3-4B-4bit"  # 4B dense, ~2.5GB
 
-    state = InferenceState(args.model, kv_bits=args.kv_bits)
+    state = InferenceState(args.model, kv_bits=args.kv_bits, batching=args.batching)
 
     logger.info(
         "MLX-Flash inference server starting",

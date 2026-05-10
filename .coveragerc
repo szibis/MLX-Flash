@@ -46,6 +46,8 @@ omit =
     mlx_flash_compress/sequoia.py
     # MCP server requires running HTTP server
     mlx_flash_compress/mcp_server.py
+    # KV cache backend wraps StreamingLLM + QuantizedKV (need real MLX model)
+    mlx_flash_compress/kv_cache_backend.py
     # Trivial entry points
     mlx_flash_compress/__init__.py
     mlx_flash_compress/__main__.py

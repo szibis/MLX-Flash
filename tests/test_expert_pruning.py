@@ -369,6 +369,85 @@ class TestInstallExpertPruning:
         pruner = install_expert_pruning(FakeModel())
         assert isinstance(pruner, ExpertPruner)
 
+    def test_hooks_gate_not_mlp(self):
+        """Verify gate is replaced with wrapper and mlp.__call__ is NOT wrapped."""
+
+        class FakeGate:
+            def __call__(self, x):
+                return x
+
+        class FakeMLP:
+            def __init__(self):
+                self.gate = FakeGate()
+
+            def __call__(self, x):
+                return x
+
+        class FakeLayer:
+            def __init__(self):
+                self.mlp = FakeMLP()
+
+        layer = FakeLayer()
+        original_gate = layer.mlp.gate
+        original_mlp_call = type(layer.mlp).__call__
+
+        class FakeModel:
+            class model:
+                layers = [layer]
+
+        pruner = install_expert_pruning(FakeModel())
+
+        # gate should be replaced with a _GateWrapper
+        assert layer.mlp.gate is not original_gate
+        from mlx_flash_compress.expert_pruning import _GateWrapper
+
+        assert isinstance(layer.mlp.gate, _GateWrapper)
+
+        # mlp.__call__ should NOT be replaced
+        assert type(layer.mlp).__call__ is original_mlp_call
+
+        # Uninstall should restore original gate
+        pruner.uninstall()
+        assert layer.mlp.gate is original_gate
+
+    def test_gate_hook_modifies_logits(self):
+        """Verify the gate hook modifies logits to prune low-weight experts."""
+
+        class FakeGate:
+            def __call__(self, x):
+                # Return logits where expert 0 dominates, experts 2-3 are weak
+                return mx.array([[5.0, 2.0, -5.0, -6.0]])
+
+        class FakeMLP:
+            def __init__(self):
+                self.gate = FakeGate()
+
+        class FakeLayer:
+            def __init__(self):
+                self.mlp = FakeMLP()
+
+        layer = FakeLayer()
+
+        class FakeModel:
+            class model:
+                layers = [layer]
+
+        cfg = ExpertPruningConfig(warmup_tokens=0, gate_threshold=0.05, adaptive=False)
+        pruner = install_expert_pruning(FakeModel(), config=cfg)
+
+        # Call the hooked gate
+        x = mx.array([[1.0]])
+        modified_logits = layer.mlp.gate(x)
+
+        # Experts below threshold should have -inf logits
+        logits_np = np.array(modified_logits.tolist())
+        # Expert 0 (dominant) should be finite
+        assert np.isfinite(logits_np[0, 0])
+        # At least one expert should have been pruned (set to -inf)
+        assert np.any(np.isinf(logits_np))
+
+        pruner.uninstall()
+
 
 # -- Integration/edge case tests --
 
