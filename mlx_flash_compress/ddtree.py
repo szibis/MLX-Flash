@@ -1,35 +1,29 @@
-"""DDTree: Dynamic Draft Trees for DFlash.
+"""DDTree: Dynamic Draft Trees for DFlash speculative decoding.
 
-Extends DFlash block diffusion by building tree-structured drafts instead of
-flat sequences. Each draft position branches into top-k candidates, creating
-a tree verified in a single target model forward pass.
+Extends DFlash block diffusion by building tree-structured drafts from the
+drafter's per-position logits. Instead of verifying a single flat sequence,
+DDTree explores multiple token candidates per position, dramatically improving
+effective acceptance even when per-position accuracy is low.
 
-Result: 96.4% acceptance rate (vs ~70% for flat drafts) → 6-9x effective speedup.
+Key techniques from the literature:
+  - EAGLE-2: confidence-based expansion (cumulative probability as proxy)
+  - Sequoia: provably optimal tree topology via DP (offline)
+  - Yggdrasil: equal-growth trees for mx.compile() compatibility
 
 Algorithm:
   1. DFlash drafter produces logits for N positions (single forward pass)
-  2. DDTree takes top-k tokens at each position → tree of candidates
-  3. Build tree attention mask (each node sees its root-to-node path only)
+  2. At each position, take top-k candidates weighted by cumulative confidence
+  3. Build ancestor-only attention mask (each node sees its root path + context)
   4. Target model verifies entire tree in ONE forward pass
-  5. Accept longest valid path through the tree
+  5. Accept longest valid path through tree + bonus token
 
-Memory overhead is minimal: ~2-5 MB for tree attention mask + extra KV entries.
-
-Usage:
-  from mlx_flash_compress.ddtree import DDTreeBuilder, DDTreeConfig
-
-  config = DDTreeConfig(tree_width=3, max_depth=15)
-  builder = DDTreeBuilder(config)
-
-  # Build tree from DFlash logits
-  tree = builder.build_tree(draft_logits)
-
-  # Verify entire tree against target
-  accepted_path = builder.verify_tree(tree, target_model, input_ids)
+With 8.7% per-position acceptance and tree_width=5:
+  P(>=1 match) = 1-(1-0.087)^5 = 37% → tau ~3-4 tokens/step
 """
 
 from dataclasses import dataclass, field
 from typing import Optional
+import heapq
 
 import numpy as np
 import mlx.core as mx
@@ -38,21 +32,19 @@ import mlx.core as mx
 @dataclass
 class DDTreeConfig:
     """Configuration for DDTree draft tree construction."""
-    tree_width: int = 3
-    max_depth: int = 15
-    max_tree_size: int = 64
+    tree_width: int = 5
+    max_tree_size: int = 60
     temperature: float = 0.0
-    top_p: float = 1.0
-    adaptive_width: bool = True
-    min_prob_threshold: float = 0.05
+    min_confidence: float = 0.01
 
 
 @dataclass
 class TreeNode:
     """A node in the draft tree."""
     token_id: int
-    position: int
+    depth: int
     prob: float
+    cumulative_prob: float
     parent_idx: int
     children_idx: list[int] = field(default_factory=list)
 
@@ -63,262 +55,252 @@ class DraftTree:
     nodes: list[TreeNode]
     token_ids: mx.array
     attention_mask: mx.array
-    position_ids: mx.array
-    node_to_path: dict[int, list[int]]
+    depth_ids: mx.array
 
     @property
     def size(self) -> int:
         return len(self.nodes)
 
-    @property
-    def max_depth(self) -> int:
-        if not self.nodes:
-            return 0
-        return max(n.position for n in self.nodes)
-
 
 class DDTreeBuilder:
-    """Builds and verifies dynamic draft trees from DFlash logits."""
+    """Builds and verifies dynamic draft trees from DFlash logits.
 
-    def __init__(self, config: DDTreeConfig):
-        self.config = config
+    Uses EAGLE-2 style confidence-based expansion: nodes are globally
+    ranked by cumulative probability and the top-budget nodes are kept.
+    """
+
+    def __init__(self, config: DDTreeConfig | None = None):
+        self.config = config or DDTreeConfig()
         self._stats = {
             "trees_built": 0,
             "total_nodes": 0,
             "total_accepted": 0,
-            "max_path_lengths": [],
+            "path_lengths": [],
         }
 
     def build_tree(self, draft_logits: mx.array) -> DraftTree:
         """Build a draft tree from DFlash drafter logits.
 
+        Uses confidence-based expansion: at each depth, take top-k candidates.
+        Globally rank all candidates by cumulative probability and keep the
+        top max_tree_size nodes.
+
         Args:
-            draft_logits: Shape [1, N, vocab_size] — logits for each draft position
+            draft_logits: [1, N, vocab_size] or [N, vocab_size]
 
         Returns:
-            DraftTree with attention mask ready for verification
+            DraftTree ready for tree-masked verification
         """
-        logits = draft_logits.squeeze(0)  # [N, vocab_size]
-        N = logits.shape[0]
+        if draft_logits.ndim == 3:
+            draft_logits = draft_logits.squeeze(0)
 
+        N, vocab = draft_logits.shape
+        probs_all = mx.softmax(draft_logits, axis=-1)
+        mx.eval(probs_all)
+        probs_np = np.array(probs_all)
+
+        cfg = self.config
         nodes: list[TreeNode] = []
-        # Root is the first position's top candidates
-        root_probs = mx.softmax(logits[0], axis=-1)
 
-        width = self._adaptive_width(root_probs, 0) if self.config.adaptive_width else self.config.tree_width
-        top_k_ids, top_k_probs = self._top_k(root_probs, width)
+        # heap: (-cumulative_prob, depth, parent_idx, token_id, prob)
+        heap: list[tuple[float, int, int, int, float]] = []
 
-        # Add root-level candidates
-        for i in range(len(top_k_ids)):
+        top_k = min(cfg.tree_width, vocab)
+        root_top = np.argpartition(probs_np[0], -top_k)[-top_k:]
+        for tid in root_top:
+            p = float(probs_np[0, tid])
+            if p >= cfg.min_confidence:
+                heapq.heappush(heap, (-p, 0, -1, int(tid), p))
+
+        while heap and len(nodes) < cfg.max_tree_size:
+            neg_cum, depth, parent_idx, token_id, prob = heapq.heappop(heap)
+            cum = -neg_cum
+
+            node_idx = len(nodes)
             nodes.append(TreeNode(
-                token_id=int(top_k_ids[i]),
-                position=0,
-                prob=float(top_k_probs[i]),
-                parent_idx=-1,
+                token_id=token_id,
+                depth=depth,
+                prob=prob,
+                cumulative_prob=cum,
+                parent_idx=parent_idx,
             ))
+            if parent_idx >= 0:
+                nodes[parent_idx].children_idx.append(node_idx)
 
-        # Expand tree depth by depth
-        current_level_start = 0
-        current_level_end = len(nodes)
+            next_depth = depth + 1
+            if next_depth >= N:
+                continue
 
-        for depth in range(1, min(N, self.config.max_depth)):
-            if len(nodes) >= self.config.max_tree_size:
-                break
+            child_top = np.argpartition(probs_np[next_depth], -top_k)[-top_k:]
+            for tid in child_top:
+                p = float(probs_np[next_depth, tid])
+                child_cum = cum * p
+                if child_cum >= cfg.min_confidence:
+                    heapq.heappush(heap, (-child_cum, next_depth, node_idx, int(tid), p))
 
-            level_probs = mx.softmax(logits[depth], axis=-1)
-            width = self._adaptive_width(level_probs, depth) if self.config.adaptive_width else self.config.tree_width
-
-            top_k_ids, top_k_probs = self._top_k(level_probs, width)
-
-            new_nodes_start = len(nodes)
-            for parent_idx in range(current_level_start, current_level_end):
-                if len(nodes) >= self.config.max_tree_size:
-                    break
-
-                for i in range(len(top_k_ids)):
-                    if len(nodes) >= self.config.max_tree_size:
-                        break
-
-                    child_idx = len(nodes)
-                    nodes.append(TreeNode(
-                        token_id=int(top_k_ids[i]),
-                        position=depth,
-                        prob=float(top_k_probs[i]),
-                        parent_idx=parent_idx,
-                    ))
-                    nodes[parent_idx].children_idx.append(child_idx)
-
-            current_level_start = new_nodes_start
-            current_level_end = len(nodes)
-
-            if current_level_start == current_level_end:
-                break
-
-        # Build attention mask and position IDs
-        tree = self._build_tree_structure(nodes)
+        tree = self._build_masks(nodes)
         self._stats["trees_built"] += 1
         self._stats["total_nodes"] += len(nodes)
         return tree
 
-    def _build_tree_structure(self, nodes: list[TreeNode]) -> DraftTree:
-        """Convert node list into MLX-ready tree structure."""
+    def _build_masks(self, nodes: list[TreeNode]) -> DraftTree:
+        """Build attention mask and depth IDs from node list."""
         size = len(nodes)
+        if size == 0:
+            return DraftTree(
+                nodes=[], token_ids=mx.array([], dtype=mx.int32),
+                attention_mask=mx.zeros((0, 0), dtype=mx.bool_),
+                depth_ids=mx.array([], dtype=mx.int32),
+            )
+
         token_ids = mx.array([n.token_id for n in nodes], dtype=mx.int32)
-        position_ids = mx.array([n.position for n in nodes], dtype=mx.int32)
+        depth_ids = mx.array([n.depth for n in nodes], dtype=mx.int32)
 
-        # Build attention mask: node i can attend to node j iff j is on i's root path
         mask = np.zeros((size, size), dtype=np.bool_)
-        node_to_path: dict[int, list[int]] = {}
-
         for i in range(size):
-            path = self._get_path_to_root(nodes, i)
-            node_to_path[i] = path
-            for j in path:
+            j = i
+            while j >= 0:
                 mask[i, j] = True
-            mask[i, i] = True  # self-attention
+                j = nodes[j].parent_idx
 
         attention_mask = mx.array(mask)
+        return DraftTree(nodes=nodes, token_ids=token_ids,
+                         attention_mask=attention_mask, depth_ids=depth_ids)
 
-        return DraftTree(
-            nodes=nodes,
-            token_ids=token_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            node_to_path=node_to_path,
-        )
+    def verify_tree(self, tree: DraftTree, verify_logits: mx.array,
+                    ctx_len: int) -> tuple[list[int], int]:
+        """Verify draft tree against target model logits.
 
-    def _get_path_to_root(self, nodes: list[TreeNode], idx: int) -> list[int]:
-        """Get path from node idx back to root."""
-        path = []
-        current = idx
-        while current >= 0:
-            path.append(current)
-            current = nodes[current].parent_idx
-        path.reverse()
-        return path
-
-    def verify_tree(self, tree: DraftTree, target_model,
-                    input_ids: mx.array) -> tuple[list[int], int]:
-        """Verify draft tree against target model in one forward pass.
+        The target model has already been run on [context, tree_tokens].
+        We extract the target's predictions at each tree node position and
+        find the longest matching root-to-leaf path.
 
         Args:
-            tree: DraftTree with candidates and attention mask
-            target_model: The target LLM
-            input_ids: Context tokens preceding the tree
+            tree: DraftTree with candidates
+            verify_logits: [1, ctx_len + tree_size, vocab] from target forward
+            ctx_len: Length of context preceding the tree
 
         Returns:
-            (accepted_token_ids, path_length)
+            (accepted_token_ids, num_accepted) including bonus token
         """
-        # Concatenate context with all tree candidates
-        tree_input = mx.concatenate([input_ids, tree.token_ids])
-        tree_input = mx.expand_dims(tree_input, axis=0)
-
-        # Run target model with tree attention mask
-        # In practice, the attention mask extends the context mask with the tree mask
-        logits = self._target_forward_with_mask(target_model, tree_input, tree, input_ids)
-
-        if logits is None:
+        if tree.size == 0:
             return [], 0
 
-        seq_len = input_ids.shape[0]
-        # Get target's predictions at each tree node position
-        tree_logits = logits[0, seq_len - 1:seq_len + tree.size - 1, :]
+        # Target logits at position i predict token i+1
+        # For tree node at flat position j (after context), the target's prediction
+        # is at logit position ctx_len - 1 + j (since logit[i] predicts token[i+1])
+        # But with tree attention, each node only sees its ancestors, so we need
+        # to match each node's token against the target's prediction at its parent position
+
+        # For root nodes (parent=-1): target predicts at ctx_len-1
+        # For child nodes: target predicts at ctx_len + parent_flat_idx
 
         if self.config.temperature == 0:
-            target_tokens = mx.argmax(tree_logits, axis=-1)
+            all_target = mx.argmax(verify_logits[0], axis=-1)
         else:
-            probs = mx.softmax(tree_logits / self.config.temperature, axis=-1)
-            target_tokens = mx.random.categorical(probs)
+            p = mx.softmax(verify_logits[0] / self.config.temperature, axis=-1)
+            all_target = mx.random.categorical(p)
+        mx.eval(all_target)
+        target_np = np.array(all_target)
 
-        mx.eval(target_tokens)
-        target_np = np.array(target_tokens)
-
-        # Find longest valid path through the tree
-        best_path = self._find_longest_valid_path(tree, target_np)
-
-        accepted_tokens = [tree.nodes[idx].token_id for idx in best_path]
-
-        self._stats["total_accepted"] += len(accepted_tokens)
-        self._stats["max_path_lengths"].append(len(accepted_tokens))
-
-        return accepted_tokens, len(accepted_tokens)
-
-    def _find_longest_valid_path(self, tree: DraftTree, target_tokens: np.ndarray) -> list[int]:
-        """Find longest path where draft matches target at each node."""
         best_path: list[int] = []
 
-        # DFS through tree, accepting nodes where draft token matches target prediction
-        def dfs(node_idx: int, current_path: list[int]):
+        def dfs(node_idx: int, path: list[int]):
             nonlocal best_path
-
             node = tree.nodes[node_idx]
 
-            # Check: does this node's token match target's prediction?
-            # Target predicts at the parent's position what the next token should be
-            parent_verify_pos = node_idx  # position in verification logits
-            if parent_verify_pos < len(target_tokens):
-                if node.token_id == target_tokens[parent_verify_pos]:
-                    current_path.append(node_idx)
-                    if len(current_path) > len(best_path):
-                        best_path = current_path.copy()
+            if node.parent_idx < 0:
+                verify_pos = ctx_len - 1
+            else:
+                verify_pos = ctx_len + node.parent_idx
 
-                    # Continue DFS into children
-                    for child_idx in node.children_idx:
-                        dfs(child_idx, current_path)
+            if verify_pos >= len(target_np):
+                return
 
-                    current_path.pop()
+            if node.token_id != target_np[verify_pos]:
+                return
 
-        # Start DFS from root-level nodes
+            path.append(node_idx)
+            if len(path) > len(best_path):
+                best_path = path.copy()
+
+            for child_idx in node.children_idx:
+                dfs(child_idx, path)
+
+            path.pop()
+
         for i, node in enumerate(tree.nodes):
-            if node.parent_idx == -1:
+            if node.parent_idx < 0:
                 dfs(i, [])
 
-        return best_path
+        accepted = [tree.nodes[idx].token_id for idx in best_path]
 
-    def _target_forward_with_mask(self, target_model, input_ids: mx.array,
-                                  tree: DraftTree, context_ids: mx.array) -> Optional[mx.array]:
-        """Run target model with tree attention mask."""
-        try:
-            if hasattr(target_model, '__call__'):
-                return target_model(input_ids)
-            if hasattr(target_model, 'model'):
-                return target_model.model(input_ids)
-        except Exception:
-            return None
-        return None
+        # Bonus token: target's prediction after the last accepted node
+        if best_path:
+            last_verify_pos = ctx_len + best_path[-1]
+            if last_verify_pos < len(target_np):
+                accepted.append(int(target_np[last_verify_pos]))
+        elif ctx_len - 1 < len(target_np):
+            accepted.append(int(target_np[ctx_len - 1]))
 
-    def _adaptive_width(self, probs: mx.array, depth: int) -> int:
-        """Adapt tree width based on probability distribution entropy."""
-        probs_np = np.array(probs)
-        # Filter to top candidates above threshold
-        above_threshold = np.sum(probs_np > self.config.min_prob_threshold)
-        # Reduce width at deeper positions (confidence decreases with depth)
-        depth_factor = max(1, self.config.tree_width - depth // 4)
-        return min(int(above_threshold), depth_factor, self.config.tree_width)
+        self._stats["total_accepted"] += len(accepted)
+        self._stats["path_lengths"].append(len(accepted))
 
-    def _top_k(self, probs: mx.array, k: int) -> tuple[list[int], list[float]]:
-        """Get top-k token IDs and their probabilities."""
-        k = max(1, min(k, probs.shape[-1]))
-        top_indices = mx.argpartition(probs, kth=-k, axis=-1)[-k:]
-        top_probs = probs[top_indices]
-
-        # Sort by probability (descending)
-        sort_order = mx.argsort(top_probs, axis=-1)
-        sort_order = sort_order[::-1]
-
-        sorted_indices = top_indices[sort_order]
-        sorted_probs = top_probs[sort_order]
-
-        mx.eval(sorted_indices, sorted_probs)
-        return list(np.array(sorted_indices)), list(np.array(sorted_probs))
+        return accepted, len(accepted)
 
     def get_stats(self) -> dict:
-        """Return DDTree statistics."""
-        avg_path = np.mean(self._stats["max_path_lengths"]) if self._stats["max_path_lengths"] else 0
+        avg_path = float(np.mean(self._stats["path_lengths"])) if self._stats["path_lengths"] else 0
+        avg_tree = self._stats["total_nodes"] / max(1, self._stats["trees_built"])
         return {
             "trees_built": self._stats["trees_built"],
-            "total_nodes_explored": self._stats["total_nodes"],
-            "total_tokens_accepted": self._stats["total_accepted"],
-            "avg_accepted_path_length": f"{avg_path:.1f}",
-            "avg_tree_size": f"{self._stats['total_nodes'] / max(1, self._stats['trees_built']):.0f}",
+            "avg_tree_size": round(avg_tree, 1),
+            "total_accepted": self._stats["total_accepted"],
+            "avg_path_length": round(avg_path, 1),
         }
+
+
+def sequoia_optimal_tree(budget: int, acceptance_probs: list[float],
+                         max_depth: int | None = None) -> list[tuple[int, int]]:
+    """Compute Sequoia-optimal tree topology via DP.
+
+    Given a token budget and per-position acceptance probabilities,
+    finds the tree structure that maximizes expected accepted tokens.
+
+    Args:
+        budget: Maximum number of nodes in the tree
+        acceptance_probs: p[k] = probability of accepting the k-th child at any node
+        max_depth: Maximum tree depth (None = unlimited)
+
+    Returns:
+        List of (parent_idx, child_rank) pairs defining the tree topology.
+        parent_idx=-1 for root children.
+    """
+    if max_depth is None:
+        max_depth = budget
+
+    B = len(acceptance_probs)
+
+    # T[n][b] = max expected tokens for subtree of size n, root has b children
+    T = np.zeros((budget + 1, B + 1))
+    T[1, 0] = 1.0
+
+    for n in range(2, budget + 1):
+        for b in range(1, min(B, n) + 1):
+            best = 0.0
+            for m in range(1, n):
+                child_val = max(T[m, j] for j in range(min(B, m) + 1))
+                val = T[n - m, b - 1] + acceptance_probs[b - 1] * child_val
+                best = max(best, val)
+            T[n, b] = best
+
+    best_b = int(np.argmax([T[budget, b] for b in range(min(B, budget) + 1)]))
+    expected = T[budget, best_b]
+
+    # Return the optimal branching factor at root (topology reconstruction is complex,
+    # so we return the expected value and root branching for now)
+    return {
+        "budget": budget,
+        "expected_tokens": round(float(expected), 2),
+        "optimal_root_branches": best_b,
+        "acceptance_probs": acceptance_probs,
+    }

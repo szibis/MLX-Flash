@@ -292,6 +292,13 @@ class TestDFlashRunner:
                 self.model = FakeModel()
                 self.lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
 
+            def __call__(self, input_ids, **kwargs):
+                h = self.model.embed_tokens(input_ids)
+                for layer in self.model.layers:
+                    h = layer(h)
+                h = self.model.norm(h)
+                return self.lm_head(h)
+
         return FakeWrapper()
 
     def _make_fake_tokenizer(self, vocab_size=100):
@@ -357,11 +364,11 @@ class TestDFlashRunner:
         runner = DFlashRunner(target, tokenizer, drafter, config)
 
         input_ids = mx.array([[1, 5, 10, 20, 30]])
-        draft_ids, logits = runner.draft_tokens(input_ids, num_positions=1)
+        draft_ids, logits = runner.draft_tokens(input_ids)
         mx.eval(draft_ids, logits)
 
-        assert draft_ids.shape == (1, 4)
-        assert logits.shape == (1, 4, 100)
+        assert draft_ids.shape == (1, 3)
+        assert logits.shape == (1, 3, 100)
 
     def test_generate_produces_text(self):
         target = self._make_fake_target(num_layers=10, hidden_size=64)
@@ -378,8 +385,73 @@ class TestDFlashRunner:
         drafter = DFlashDraftModel(config)
         runner = DFlashRunner(target, tokenizer, drafter, config)
 
-        text, stats = runner.generate("hello world", max_tokens=8)
+        text, stats = runner.generate("hello world", max_tokens=8, use_cache=False)
         assert isinstance(text, str)
         assert stats["tokens_generated"] > 0
         assert stats["total_target_calls"] > 0
         assert 0 <= stats["acceptance_rate"] <= 1.0
+        assert stats.get("cached") is False
+
+    def test_generate_cache_fallback(self):
+        target = self._make_fake_target(num_layers=10, hidden_size=64)
+        tokenizer = self._make_fake_tokenizer()
+
+        config = DFlashModelConfig(
+            hidden_size=64, intermediate_size=128,
+            num_hidden_layers=2, num_attention_heads=4,
+            num_key_value_heads=2, head_dim=16,
+            block_size=4, vocab_size=100,
+            target_layer_ids=[1, 4, 7],
+            mask_token_id=0,
+        )
+        drafter = DFlashDraftModel(config)
+        runner = DFlashRunner(target, tokenizer, drafter, config)
+
+        text, stats = runner.generate("hello world", max_tokens=8, use_cache=True)
+        assert isinstance(text, str)
+        assert stats["tokens_generated"] > 0
+
+    def test_generate_with_tree_no_cache(self):
+        target = self._make_fake_target(num_layers=10, hidden_size=64)
+        tokenizer = self._make_fake_tokenizer()
+
+        config = DFlashModelConfig(
+            hidden_size=64, intermediate_size=128,
+            num_hidden_layers=2, num_attention_heads=4,
+            num_key_value_heads=2, head_dim=16,
+            block_size=4, vocab_size=100,
+            target_layer_ids=[1, 4, 7],
+            mask_token_id=0,
+        )
+        drafter = DFlashDraftModel(config)
+        runner = DFlashRunner(target, tokenizer, drafter, config)
+
+        text, stats = runner.generate_with_tree(
+            "hello world", max_tokens=8, tree_width=3, max_tree_size=15,
+            use_cache=False,
+        )
+        assert isinstance(text, str)
+        assert "total_tree_nodes" in stats
+        assert stats.get("cached") is False
+
+    def test_generate_with_tree_cache_fallback(self):
+        target = self._make_fake_target(num_layers=10, hidden_size=64)
+        tokenizer = self._make_fake_tokenizer()
+
+        config = DFlashModelConfig(
+            hidden_size=64, intermediate_size=128,
+            num_hidden_layers=2, num_attention_heads=4,
+            num_key_value_heads=2, head_dim=16,
+            block_size=4, vocab_size=100,
+            target_layer_ids=[1, 4, 7],
+            mask_token_id=0,
+        )
+        drafter = DFlashDraftModel(config)
+        runner = DFlashRunner(target, tokenizer, drafter, config)
+
+        text, stats = runner.generate_with_tree(
+            "hello world", max_tokens=8, tree_width=3, max_tree_size=15,
+            use_cache=True,
+        )
+        assert isinstance(text, str)
+        assert "total_tree_nodes" in stats

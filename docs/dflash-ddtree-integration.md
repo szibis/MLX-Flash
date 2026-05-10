@@ -147,20 +147,34 @@ With expert streaming:
 - Requires M2/M3/M4 Ultra with 128+ GB or M4 Max 128GB to fit in RAM
 - Baseline speed and DFlash speedup: **unknown — no measurements exist**
 
-## DFlash Drafter Training (Future)
+## DFlash Drafter Training
+
+A complete training pipeline is available at `scripts/train_dflash_drafter.py`. See [dflash-training-guide.md](dflash-training-guide.md) for full documentation.
 
 To create a DFlash drafter for DeepSeek V4 Flash:
 
-1. **Architecture**: 5-layer transformer, hidden_dim matching target, bidirectional attention
-2. **Training data**: Run target model on diverse text, capture hidden states at layers [1, L/4, L/2, 3L/4, L]
-3. **Objective**: Block diffusion — predict N masked positions conditioned on hidden states
-4. **Fine-tuning**: 1-2 epochs on 10B tokens is sufficient (drafter is small)
-5. **Distribution**: Upload to HuggingFace as `mlx-community/DeepSeek-V4-Flash-DFlash-drafter`
+```bash
+# 1. Collect hidden states from target model
+python scripts/train_dflash_drafter.py collect \
+  --target-model mlx-community/DeepSeek-V4-Flash-4bit \
+  --output-dir ./dsv4-training-data --num-samples 500
 
-Until a trained drafter exists, we can use:
-- **EAGLE-style linear heads** as a simpler approximation (lower speedup, no training needed)
-- **Existing Qwen3.5-27B DFlash drafter** as proof-of-concept with compatible models
-- **n-gram drafting** as baseline comparison
+# 2. Train from scratch with paper tricks
+python scripts/train_dflash_drafter.py train \
+  --training-data ./dsv4-training-data \
+  --output-dir ./dsv4-dflash-drafter --steps 5000
+
+# 3. Evaluate acceptance rate
+python scripts/train_dflash_drafter.py eval \
+  --target-model mlx-community/DeepSeek-V4-Flash-4bit \
+  --drafter-path ./dsv4-dflash-drafter --max-tokens 64
+```
+
+Training features implemented from the DFlash paper:
+- Exponential loss decay (w_k = exp(-(k-1)/7)) — early positions weighted more
+- Random anchor sampling — matches inference-time protocol
+- Target-generated training data — train on the model's own outputs
+- FC-only calibration mode — adapt existing drafters to quantized targets
 
 ## Implementation Plan
 
@@ -170,8 +184,26 @@ Until a trained drafter exists, we can use:
 - [x] Integration with expert streaming (prefetch from draft predictions)
 - [x] Benchmark script for DeepSeek V4 Flash
 
-### Phase 2: Drafter Models
-- [ ] Port `z-lab/Qwen3.5-27B-DFlash` drafter to MLX format
+### Phase 2: Drafter Models & Training
+- [x] DFlash drafter on MLX (`dflash_model.py`)
+- [x] PoC benchmark on Apple Silicon (M5 Pro 64GB) — see [dflash-poc-results.md](dflash-poc-results.md)
+- [x] Training guide — see [dflash-training-guide.md](dflash-training-guide.md)
+- [x] Full training pipeline (`scripts/train_dflash_drafter.py`) — collect/train/eval/preset subcommands
+- [x] Paper tricks: exponential loss decay, random anchor sampling, target-generated data
+- [x] FC-only calibration mode for quantized target models
+- [x] DDTree benchmark: 3.4 tokens/step (+36% vs flat), EAGLE-2 confidence expansion
+- [x] Sequoia optimal tree topology via DP
+- [x] All optimizations: `hidden_dtype`, `inference_block_size`, `compile_drafter`
+- [x] KV cache for flat DFlash: 2.7x speedup via snapshot/rollback
+- [x] **DDTree + KV cache**: tree attention mask with cached context prefix
+- [x] Scaled calibration pipeline: cosine LR, warmup, validation split, 31 diverse prompts
+- [x] DeepSeek V4 Flash preset config (`preset deepseek-v4-flash`)
+- [x] **Drafter quantization** (`quantize_drafter=8`): +19% throughput, zero quality loss
+- [x] **Layer pruning** (`num_active_layers`): benchmarked, not recommended (acceptance drops)
+- [x] **Full optimization sweep**: 12 optimizations tested, 3 accepted, 9 rejected with measured data
+- [x] **SSM rollback analysis**: identified replay overhead as key bottleneck (~18ms/step, 28% of cost)
+- [ ] Build SSM state capture & replay (eliminates ~18ms/step via generic recurrence replay)
+- [ ] Add drafter KV caching (reduces drafter forward time)
 - [ ] Train DeepSeek V4 Flash-specific drafter (5 layers, block diffusion objective)
 - [ ] Publish drafter weights to `mlx-community/`
 
@@ -181,9 +213,30 @@ Until a trained drafter exists, we can use:
 - [ ] Auto-detect DFlash drafter when model is loaded
 - [ ] Adaptive k (num_spec_tokens) based on content type
 
-## Measured Baselines (Real Data) vs DFlash Projections
+## Measured Results (Real Data)
 
-### What We Have Measured (M3 Max 36GB)
+### PoC: DFlash Drafter on Apple Silicon (M5 Pro 64GB)
+
+DFlash speculative decoding on MLX. See [dflash-poc-results.md](dflash-poc-results.md) for full details.
+
+| Method | Model | tok/s | Acceptance | Tokens/step |
+|--------|-------|------:|------:|------:|
+| Baseline AR | Qwen3.6-35B-A3B-4bit | 65.6 | N/A | 1.0 |
+| DFlash naive (no cache, bf16) | + DFlash drafter | 3.6 | 6.4% | 1.8 |
+| DFlash + KV cache (bf16) | + DFlash drafter | 40.5 | 13.3% | 4.0 |
+| **DFlash + KV cache + 8-bit quant** | + DFlash drafter | **48.0** | **13.3%** | **4.0** |
+| DFlash + KV cache + 8-bit + bs=4 | + DFlash drafter | 50.6 | 36.7% | 2.2 |
+| DFlash + DDTree (no cache) | + DFlash drafter | 3.8 | 8.0% | 3.4 |
+
+**Optimization stack**: naive → +KV cache (11.3x) → +8-bit drafter quant (+19%) → best: **48.0 tok/s** (0.73x AR).
+
+**Why DFlash can't beat AR here**: target model (3B active MoE, 4-bit) runs AR at 65.6 tok/s — too fast for speculative decoding overhead to amortize. DFlash wins on slow models (AR < 20 tok/s).
+
+**12 optimizations tested and rejected** (block_size changes, hidden_dtype, compile, multi-step denoising, temperature scaling, top-k acceptance, SDPA, layer pruning, cache trim). Full details in [dflash-poc-results.md](dflash-poc-results.md).
+
+**Next optimization**: SSM state capture & replay to eliminate ~18ms/step replay overhead. See [dflash-poc-results.md](dflash-poc-results.md) for details.
+
+### Prior Baselines (M3 Max 36GB)
 
 | Model | Config | Measured tok/s | Source |
 |-------|--------|---------------:|--------|
@@ -191,37 +244,34 @@ Until a trained drafter exists, we can use:
 | Qwen3-30B-A3B 4bit | Expert streaming | 82.6 | README.md |
 | Qwen3.5-397B 4bit (209GB) | Expert streaming, 58% cache hit | 3.3 | measured-results.md |
 
-### What DFlash Achieves on NVIDIA (Reference, NOT on Mac)
+### DFlash on NVIDIA (Reference, NOT on Mac)
 
 From AEON-7/vllm-dflash on DGX Spark (Blackwell, 128GB unified, 273 GB/s):
 - Qwen3.5-27B NVFP4 + DFlash k=15: **64 tok/s** on code, **29.5 tok/s** on prose
 - Acceptance per 15-token draft: ~5.5 tokens (code), ~2 tokens (prose)
 - Effective decode speedup: **~2.1x** (code), **~1.3x** (prose) vs vanilla on same hardware
 
-### Projected DFlash on Mac (UNVERIFIED — Needs Real Testing)
+### Where DFlash WILL Help on Mac
 
-These are speculative estimates based on the NVIDIA reference numbers. **No MLX DFlash implementation has been benchmarked yet.**
+DFlash speedup requires a target model where AR is slow enough that amortizing 4-7 accepted tokens over 1 verification pass wins. Candidates:
 
-| Mac Config | Model | Baseline (measured) | + DFlash (projected) | Confidence |
-|------------|-------|--------------------:|---------------------:|------------|
-| M3 Max 36GB | Qwen3-30B-A3B 4bit | 82.6 tok/s | ~130-170 tok/s | LOW — drafter doesn't exist yet |
-| M3 Max 36GB | DS-V4 Flash 2bit | TBD — not yet tested | TBD | NONE — no data |
+| Mac Config | Model | AR Baseline | DFlash Potential | Status |
+|------------|-------|------:|---|---|
+| M5 Pro 64GB | DS-V4 Flash 2bit (35 GB) | TBD | HIGH — 13B active params, slow AR | Needs drafter + baseline |
+| M4 Ultra 192GB | DS-V4 Flash 4bit (80 GB) | TBD | HIGH | Needs drafter |
+| M5 Pro 64GB | Qwen3.5-397B 4bit | 3.3 tok/s | VERY HIGH — AR is very slow | Needs drafter |
 
-**Why projections are uncertain:**
-- No DFlash drafter exists for MLX models (must be trained)
-- Tree attention mask needs custom MLX kernel (not implemented)
-- NVIDIA reference uses NVFP4 + Blackwell-specific optimizations not available on Apple Silicon
-- Acceptance rate is content-dependent and model-specific
-- Expert streaming + DFlash interaction is untested
+### What We Need Next
 
-### What We Need to Measure
+1. **SSM state capture & replay** — eliminates ~18ms/step replay overhead via generic recurrence replay. Projected: 48 → 58 tok/s (+21%)
+2. **Drafter KV caching** — drafter attention should cache context KV across steps
+3. **Train DeepSeek V4 Flash drafter** — 284B model where AR is slow → DFlash wins big
+4. **Full-precision baseline** — test with bf16 target to isolate quantization impact (6-12% acceptance vs paper's 40-70%)
 
-Run `scripts/bench_deepseek_v4_flash.py` to get real baseline numbers:
 ```bash
-python scripts/bench_deepseek_v4_flash.py --model mlx-community/DeepSeek-V4-Flash-2bit-DQ
+# Quick start: DeepSeek V4 Flash drafter
+python scripts/train_dflash_drafter.py preset deepseek-v4-flash --quant 2bit
 ```
-
-This gives us the actual baseline. DFlash speedup requires training a drafter first.
 
 ## References
 

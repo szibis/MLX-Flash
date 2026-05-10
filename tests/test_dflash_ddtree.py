@@ -88,15 +88,14 @@ class TestNGramDrafter:
 class TestDDTreeConfig:
     def test_default_config(self):
         config = DDTreeConfig()
-        assert config.tree_width == 3
-        assert config.max_depth == 15
-        assert config.max_tree_size == 64
-        assert config.adaptive_width is True
+        assert config.tree_width == 5
+        assert config.max_tree_size == 60
+        assert config.temperature == 0.0
+        assert config.min_confidence == 0.01
 
     def test_custom_config(self):
-        config = DDTreeConfig(tree_width=5, max_depth=10, max_tree_size=100)
-        assert config.tree_width == 5
-        assert config.max_depth == 10
+        config = DDTreeConfig(tree_width=3, max_tree_size=100)
+        assert config.tree_width == 3
         assert config.max_tree_size == 100
 
 
@@ -105,53 +104,48 @@ class TestDDTreeConfig:
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestDDTreeBuilder:
     def test_build_tree_basic(self):
-        config = DDTreeConfig(tree_width=2, max_depth=3, max_tree_size=20)
+        config = DDTreeConfig(tree_width=2, max_tree_size=20)
         builder = DDTreeBuilder(config)
 
-        # Simulate DFlash logits: [1, 3, vocab_size=100]
         logits = mx.random.normal((1, 3, 100))
         tree = builder.build_tree(logits)
 
         assert isinstance(tree, DraftTree)
         assert tree.size > 0
         assert tree.size <= config.max_tree_size
-        assert tree.max_depth <= config.max_depth
 
     def test_tree_attention_mask(self):
-        config = DDTreeConfig(tree_width=2, max_depth=2, max_tree_size=10)
+        config = DDTreeConfig(tree_width=2, max_tree_size=10)
         builder = DDTreeBuilder(config)
 
         logits = mx.random.normal((1, 2, 50))
         tree = builder.build_tree(logits)
 
-        # Attention mask should be square
         mask = tree.attention_mask
         assert mask.shape[0] == mask.shape[1]
         assert mask.shape[0] == tree.size
 
-        # Diagonal should be True (self-attention)
         mask_np = np.array(mask)
         for i in range(tree.size):
             assert mask_np[i, i] == True
 
     def test_path_to_root(self):
-        config = DDTreeConfig(tree_width=2, max_depth=3, max_tree_size=20)
+        config = DDTreeConfig(tree_width=2, max_tree_size=20)
         builder = DDTreeBuilder(config)
 
         logits = mx.random.normal((1, 3, 50))
         tree = builder.build_tree(logits)
 
-        # Every node should have a path to root
         for i in range(tree.size):
-            path = tree.node_to_path[i]
-            assert len(path) > 0
-            assert path[-1] == i
-            # Root nodes have parent_idx == -1
-            first_node = tree.nodes[path[0]]
-            assert first_node.parent_idx == -1
+            node = tree.nodes[i]
+            j = i
+            while j >= 0:
+                j = tree.nodes[j].parent_idx
+            # Walked to root (parent_idx == -1)
+            assert j == -1
 
     def test_max_tree_size_respected(self):
-        config = DDTreeConfig(tree_width=5, max_depth=10, max_tree_size=30)
+        config = DDTreeConfig(tree_width=5, max_tree_size=30)
         builder = DDTreeBuilder(config)
 
         logits = mx.random.normal((1, 10, 200))
@@ -160,7 +154,7 @@ class TestDDTreeBuilder:
         assert tree.size <= config.max_tree_size
 
     def test_tree_stats(self):
-        config = DDTreeConfig(tree_width=2, max_depth=3, max_tree_size=20)
+        config = DDTreeConfig(tree_width=2, max_tree_size=20)
         builder = DDTreeBuilder(config)
 
         logits = mx.random.normal((1, 3, 50))
@@ -169,7 +163,7 @@ class TestDDTreeBuilder:
 
         stats = builder.get_stats()
         assert stats["trees_built"] == 2
-        assert stats["total_nodes_explored"] > 0
+        assert stats["avg_tree_size"] > 0
 
 
 # -- DFlash Drafter Model Tests --
@@ -259,6 +253,7 @@ class TestDFlashEngine:
 class TestDFlashDDTreeIntegration:
     def test_drafter_to_tree_pipeline(self):
         """Verify the full pipeline: drafter produces logits → DDTree builds tree."""
+        mx.random.seed(42)
         vocab_size = 500
         hidden_dim = 64
         num_draft = 8
@@ -279,7 +274,7 @@ class TestDFlashDDTreeIntegration:
         mx.eval(logits)
 
         # Feed logits to DDTree
-        tree_config = DDTreeConfig(tree_width=3, max_depth=num_draft, max_tree_size=30)
+        tree_config = DDTreeConfig(tree_width=3, max_tree_size=30)
         builder = DDTreeBuilder(tree_config)
         tree = builder.build_tree(logits)
 
