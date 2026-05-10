@@ -17,19 +17,19 @@ import gc
 import json
 import os
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Optional
 
 try:
     import mlx.core as mx
-    from mlx_lm import load, generate
+    from mlx_lm import generate, load
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
 
 from mlx_flash_compress.hardware import detect_hardware
 from mlx_flash_compress.memory_manager import get_memory_state
-
 
 GEMMA4_MODELS = [
     ("mlx-community/gemma-4-E2B-it-4bit", "E2B", 1.5, "dense"),
@@ -41,10 +41,13 @@ GEMMA4_MODELS = [
 BENCHMARK_PROMPTS = [
     ("short", "What is 2+2?"),
     ("medium", "Explain how a neural network learns in 3 paragraphs."),
-    ("long", "Write a detailed analysis of the trade-offs between different "
-             "sorting algorithms including quicksort, mergesort, heapsort, and "
-             "timsort. Cover time complexity, space complexity, cache behavior, "
-             "and real-world performance characteristics."),
+    (
+        "long",
+        "Write a detailed analysis of the trade-offs between different "
+        "sorting algorithms including quicksort, mergesort, heapsort, and "
+        "timsort. Cover time complexity, space complexity, cache behavior, "
+        "and real-world performance characteristics.",
+    ),
 ]
 
 
@@ -59,7 +62,7 @@ class BenchmarkResult:
     prompt_time_s: float
     generation_time_s: float
     total_time_s: float
-    prompt_tps: float      # prompt tokens per second
+    prompt_tps: float  # prompt tokens per second
     generation_tps: float  # generation tokens per second
     memory_used_gb: float
     memory_available_gb: float
@@ -111,9 +114,7 @@ def benchmark_model(
         t_start = time.monotonic()
 
         try:
-            output = generate(
-                model, tokenizer, prompt=prompt_text, max_tokens=max_tokens
-            )
+            output = generate(model, tokenizer, prompt=prompt_text, max_tokens=max_tokens)
         except Exception as e:
             print(f"error: {e}")
             continue
@@ -168,16 +169,18 @@ def print_results_table(results: list):
         print("\n  No results to display.")
         return
 
-    print(f"\n  {'='*72}")
+    print(f"\n  {'=' * 72}")
     print(f"  Gemma 4 Benchmark Results ({results[0].hardware})")
-    print(f"  {'='*72}")
+    print(f"  {'=' * 72}")
     print(f"  {'Model':<12} {'Prompt':<10} {'Gen tok/s':>10} {'Prompt tok/s':>12} {'Memory':>8}")
-    print(f"  {'-'*12} {'-'*10} {'-'*10} {'-'*12} {'-'*8}")
+    print(f"  {'-' * 12} {'-' * 10} {'-' * 10} {'-' * 12} {'-' * 8}")
 
     for r in results:
-        print(f"  {r.model_size:<12} {r.prompt_name:<10} {r.generation_tps:>10.1f} {r.prompt_tps:>12.1f} {r.memory_used_gb:>7.1f}G")
+        print(
+            f"  {r.model_size:<12} {r.prompt_name:<10} {r.generation_tps:>10.1f} {r.prompt_tps:>12.1f} {r.memory_used_gb:>7.1f}G"
+        )
 
-    print(f"  {'='*72}")
+    print(f"  {'=' * 72}")
 
 
 def save_results(results: list, path: str = "gemma4_benchmark.json"):

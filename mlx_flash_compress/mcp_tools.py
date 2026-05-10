@@ -27,28 +27,21 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "prompt": {
-                    "type": "string",
-                    "description": "The input text prompt"
-                },
-                "max_tokens": {
-                    "type": "integer",
-                    "description": "Maximum tokens to generate",
-                    "default": 256
-                },
+                "prompt": {"type": "string", "description": "The input text prompt"},
+                "max_tokens": {"type": "integer", "description": "Maximum tokens to generate", "default": 256},
                 "temperature": {
                     "type": "number",
                     "description": "Sampling temperature (0.0 = deterministic)",
-                    "default": 0.7
+                    "default": 0.7,
                 },
                 "system": {
                     "type": "string",
                     "description": "System prompt for the model",
-                    "default": "You are a helpful assistant."
-                }
+                    "default": "You are a helpful assistant.",
+                },
             },
-            "required": ["prompt"]
-        }
+            "required": ["prompt"],
+        },
     },
     {
         "name": "check_memory",
@@ -56,7 +49,7 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {},
-        }
+        },
     },
     {
         "name": "switch_model",
@@ -66,11 +59,11 @@ MCP_TOOLS = [
             "properties": {
                 "model": {
                     "type": "string",
-                    "description": "HuggingFace model ID (e.g., mlx-community/gemma-4-31b-it-4bit)"
+                    "description": "HuggingFace model ID (e.g., mlx-community/gemma-4-31b-it-4bit)",
                 }
             },
-            "required": ["model"]
-        }
+            "required": ["model"],
+        },
     },
     {
         "name": "release_memory",
@@ -78,13 +71,9 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "fraction": {
-                    "type": "number",
-                    "description": "Fraction of cache to release (0.0-1.0)",
-                    "default": 0.5
-                }
-            }
-        }
+                "fraction": {"type": "number", "description": "Fraction of cache to release (0.0-1.0)", "default": 0.5}
+            },
+        },
     },
     {
         "name": "list_models",
@@ -92,7 +81,7 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {},
-        }
+        },
     },
     {
         "name": "get_status",
@@ -100,8 +89,8 @@ MCP_TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {},
-        }
-    }
+        },
+    },
 ]
 
 

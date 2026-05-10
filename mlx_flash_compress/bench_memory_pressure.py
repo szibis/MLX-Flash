@@ -22,10 +22,9 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-import numpy as np
-
 import mlx.core as mx
-from mlx_lm import load, generate
+import numpy as np
+from mlx_lm import generate, load
 
 from mlx_flash_compress.hardware import detect_hardware
 
@@ -33,6 +32,7 @@ from mlx_flash_compress.hardware import detect_hardware
 @dataclass
 class PressureResult:
     """Result of a single pressure-level test."""
+
     label: str
     memory_limit_mb: int
     tokens: int
@@ -48,7 +48,8 @@ def _fmt_prompt(tokenizer, prompt):
         try:
             return tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
-                tokenize=False, add_generation_prompt=True,
+                tokenize=False,
+                add_generation_prompt=True,
             )
         except Exception:
             pass
@@ -69,6 +70,7 @@ def _measure_model_footprint() -> float:
             return max(peak, active)
         except AttributeError:
             import psutil
+
             return psutil.Process(os.getpid()).memory_info().rss
 
 
@@ -141,9 +143,14 @@ def _evict_cold_experts(model, evict_fraction: float = 0.5) -> dict:
         layers = model.layers
 
     if layers is None:
-        return {"evicted": 0, "saved_bytes": 0, "total_expert_slots": 0,
-                "evict_fraction": evict_fraction, "conceptual_saved_bytes": 0,
-                "conceptual_saved_mb": 0}
+        return {
+            "evicted": 0,
+            "saved_bytes": 0,
+            "total_expert_slots": 0,
+            "evict_fraction": evict_fraction,
+            "conceptual_saved_bytes": 0,
+            "conceptual_saved_mb": 0,
+        }
 
     for layer_idx, layer in enumerate(layers):
         # Find the switch_mlp / expert module
@@ -159,8 +166,7 @@ def _evict_cold_experts(model, evict_fraction: float = 0.5) -> dict:
             continue
 
         # Find projection modules with 3D weight tensors
-        proj_names = ["gate_proj", "up_proj", "down_proj",
-                      "w1", "w2", "w3"]
+        proj_names = ["gate_proj", "up_proj", "down_proj", "w1", "w2", "w3"]
         for proj_name in proj_names:
             proj = getattr(switch_mlp, proj_name, None)
             if proj is None:
@@ -230,8 +236,13 @@ def _reset_memory_limit():
 
 
 def run_pressure_sweep(
-    model, tokenizer, formatted, max_tokens: int,
-    footprint_bytes: int, num_levels: int = 5, runs_per_level: int = 2,
+    model,
+    tokenizer,
+    formatted,
+    max_tokens: int,
+    footprint_bytes: int,
+    num_levels: int = 5,
+    runs_per_level: int = 2,
 ) -> list[PressureResult]:
     """Sweep memory limits from comfortable to severely constrained.
 
@@ -249,10 +260,12 @@ def run_pressure_sweep(
         multipliers = [1.5, 0.9, 0.5]
     else:
         # Fine-grained in the cliff region (0.7x-1.5x), plus one extreme
-        candidates = sorted(set([
-            round(x, 2) for x in [1.5, 1.3, 1.1, 1.0, 0.9, 0.8, 0.5]
-            + np.linspace(1.5, 0.5, num_levels).tolist()
-        ]), reverse=True)
+        candidates = sorted(
+            set(
+                [round(x, 2) for x in [1.5, 1.3, 1.1, 1.0, 0.9, 0.8, 0.5] + np.linspace(1.5, 0.5, num_levels).tolist()]
+            ),
+            reverse=True,
+        )
         # Deduplicate by removing values within 0.05 of each other
         multipliers = []
         for m in candidates:
@@ -262,26 +275,27 @@ def run_pressure_sweep(
 
     # First: unconstrained baseline (no memory limit)
     _reset_memory_limit()
-    print(f"\n  [0/{len(multipliers)+1}] Unconstrained (no memory limit)...")
+    print(f"\n  [0/{len(multipliers) + 1}] Unconstrained (no memory limit)...")
     best_tps = 0
     best_output = ""
     for r in range(runs_per_level):
-        output, tokens, elapsed, tps = _timed_generate(
-            model, tokenizer, formatted, max_tokens, warmup=(r == 0)
-        )
+        output, tokens, elapsed, tps = _timed_generate(model, tokenizer, formatted, max_tokens, warmup=(r == 0))
         if tps > best_tps:
             best_tps = tps
             best_output = output
 
-    results.append(PressureResult(
-        label="Unconstrained",
-        memory_limit_mb=0,
-        tokens=tokens, time_s=elapsed,
-        tok_per_s=best_tps,
-        model_footprint_mb=footprint_mb,
-        headroom_mb=0,
-        output_preview=best_output[:120],
-    ))
+    results.append(
+        PressureResult(
+            label="Unconstrained",
+            memory_limit_mb=0,
+            tokens=tokens,
+            time_s=elapsed,
+            tok_per_s=best_tps,
+            model_footprint_mb=footprint_mb,
+            headroom_mb=0,
+            output_preview=best_output[:120],
+        )
+    )
     print(f"    {best_tps:.1f} tok/s (baseline)")
 
     # Sweep with increasing pressure
@@ -291,8 +305,10 @@ def run_pressure_sweep(
         headroom_mb = limit_mb - footprint_mb
         label = f"{mult:.2f}x ({limit_mb:.0f}MB)"
 
-        print(f"\n  [{i+1}/{len(multipliers)+1}] Memory limit: {limit_mb:.0f}MB "
-              f"({mult:.2f}x footprint, {'+'  if headroom_mb >= 0 else ''}{headroom_mb:.0f}MB headroom)...")
+        print(
+            f"\n  [{i + 1}/{len(multipliers) + 1}] Memory limit: {limit_mb:.0f}MB "
+            f"({mult:.2f}x footprint, {'+' if headroom_mb >= 0 else ''}{headroom_mb:.0f}MB headroom)..."
+        )
 
         mx.set_memory_limit(limit_bytes)
         mx.synchronize()
@@ -301,22 +317,23 @@ def run_pressure_sweep(
         best_output = ""
         for r in range(runs_per_level):
             gc.collect()
-            output, tokens, elapsed, tps = _timed_generate(
-                model, tokenizer, formatted, max_tokens, warmup=(r == 0)
-            )
+            output, tokens, elapsed, tps = _timed_generate(model, tokenizer, formatted, max_tokens, warmup=(r == 0))
             if tps > best_tps:
                 best_tps = tps
                 best_output = output
 
-        results.append(PressureResult(
-            label=label,
-            memory_limit_mb=int(limit_mb),
-            tokens=tokens, time_s=elapsed,
-            tok_per_s=best_tps,
-            model_footprint_mb=footprint_mb,
-            headroom_mb=headroom_mb,
-            output_preview=best_output[:120],
-        ))
+        results.append(
+            PressureResult(
+                label=label,
+                memory_limit_mb=int(limit_mb),
+                tokens=tokens,
+                time_s=elapsed,
+                tok_per_s=best_tps,
+                model_footprint_mb=footprint_mb,
+                headroom_mb=headroom_mb,
+                output_preview=best_output[:120],
+            )
+        )
 
         pct_of_baseline = (best_tps / results[0].tok_per_s * 100) if results[0].tok_per_s > 0 else 0
         print(f"    {best_tps:.1f} tok/s ({pct_of_baseline:.0f}% of baseline)")
@@ -371,7 +388,9 @@ def print_pressure_report(
             pct = eviction_info.get("reduction_pct", 0)
             if orig > 0:
                 print(f"  Footprint reduction: {orig:.0f} MB -> {new:.0f} MB (-{pct:.0f}%)")
-                print(f"  Cold experts ({eviction_info.get('evict_fraction', 0)*100:.0f}%) at 2-bit saves {savings:.0f} MB")
+                print(
+                    f"  Cold experts ({eviction_info.get('evict_fraction', 0) * 100:.0f}%) at 2-bit saves {savings:.0f} MB"
+                )
         print()
 
         # Find the first constrained result (the cliff)
@@ -389,7 +408,9 @@ def print_pressure_report(
         bar_base = int(baseline.tok_per_s / max(max_tps, 1) * 20)
 
         print(f"  Unconstrained baseline:  {baseline.tok_per_s:>6.1f} tok/s  {'#' * bar_base}")
-        print(f"  Constrained (no MP):     {cliff.tok_per_s:>6.1f} tok/s  {'#' * bar_cliff}  (at {cliff.memory_limit_mb}MB)")
+        print(
+            f"  Constrained (no MP):     {cliff.tok_per_s:>6.1f} tok/s  {'#' * bar_cliff}  (at {cliff.memory_limit_mb}MB)"
+        )
         print(f"  Constrained (with MP):   {post_eviction_result.tok_per_s:>6.1f} tok/s  {'#' * bar_mp}  (verified)")
         print()
         print(f"  Mixed precision recovery: {recovery:.1f}x faster ({vs_baseline:.0f}% of baseline restored)")
@@ -403,25 +424,25 @@ def print_pressure_report(
         print(f"  Memory pressure causes {slowdown:.1f}x slowdown when the model barely fits.")
     if post_eviction_result and results[-1].tok_per_s > 0:
         gain = post_eviction_result.tok_per_s / results[-1].tok_per_s
-        print(f"  Mixed precision reduces footprint, eliminating pressure: +{(gain-1)*100:.0f}% recovery.")
-    print(f"  We don't make fast things faster. We make tight things comfortable.")
+        print(f"  Mixed precision reduces footprint, eliminating pressure: +{(gain - 1) * 100:.0f}% recovery.")
+    print("  We don't make fast things faster. We make tight things comfortable.")
     print()
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="MLX-Flash: Memory Pressure Benchmark"
+    parser = argparse.ArgumentParser(description="MLX-Flash: Memory Pressure Benchmark")
+    parser.add_argument(
+        "--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit", help="MLX MoE model to benchmark"
     )
-    parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit",
-                        help="MLX MoE model to benchmark")
-    parser.add_argument("--prompt", default="Explain how mixture of experts works in neural networks.",
-                        help="Prompt for generation")
+    parser.add_argument(
+        "--prompt", default="Explain how mixture of experts works in neural networks.", help="Prompt for generation"
+    )
     parser.add_argument("--tokens", type=int, default=100, help="Max tokens per run")
-    parser.add_argument("--pressure-levels", type=int, default=5,
-                        help="Number of pressure levels to test")
+    parser.add_argument("--pressure-levels", type=int, default=5, help="Number of pressure levels to test")
     parser.add_argument("--runs", type=int, default=2, help="Runs per level (best of N)")
-    parser.add_argument("--evict-fraction", type=float, default=0.5,
-                        help="Fraction of experts to evict as 'cold' (0.0-1.0)")
+    parser.add_argument(
+        "--evict-fraction", type=float, default=0.5, help="Fraction of experts to evict as 'cold' (0.0-1.0)"
+    )
     args = parser.parse_args()
 
     print()
@@ -446,7 +467,7 @@ def main():
 
     param_info = _count_expert_params(model)
     print(f"  Total params: {param_info['total_bytes'] / 1e6:.0f} MB")
-    print(f"  Expert params: {param_info['expert_bytes'] / 1e6:.0f} MB ({param_info['expert_fraction']*100:.0f}%)")
+    print(f"  Expert params: {param_info['expert_bytes'] / 1e6:.0f} MB ({param_info['expert_fraction'] * 100:.0f}%)")
 
     formatted = _fmt_prompt(tokenizer, args.prompt)
 
@@ -456,7 +477,10 @@ def main():
     print("=" * 72)
 
     results = run_pressure_sweep(
-        model, tokenizer, formatted, args.tokens,
+        model,
+        tokenizer,
+        formatted,
+        args.tokens,
         footprint_bytes=int(footprint),
         num_levels=args.pressure_levels,
         runs_per_level=args.runs,
@@ -476,8 +500,8 @@ def main():
     new_footprint_mb = footprint_mb - savings_mb
     reduction_pct = savings_mb / footprint_mb * 100
 
-    print(f"\n  Expert params: {expert_bytes / 1e6:.0f} MB ({param_info['expert_fraction']*100:.0f}% of model)")
-    print(f"  Cold experts ({cold_fraction*100:.0f}% at 2-bit): saves {savings_mb:.0f} MB")
+    print(f"\n  Expert params: {expert_bytes / 1e6:.0f} MB ({param_info['expert_fraction'] * 100:.0f}% of model)")
+    print(f"  Cold experts ({cold_fraction * 100:.0f}% at 2-bit): saves {savings_mb:.0f} MB")
     print(f"  Original footprint:   {footprint_mb:.0f} MB")
     print(f"  After mixed precision: {new_footprint_mb:.0f} MB (-{reduction_pct:.0f}%)")
 
@@ -520,8 +544,7 @@ def main():
     # Run at the limit that corresponds to `new_mult * footprint` for the original model
     verify_limit_bytes = int(new_mult * footprint * 1.0)
     verify_limit_mb = verify_limit_bytes / (1024 * 1024)
-    print(f"\n  Verifying: running original model at {verify_limit_mb:.0f}MB "
-          f"({new_mult:.2f}x footprint)...")
+    print(f"\n  Verifying: running original model at {verify_limit_mb:.0f}MB ({new_mult:.2f}x footprint)...")
     print(f"  (This simulates what the mixed-precision model would experience at {cliff_limit:.0f}MB)")
 
     mx.set_memory_limit(verify_limit_bytes)
@@ -530,9 +553,7 @@ def main():
     best_tps = 0
     for r in range(args.runs):
         gc.collect()
-        _, tokens, elapsed, tps = _timed_generate(
-            model, tokenizer, formatted, args.tokens, warmup=(r == 0)
-        )
+        _, tokens, elapsed, tps = _timed_generate(model, tokenizer, formatted, args.tokens, warmup=(r == 0))
         if tps > best_tps:
             best_tps = tps
 
@@ -541,7 +562,8 @@ def main():
     verified_result = PressureResult(
         label=f"Verified ({new_mult:.2f}x footprint)",
         memory_limit_mb=int(verify_limit_mb),
-        tokens=tokens, time_s=elapsed,
+        tokens=tokens,
+        time_s=elapsed,
         tok_per_s=best_tps,
         model_footprint_mb=footprint_mb,
         headroom_mb=verify_limit_mb - footprint_mb,

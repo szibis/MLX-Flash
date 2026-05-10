@@ -20,28 +20,30 @@ import os
 import threading
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Optional, Callable, Any
+from typing import Any, Callable, Optional
 
 try:
     import mlx.core as mx
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
 
-from mlx_flash_compress.page_cache import PageCacheAdvisor, EvictionStrategy
+from mlx_flash_compress.page_cache import EvictionStrategy, PageCacheAdvisor
 
 
 @dataclass
 class PipelineStats:
     """Track pipeline execution metrics."""
+
     layers_executed: int = 0
     prefetch_hits: int = 0
     prefetch_misses: int = 0
     total_compute_ms: float = 0.0
     total_io_ms: float = 0.0
-    overlap_ratio: float = 0.0   # fraction of IO hidden behind compute
+    overlap_ratio: float = 0.0  # fraction of IO hidden behind compute
 
     @property
     def io_hidden_pct(self) -> float:
@@ -53,8 +55,9 @@ class PipelineStats:
 @dataclass
 class LayerPhase:
     """A single phase of layer execution with associated prefetch."""
-    name: str                    # "attn_norm", "attn", "mlp_norm", "mlp"
-    weight_keys: list = field(default_factory=list)   # weight keys to prefetch
+
+    name: str  # "attn_norm", "attn", "mlp_norm", "mlp"
+    weight_keys: list = field(default_factory=list)  # weight keys to prefetch
     compute_fn: Optional[Callable] = None
 
 
@@ -65,7 +68,7 @@ class PrefetchWorker:
         self.advisor = advisor
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="prefetch")
         self._pending: dict = {}  # layer_idx -> Future
-        self._ema_io_ms = 5.0     # exponential moving average of IO time
+        self._ema_io_ms = 5.0  # exponential moving average of IO time
         self._ema_compute_ms = 5.0
         self._alpha = 0.3
 
@@ -159,25 +162,21 @@ class PipelinedExecutor:
         t_start = time.monotonic()
 
         # Phase 1: Prefetch attention + compute norm
-        self.prefetch.submit_prefetch(
-            layer_idx * 10 + 0, mmap_obj, attn_byte_ranges
-        )
+        self.prefetch.submit_prefetch(layer_idx * 10 + 0, mmap_obj, attn_byte_ranges)
         t_norm_start = time.monotonic()
         norm_out = compute_norm_fn()
         if HAS_MLX:
-            mx.eval(norm_out) if hasattr(norm_out, 'shape') else None
+            mx.eval(norm_out) if hasattr(norm_out, "shape") else None
         t_norm_end = time.monotonic()
 
         # Phase 2: Wait for attention weights + prefetch MLP + compute attention
         self.prefetch.wait_for(layer_idx * 10 + 0)
 
-        self.prefetch.submit_prefetch(
-            layer_idx * 10 + 1, mmap_obj, mlp_byte_ranges
-        )
+        self.prefetch.submit_prefetch(layer_idx * 10 + 1, mmap_obj, mlp_byte_ranges)
         t_attn_start = time.monotonic()
         attn_out = compute_attn_fn(norm_out)
         if HAS_MLX:
-            mx.eval(attn_out) if hasattr(attn_out, 'shape') else None
+            mx.eval(attn_out) if hasattr(attn_out, "shape") else None
         t_attn_end = time.monotonic()
 
         # Phase 3: Wait for MLP weights + prefetch next layer + compute MLP
@@ -185,14 +184,12 @@ class PipelinedExecutor:
 
         # Start prefetching next layer's attention weights
         if next_attn_byte_ranges and layer_idx + 1 < total_layers:
-            self.prefetch.submit_prefetch(
-                (layer_idx + 1) * 10 + 0, mmap_obj, next_attn_byte_ranges
-            )
+            self.prefetch.submit_prefetch((layer_idx + 1) * 10 + 0, mmap_obj, next_attn_byte_ranges)
 
         t_mlp_start = time.monotonic()
         mlp_out = compute_mlp_fn(attn_out)
         if HAS_MLX:
-            mx.eval(mlp_out) if hasattr(mlp_out, 'shape') else None
+            mx.eval(mlp_out) if hasattr(mlp_out, "shape") else None
         t_mlp_end = time.monotonic()
 
         # Evict this layer's weights from page cache
@@ -212,13 +209,15 @@ class PipelinedExecutor:
         if total_ms > 0:
             self.stats.overlap_ratio = 1.0 - (io_ms / total_ms)
 
-        self._layer_timings.append({
-            "layer": layer_idx,
-            "total_ms": total_ms,
-            "compute_ms": compute_ms,
-            "io_ms": io_ms,
-            "prefetch_depth": self.prefetch.prefetch_depth,
-        })
+        self._layer_timings.append(
+            {
+                "layer": layer_idx,
+                "total_ms": total_ms,
+                "compute_ms": compute_ms,
+                "io_ms": io_ms,
+                "prefetch_depth": self.prefetch.prefetch_depth,
+            }
+        )
 
         return mlp_out
 

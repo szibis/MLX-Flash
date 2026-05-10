@@ -1,13 +1,14 @@
 """Tests for MCP tool definitions."""
 
 import json
+
 import pytest
 
 from mlx_flash_compress.mcp_tools import (
     MCP_TOOLS,
+    format_mcp_response,
     get_mcp_manifest,
     get_tool_names,
-    format_mcp_response,
 )
 
 

@@ -1,21 +1,29 @@
 """Tests for task profiler, memory manager, and tier optimizer."""
 
 import json
-import tempfile
 import os
+import tempfile
 
 import numpy as np
 import pytest
 
-from mlx_flash_compress.task_profiler import (
-    ExpertProfile, ProfileCalibrator, AdaptiveProfiler,
-    get_predefined_profile, estimate_profile_gains,
-)
 from mlx_flash_compress.memory_manager import (
-    MemoryManager, get_memory_state, MemoryState,
+    MemoryManager,
+    MemoryState,
+    get_memory_state,
+)
+from mlx_flash_compress.task_profiler import (
+    AdaptiveProfiler,
+    ExpertProfile,
+    ProfileCalibrator,
+    estimate_profile_gains,
+    get_predefined_profile,
 )
 from mlx_flash_compress.tier_optimizer import (
-    optimize_tiers, compute_hit_rate, HardwareProfile, ModelProfile,
+    HardwareProfile,
+    ModelProfile,
+    compute_hit_rate,
+    optimize_tiers,
 )
 
 
@@ -49,7 +57,7 @@ class TestExpertProfile:
 
     def test_save_load(self):
         p = get_predefined_profile("math", num_layers=4, num_experts=8)
-        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             path = f.name
         try:
             p.save(path)

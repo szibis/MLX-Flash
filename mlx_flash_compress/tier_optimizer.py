@@ -29,14 +29,15 @@ import numpy as np
 @dataclass
 class HardwareProfile:
     """Hardware characteristics for optimization."""
+
     total_ram_gb: float = 48.0
-    os_overhead_gb: float = 6.0   # OS + GPU buffers + non-expert weights
-    kv_cache_gb: float = 0.5     # KV cache for full context
+    os_overhead_gb: float = 6.0  # OS + GPU buffers + non-expert weights
+    kv_cache_gb: float = 0.5  # KV cache for full context
     ssd_bandwidth_gbs: float = 17.5
     ssd_latency_ms_per_mb: float = 0.057  # 1MB / 17.5 GB/s
-    gpu_layer_ms: float = 1.86   # non-I/O layer time
+    gpu_layer_ms: float = 1.86  # non-I/O layer time
     ram_decompress_gbs: float = 25.0  # LZ4 decompress speed
-    num_tb5_drives: int = 0      # external drives
+    num_tb5_drives: int = 0  # external drives
     tb5_bandwidth_gbs: float = 8.0
 
     @property
@@ -51,6 +52,7 @@ class HardwareProfile:
 @dataclass
 class ModelProfile:
     """Model characteristics for optimization."""
+
     total_expert_gb: float = 209.0
     num_layers: int = 60
     num_experts: int = 512
@@ -62,15 +64,16 @@ class ModelProfile:
 @dataclass
 class TierConfig:
     """A specific RAM/SSD tier configuration."""
-    ram_fraction: float         # fraction of experts in RAM
-    compression_ratio: float    # effective compression (1.0 = none, 1.8 = 2-bit)
+
+    ram_fraction: float  # fraction of experts in RAM
+    compression_ratio: float  # effective compression (1.0 = none, 1.8 = 2-bit)
     ram_experts: int
     ssd_experts: int
     ram_gb_used: float
-    hit_rate: float            # fraction of accesses served from RAM
-    effective_io_ms: float     # average I/O time per layer
-    layer_ms: float            # total layer time
-    tok_per_s: float           # projected throughput
+    hit_rate: float  # fraction of accesses served from RAM
+    effective_io_ms: float  # average I/O time per layer
+    layer_ms: float  # total layer time
+    tok_per_s: float  # projected throughput
 
 
 def compute_hit_rate(
@@ -158,17 +161,19 @@ def optimize_tiers(
             layer_ms = hw.gpu_layer_ms + effective_io
             tps = 1000 / (model.num_layers * layer_ms)
 
-            results.append(TierConfig(
-                ram_fraction=ram_frac,
-                compression_ratio=comp_ratio,
-                ram_experts=ram_experts,
-                ssd_experts=ssd_experts,
-                ram_gb_used=ram_gb,
-                hit_rate=hit_rate,
-                effective_io_ms=effective_io,
-                layer_ms=layer_ms,
-                tok_per_s=tps,
-            ))
+            results.append(
+                TierConfig(
+                    ram_fraction=ram_frac,
+                    compression_ratio=comp_ratio,
+                    ram_experts=ram_experts,
+                    ssd_experts=ssd_experts,
+                    ram_gb_used=ram_gb,
+                    hit_rate=hit_rate,
+                    effective_io_ms=effective_io,
+                    layer_ms=layer_ms,
+                    tok_per_s=tps,
+                )
+            )
 
     results.sort(key=lambda c: -c.tok_per_s)
     return results
@@ -219,7 +224,9 @@ def main():
     print(f"{'=' * 70}\n")
     print(f"  Available RAM for cache: {hw.available_ram_gb:.1f} GB")
     print(f"  Total SSD bandwidth: {hw.total_ssd_bandwidth:.1f} GB/s")
-    print(f"  Model: {model.num_layers} layers × {model.num_experts} experts × {model.expert_size_mb:.2f} MB = {model.total_expert_gb:.0f} GB")
+    print(
+        f"  Model: {model.num_layers} layers × {model.num_experts} experts × {model.expert_size_mb:.2f} MB = {model.total_expert_gb:.0f} GB"
+    )
     print()
 
     results = optimize_tiers(hw, model)
@@ -229,22 +236,26 @@ def main():
     headers = ["#", "Compress", "RAM GB", "RAM Experts", "Hit Rate", "I/O ms", "Layer ms", "tok/s"]
     rows = []
     for i, cfg in enumerate(results[:10]):
-        rows.append([
-            str(i + 1),
-            f"{cfg.compression_ratio:.1f}x",
-            f"{cfg.ram_gb_used:.1f}",
-            str(cfg.ram_experts),
-            f"{cfg.hit_rate:.1%}",
-            f"{cfg.effective_io_ms:.2f}",
-            f"{cfg.layer_ms:.2f}",
-            f"{cfg.tok_per_s:.1f}",
-        ])
+        rows.append(
+            [
+                str(i + 1),
+                f"{cfg.compression_ratio:.1f}x",
+                f"{cfg.ram_gb_used:.1f}",
+                str(cfg.ram_experts),
+                f"{cfg.hit_rate:.1%}",
+                f"{cfg.effective_io_ms:.2f}",
+                f"{cfg.layer_ms:.2f}",
+                f"{cfg.tok_per_s:.1f}",
+            ]
+        )
     print_table(headers, rows)
 
     best = results[0]
-    worst_ssd = [r for r in results if r.ram_experts == 0][0] if any(r.ram_experts == 0 for r in results) else results[-1]
+    worst_ssd = (
+        [r for r in results if r.ram_experts == 0][0] if any(r.ram_experts == 0 for r in results) else results[-1]
+    )
 
-    print(f"\n  BEST CONFIG:")
+    print("\n  BEST CONFIG:")
     print(f"    Compression: {best.compression_ratio:.1f}x")
     print(f"    RAM: {best.ram_gb_used:.1f} GB ({best.ram_experts} experts)")
     print(f"    SSD: {best.ssd_experts} experts")
@@ -257,7 +268,7 @@ def main():
     best_ratio_results = [r for r in results if abs(r.compression_ratio - best.compression_ratio) < 0.01]
     best_ratio_results.sort(key=lambda r: r.ram_gb_used)
 
-    for r in best_ratio_results[::max(1, len(best_ratio_results) // 15)]:
+    for r in best_ratio_results[:: max(1, len(best_ratio_results) // 15)]:
         bar = "#" * int(r.tok_per_s / best.tok_per_s * 30)
         marker = " ← BEST" if abs(r.tok_per_s - best.tok_per_s) < 0.01 else ""
         print(f"    {r.ram_gb_used:5.1f}GB RAM  {r.hit_rate:5.1%} hit  {r.tok_per_s:5.1f} tok/s  {bar}{marker}")

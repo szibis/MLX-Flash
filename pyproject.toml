@@ -1,6 +1,6 @@
 [project]
 name = "mlx-flash"
-version = "0.6.2"
+version = "0.7.0"
 description = "Run AI models too large for your Mac's memory — expert caching, speculative execution, and 15+ research techniques for MoE inference on Apple Silicon"
 readme = "PYPI_README.md"
 license = {text = "MIT"}
@@ -68,3 +68,29 @@ include = ["mlx_flash_compress*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "E741",   # ambiguous variable name (common in ML: l, I, O)
+    "F401",   # unused imports — lazy __init__.py pattern
+    "F811",   # redefinition — common in test fixtures
+    "F841",   # unused variable — common in tests and ML setup code
+    "W605",   # invalid escape sequence — common in docstrings
+]
+
+[tool.ruff.lint.per-file-ignores]
+"mlx_flash_compress/__init__.py" = ["F401", "E402"]
+"tests/*" = ["F401", "F811", "E402", "F841", "E721", "E712"]
+"scripts/*" = ["E402", "F401", "F841"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+no_strict_optional = true
+warn_unused_ignores = false

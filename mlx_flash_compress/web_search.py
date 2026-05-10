@@ -14,15 +14,15 @@ Usage in chat:
 
 import json
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # -- Web Search (DuckDuckGo HTML, no API key) --
+
 
 @dataclass
 class SearchResult:
@@ -39,11 +39,14 @@ def web_search(query: str, max_results: int = 5) -> list[SearchResult]:
         encoded = urllib.parse.quote_plus(query)
         url = f"https://html.duckduckgo.com/html/?q={encoded}"
 
-        req = urllib.request.Request(url, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-        })
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36",
+            },
+        )
 
         with urllib.request.urlopen(req, timeout=10) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
@@ -53,7 +56,8 @@ def web_search(query: str, max_results: int = 5) -> list[SearchResult]:
         result_blocks = re.findall(
             r'<a rel="nofollow" class="result__a" href="(.*?)">(.*?)</a>.*?'
             r'<a class="result__snippet".*?>(.*?)</a>',
-            html, re.DOTALL
+            html,
+            re.DOTALL,
         )
 
         for href, title, snippet in result_blocks[:max_results]:
@@ -70,10 +74,12 @@ def web_search(query: str, max_results: int = 5) -> list[SearchResult]:
             results.append(SearchResult(title=title, url=href, snippet=snippet))
 
     except Exception as e:
-        results.append(SearchResult(
-            title="Search failed",
-            snippet=str(e),
-        ))
+        results.append(
+            SearchResult(
+                title="Search failed",
+                snippet=str(e),
+            )
+        )
 
     return results
 
@@ -104,6 +110,7 @@ def build_search_context(query: str, results: list[SearchResult]) -> str:
 
 
 # -- Persistent Memory --
+
 
 @dataclass
 class Memory:

@@ -3,7 +3,8 @@
 import pytest
 
 try:
-    from mlx_flash_compress.chat import auto_select_model, MODELS
+    from mlx_flash_compress.chat import MODELS, auto_select_model
+
     HAS_CHAT = True
 except ImportError:
     HAS_CHAT = False

@@ -13,7 +13,6 @@ Deploy to HF Spaces:
 
 from dataclasses import dataclass
 
-
 # -- Model database --
 
 KNOWN_MODELS = {
@@ -29,10 +28,16 @@ KNOWN_MODELS = {
 }
 
 
-def estimate_model(model_name: str = "", total_params_b: float = 0,
-                   active_params_b: float = 0, num_experts: int = 0,
-                   num_layers: int = 32, quant_bits: int = 4,
-                   ram_gb: float = 36, cache_capacity_pct: float = 50) -> dict:
+def estimate_model(
+    model_name: str = "",
+    total_params_b: float = 0,
+    active_params_b: float = 0,
+    num_experts: int = 0,
+    num_layers: int = 32,
+    quant_bits: int = 4,
+    ram_gb: float = 36,
+    cache_capacity_pct: float = 50,
+) -> dict:
     """Estimate memory, compression, and performance for a model.
 
     Args:
@@ -64,13 +69,13 @@ def estimate_model(model_name: str = "", total_params_b: float = 0,
 
     # Model size estimates
     bytes_per_param = quant_bits / 8
-    total_size_gb = total_params_b * 1e9 * bytes_per_param / (1024 ** 3)
-    active_size_gb = active_params_b * 1e9 * bytes_per_param / (1024 ** 3)
+    total_size_gb = total_params_b * 1e9 * bytes_per_param / (1024**3)
+    active_size_gb = active_params_b * 1e9 * bytes_per_param / (1024**3)
 
     # KV cache estimate (4096 context, fp16)
     head_dim = 128
     num_heads = max(32, int(active_params_b * 4))  # rough estimate
-    kv_per_layer_mb = 2 * num_heads * head_dim * 4096 * 2 / (1024 ** 2)
+    kv_per_layer_mb = 2 * num_heads * head_dim * 4096 * 2 / (1024**2)
     kv_total_gb = kv_per_layer_mb * num_layers / 1024
 
     # With KV 8-bit quantization
@@ -150,7 +155,7 @@ def format_estimate(est: dict) -> str:
     lines.append(f"{'═' * 50}")
     lines.append(f"  Model: {est['model']} ({est['type']})")
     lines.append(f"  Params: {est['total_params_b']}B total, {est['active_params_b']}B active")
-    if est['num_experts'] > 0:
+    if est["num_experts"] > 0:
         lines.append(f"  Experts: {est['num_experts']} per layer × {est['num_layers']} layers")
     lines.append(f"  Quant: {est['quant_bits']}-bit")
     lines.append(f"{'─' * 50}")
@@ -179,7 +184,7 @@ def main():
     for i, (name, info) in enumerate(KNOWN_MODELS.items(), 1):
         print(f"  {i}. {name} ({info['total_b']}B, {info['type']})")
 
-    print(f"\n  Enter model number or name (or 'q' to quit):")
+    print("\n  Enter model number or name (or 'q' to quit):")
 
     while True:
         try:
@@ -187,7 +192,7 @@ def main():
         except (EOFError, KeyboardInterrupt):
             break
 
-        if choice.lower() in ('q', 'quit', 'exit'):
+        if choice.lower() in ("q", "quit", "exit"):
             break
 
         # Try as number

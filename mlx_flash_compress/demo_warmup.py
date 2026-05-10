@@ -20,18 +20,19 @@ import os
 import shutil
 import sys
 import time
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
-from mlx_flash_compress.lcp_cache import LCPCache
 from mlx_flash_compress.hardware import detect_hardware
+from mlx_flash_compress.lcp_cache import LCPCache
 
 
 @dataclass
 class TokenMetrics:
     """Metrics for a single generated token."""
+
     token_idx: int
     time_ms: float
     cache_hits: int
@@ -44,6 +45,7 @@ class TokenMetrics:
 @dataclass
 class WarmupSession:
     """A session of tokens with warm-up tracking."""
+
     topic: str
     token_metrics: list[TokenMetrics] = field(default_factory=list)
 
@@ -62,8 +64,7 @@ class WarmupSession:
         return first / last if last > 0 else 0
 
 
-def create_expert_files(work_dir: str, num_layers: int, num_experts: int,
-                        expert_size_bytes: int = 256 * 1024) -> Path:
+def create_expert_files(work_dir: str, num_layers: int, num_experts: int, expert_size_bytes: int = 256 * 1024) -> Path:
     """Create synthetic expert weight files on disk."""
     expert_dir = Path(work_dir) / "warmup_experts"
     if expert_dir.exists():
@@ -148,8 +149,7 @@ def simulate_token(
     return hits, misses, elapsed_ms
 
 
-def print_token_bar(idx: int, time_ms: float, hit_rate: float, cum_hit_rate: float,
-                    topic: str, max_time_ms: float):
+def print_token_bar(idx: int, time_ms: float, hit_rate: float, cum_hit_rate: float, topic: str, max_time_ms: float):
     """Print a single token's metrics as a visual bar."""
     # Speed bar (inverse of time)
     if max_time_ms > 0:
@@ -167,9 +167,7 @@ def print_token_bar(idx: int, time_ms: float, hit_rate: float, cum_hit_rate: flo
     else:
         status = "cold"
 
-    sys.stdout.write(
-        f"\r  [{idx:>4d}] {time_ms:>6.1f}ms  hit:{cum_hit_rate:>5.1%}  {bar}  {status}  [{topic}]"
-    )
+    sys.stdout.write(f"\r  [{idx:>4d}] {time_ms:>6.1f}ms  hit:{cum_hit_rate:>5.1%}  {bar}  {status}  [{topic}]")
     sys.stdout.flush()
 
 
@@ -194,9 +192,7 @@ def run_warmup_session(
     max_time = 0
 
     for i in range(num_tokens):
-        hits, misses, time_ms = simulate_token(
-            cache, num_layers, probs, num_experts, k, rng, ssd_latency_ms
-        )
+        hits, misses, time_ms = simulate_token(cache, num_layers, probs, num_experts, k, rng, ssd_latency_ms)
         cum_hits += hits
         cum_total += hits + misses
         cum_hit_rate = cum_hits / cum_total if cum_total > 0 else 0
@@ -282,21 +278,17 @@ def print_session_summary(sessions: list[WarmupSession]):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="MLX-Flash: Progressive Warm-up Demo"
-    )
+    parser = argparse.ArgumentParser(description="MLX-Flash: Progressive Warm-up Demo")
     parser.add_argument("--layers", type=int, default=24, help="Number of layers")
     parser.add_argument("--experts", type=int, default=60, help="Experts per layer")
     parser.add_argument("--k", type=int, default=4, help="Top-K routing")
     parser.add_argument("--tokens", type=int, default=100, help="Tokens per topic")
-    parser.add_argument("--ssd-latency", type=float, default=0.6,
-                        help="Simulated SSD read latency per expert (ms)")
+    parser.add_argument("--ssd-latency", type=float, default=0.6, help="Simulated SSD read latency per expert (ms)")
     parser.add_argument("--cache-mb", type=int, default=512, help="Cache size in MB")
-    parser.add_argument("--topics", nargs="+",
-                        default=["coding", "writing", "coding", "math"],
-                        help="Topic sequence to demonstrate")
-    parser.add_argument("--expert-size-kb", type=int, default=256,
-                        help="Expert weight size in KB")
+    parser.add_argument(
+        "--topics", nargs="+", default=["coding", "writing", "coding", "math"], help="Topic sequence to demonstrate"
+    )
+    parser.add_argument("--expert-size-kb", type=int, default=256, help="Expert weight size in KB")
     parser.add_argument("--work-dir", default="/tmp/mlx_warmup_demo")
     args = parser.parse_args()
 
@@ -314,13 +306,17 @@ def main():
     # Create expert files
     print(f"\n  Creating {args.layers * args.experts} expert files...")
     expert_dir = create_expert_files(
-        args.work_dir, args.layers, args.experts,
+        args.work_dir,
+        args.layers,
+        args.experts,
         args.expert_size_kb * 1024,
     )
     total_mb = args.layers * args.experts * args.expert_size_kb / 1024
     print(f"  Total expert data: {total_mb:.0f} MB on disk")
-    print(f"  Cache can hold: {args.cache_mb / (args.expert_size_kb / 1024):.0f} experts "
-          f"({args.cache_mb / total_mb * 100:.0f}% of total)")
+    print(
+        f"  Cache can hold: {args.cache_mb / (args.expert_size_kb / 1024):.0f} experts "
+        f"({args.cache_mb / total_mb * 100:.0f}% of total)"
+    )
 
     # Create cache
     cache = LCPCache(

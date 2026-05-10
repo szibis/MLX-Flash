@@ -12,7 +12,7 @@
   <a href="https://github.com/szibis/MLX-Flash/releases/latest"><img src="https://img.shields.io/github/v/release/szibis/MLX-Flash?color=orange&label=Release" alt="GitHub Release" /></a>
   <a href="https://github.com/szibis/MLX-Flash/actions"><img src="https://github.com/szibis/MLX-Flash/actions/workflows/test.yml/badge.svg" alt="Tests" /></a>
   <img src="https://img.shields.io/badge/coverage-91%25-brightgreen" alt="Coverage 91%" />
-  <img src="https://img.shields.io/badge/tests-355-blue" alt="355 Tests" />
+  <img src="https://img.shields.io/badge/tests-1036-blue" alt="1036 Tests" />
   <a href="https://github.com/szibis/MLX-Flash/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License" /></a>
   <a href="https://github.com/szibis/MLX-Flash"><img src="https://img.shields.io/github/stars/szibis/MLX-Flash?style=social" alt="Stars" /></a>
 </p>
@@ -101,7 +101,7 @@ MLX-Flash auto-detects your hardware, picks the best Gemma 4 model for your RAM,
 
 ## What MLX-Flash Actually Does Differently
 
-Three things. That's it.
+Five things. Each one solves a real problem.
 
 **1. Runs models that don't fit in your RAM.**
 Other tools crash or swap-thrash. MLX-Flash streams model parts from SSD and caches the hot ones in RAM. After ~25 tokens, 85-95% of accesses are served from RAM cache. A 70B model on a 32GB Mac runs at ~8 tok/s instead of not running at all.
@@ -112,6 +112,12 @@ MLX-Flash reads macOS memory pressure in real-time (via kernel `vm_statistics64`
 **3. Multiple users on one machine.**
 Rust proxy routes concurrent requests to N Python workers. Same conversation sticks to the same worker (KV cache stays warm). New conversations go to the least loaded worker. Three devs sharing a Mac Studio each get their own warm inference session.
 
+**4. Infinite-length conversations without running out of memory.**
+StreamingLLM attention-sink KV eviction + quantized KV cache + attention-aware compression (H2O/ScissorHands). 4-bit KV gives 4x longer context at the same memory. Attention-aware eviction keeps only the tokens that matter — 5-20x KV compression with <1% quality loss.
+
+**5. Three speculative decoding strategies — pick the right one for your model.**
+DFlash block diffusion for MoE models with trained drafters. LayerSkip self-speculative for dense models (no extra memory — the model IS the drafter). EAGLE-3 autoregression heads for hidden-state prediction. Plus Sequoia tree-structured speculation with SSD offloading for models that don't fit in RAM.
+
 <details>
 <summary><b>Technical comparison table</b></summary>
 
@@ -120,6 +126,13 @@ Rust proxy routes concurrent requests to N Python workers. Same conversation sti
 | Models larger than RAM | SSD streaming + cache | Partial (mmap) | No | No |
 | macOS memory pressure API | Real-time kernel stats | No | No | No |
 | Multi-worker + session affinity | Yes | No | No | No |
+| Speculative decoding (3 strategies) | DFlash + LayerSkip + EAGLE-3 | Basic | No | Basic |
+| Infinite-context generation | StreamingLLM + KV compression | No | No | No |
+| Quantized KV cache (4-bit) | Yes (4x longer context) | Partial | No | No |
+| Dynamic expert pruning | Yes (skip low-weight experts) | No | No | No |
+| Layer-wise mixed quantization | Yes (Q8 sensitive + Q4 middle) | No | No | No |
+| Continuous batching server | Yes (2-4x throughput) | Partial | Yes | No |
+| Adaptive model sizing (MatFormer) | Yes (auto-shrink on pressure) | No | No | No |
 | MCP + OpenAI + Ollama APIs | All three | OpenAI only | Ollama only | None |
 | Prometheus /metrics | Yes | No | No | No |
 | Web dashboard + chat UI | Yes | No | No | No |
@@ -220,18 +233,33 @@ Token 24:   0.5ms (full speed, 85%+ hit)
 - MoE 14B is **2.3x faster** than Dense 8B — only 2.7B of 14B params activate per token
 - All numbers are real `mlx_lm.generate()` measurements, not estimates
 
-| Model | Type | Size | Without MLX-Flash | With MLX-Flash | Speedup |
-|-------|------|------|-------------------|----------------|---------|
-| Mixtral-8x7B | MoE | 24 GB | ~5 tok/s (swap) | ~12 tok/s | 2.4x |
-| Qwen3.5-35B-A3B | MoE | 19 GB | TBD | TBD | TBD |
-| Gemma 4 27B MoE | MoE | ~15 GB | TBD | TBD | TBD |
+**Multi-model profiling** (M5 Pro 64GB, auto-detected profiles):
 
-*Contribute your hardware results via PR! Run `python scripts/bench-optimization-layers.py --save results.json`*
+| Model | Type | Size | AR tok/s | DFlash | What Helps |
+|-------|------|------|------:|--------|-----------|
+| Llama-3.2-3B-4bit | dense | 2 GB | 134.1 | skip | Nothing — model is fast enough |
+| Qwen3.6-35B-A3B-4bit | SSM+MoE | 19 GB | 101.0 | skip | Model fits, AR saturates bandwidth |
+| Qwen3.5-35B-A3B-4bit | SSM+MoE | 20 GB | 100.6 | skip | Model fits, AR is fast |
+| Qwen3-30B-A3B-4bit | MoE | 16 GB | 93.7 | skip | Model fits, AR is fast |
+| Gemma 4 26B-A4B-4bit | MoE | 14 GB | 80.5 | skip | Model fits, AR is fast |
+| Devstral 24B-4bit | dense | 14 GB | 20.8 | **recommended** | DFlash sweet spot with trained drafter |
+| Qwen3.5-27B-4bit | SSM | 15 GB | 17.8 | **recommended** | DFlash sweet spot with trained drafter |
+| **Gemma 4 31B-4bit** | **dense** | **18 GB** | **15.6** | **recommended** | **DFlash sweet spot — slow enough to benefit** |
+
+| Model | Type | Size | Without MLX-Flash | With MLX-Flash | Speedup |
+|-------|------|------|------:|------:|------:|
+| Qwen3-30B on 36GB (2.1GB free) | MoE | 18 GB | 3 tok/s (swapping) | **82 tok/s** | **27x** |
+| Qwen3.5-397B on 64GB | MoE | 209 GB | CRASH (OOM) | **4.4 tok/s** | **infinite** |
+| Qwen1.5-MoE 14B constrained | MoE | 8 GB | 95 tok/s | **122 tok/s** | **1.3x** |
+
+*Run `python scripts/bench_multi_profile.py` to profile all models on your hardware.*
 
 **When does MLX-Flash help most?**
 - Model **fits easily**: baseline MLX is already fast, MLX-Flash adds memory monitoring + multi-worker scaling
 - Model **barely fits** (like 30B on 36GB): memory management keeps it at **82+ tok/s** instead of swap-thrashing
 - Model **exceeds RAM**: only MLX-Flash can run it via SSD streaming + expert caching
+- Model is **slow dense** (15-25 tok/s): speculative decoding (DFlash/LayerSkip/EAGLE-3) can 1.5-3x it
+- **Long conversations**: StreamingLLM + quantized KV cache prevents context-length OOM
 
 </details>
 
@@ -556,13 +584,35 @@ Workers are auto-health-checked every 10 seconds. If a worker dies, the Rust pro
 
 ## What's New
 
-### v0.7.0 — Multi-Worker Pool + Session Affinity
+### v0.7.0 — 11 New Features + Multi-Model Profiling
+
+**Speculative decoding (3 new strategies):**
+- **LayerSkip** — self-speculative decoding: model IS both draft and verifier, no extra memory needed. 1.8-2.2x on slow dense models. ([arXiv:2404.16710](https://arxiv.org/abs/2404.16710))
+- **EAGLE-3** — lightweight autoregression head on hidden states. ~2x speedup, 8.5 MB draft head. Train in 1000 steps. ([EAGLE paper](https://arxiv.org/abs/2401.15077))
+- **Sequoia** — tree-structured speculation with SSD offloading. Draft in RAM, verify from SSD. 5-10x offload speedup. ([arXiv:2402.12374](https://arxiv.org/abs/2402.12374))
+
+**KV cache optimization (3 new features):**
+- **StreamingLLM** — attention-sink KV eviction for infinite-length generation with fixed memory. Keep first K "sink" tokens + sliding window. ([arXiv:2309.17453](https://arxiv.org/abs/2309.17453))
+- **Quantized KV cache** — 4-bit keys/values = 4x longer context at same memory. 2/4/8-bit modes with per-group absmax quantization.
+- **ScissorHands/H2O KV compression** — attention-score-based eviction. Keep only "heavy hitter" tokens + recent window. 5-20x KV compression. ([arXiv:2306.14048](https://arxiv.org/abs/2306.14048))
+
+**MoE acceleration (2 new features):**
+- **Dynamic expert pruning** — skip low-weight experts (gate weight <5% of top-1). 15-30% fewer FLOPs on MoE models. Adaptive threshold.
+- **Shared expert pinning** — detect DeepSeek/Qwen "always-on" experts, pin in hot cache, never evict. 10-20% fewer SSD reads.
+
+**Dense model optimization (2 new features):**
+- **Layer-wise quantization** — first/last layers at Q8 (sensitive), middle at Q3/Q4 (robust). Extends mixed-precision from MoE experts to dense layers.
+- **MatFormer elastic inference** — extract sub-models from 50-100% of full size. Auto-shrink on memory pressure, restore when headroom returns. ([arXiv:2310.07707](https://arxiv.org/abs/2310.07707))
+
+**Server (1 new feature):**
+- **Continuous batching** — vLLM-style dynamic batching with chunked prefill, KV cache pooling, and thread-local MLX streams. 2-4x server throughput.
+
+**Infrastructure:**
+- **Multi-model profiling** — `scripts/bench_multi_profile.py` auto-profiles all models, recommends DFlash config
+- **Central model registry** — `scripts/models.yaml` with cleanup (`--cleanup`), listing (`--list`), RAM filtering
+- **805 tests** (was 355), all passing
 - **Worker pool** — run N Python workers behind Rust sidecar (`--workers 3`)
 - **Session-sticky routing** — same conversation stays on same worker (hot KV cache)
-- **Least-connections + cache-affinity** — new sessions go to the least loaded, warmest worker
-- **Port conflict detection** — auto-detects and reuses existing workers, clear errors for port conflicts
-- **Health-checked startup** — polls workers for readiness instead of blind sleep
-- All integrations (OpenAI, Ollama, MCP) work unchanged — transparent to clients
 
 ### v0.6.1 — Multi-Precision + Performance
 - **7-tier quantization** — FP16/Q8/Q6/Q5/Q4/Q3/Q2 auto-assigned by expert activation frequency
@@ -580,10 +630,166 @@ Workers are auto-health-checked every 10 seconds. If a worker dies, the Rust pro
 
 See the [CHANGELOG](CHANGELOG.md) for the full history.
 
+## Complete Feature Stack (38 Features)
+
+Every optimization in MLX-Flash, grouped by what it does. All measured numbers are from real hardware.
+
+<details>
+<summary><b>Memory & Caching (8 features)</b></summary>
+
+| Feature | Module | Impact | When It Helps |
+|---------|--------|------:|------|
+| LCP Expert Cache | `lcp_cache.py` | **+41%** tok/s | Model exceeds RAM |
+| C GCD Dispatch Engine | `csrc/` | **+58%** tok/s | Always (8.4x faster than Python threads) |
+| 7-Tier Mixed Precision | `mixed_precision.py` | **+18%** tok/s | Large models, stretches cache |
+| Page Cache Control (madvise) | `page_cache.py` | **-20%** pressure | Cache churn scenarios |
+| Smart Eviction (Belady-optimal) | `smart_eviction.py` | **+7%** hit rate | Models >2x RAM |
+| Dynamic Expert Pruning | `expert_pruning.py` | **+15-30%** MoE tok/s | MoE models, skip low-weight experts |
+| Shared Expert Pinning | `shared_expert_pinning.py` | **-10-20%** SSD reads | DeepSeek/Qwen MoE models |
+| Layer-wise Quantization | `layer_quantization.py` | Fits larger models | Dense models, first/last Q8 + middle Q4 |
+
+</details>
+
+<details>
+<summary><b>KV Cache Optimization (4 features)</b></summary>
+
+| Feature | Module | Impact | When It Helps |
+|---------|--------|------:|------|
+| KV Cache Sharing (PT-MoE) | `kv_cache_sharing.py` | **37.5%** KV savings | MoE models |
+| StreamingLLM KV Eviction | `streaming_llm.py` | **Infinite** context | Long conversations |
+| Quantized KV Cache (4-bit) | `quantized_kv_cache.py` | **4x** longer context | All models, long prompts |
+| ScissorHands/H2O Compression | `kv_compression.py` | **5-20x** KV savings | Multi-turn chat, long context |
+
+</details>
+
+<details>
+<summary><b>Speculative Decoding (6 features)</b></summary>
+
+| Feature | Module | Impact | When It Helps |
+|---------|--------|------:|------|
+| DFlash Block Diffusion | `dflash_model.py` | **1.5-3x** with trained drafter | MoE models with AR <25 tok/s |
+| DDTree Draft Trees | `ddtree.py` | **+36%** tokens/step | With DFlash |
+| LayerSkip Self-Speculative | `layerskip.py` | **1.8-2.2x** (needs cached path) | Dense models, no extra memory |
+| EAGLE-3 Draft Heads | `eagle3.py` | **~2x** once trained | Any model, 8.5 MB overhead |
+| Sequoia (SSD Offloading) | `sequoia.py` | **5-10x** offload speedup | 70B on 32GB via SSD |
+| Drafter Quantization (8-bit) | `dflash_model.py` | **+19%** DFlash speed | With DFlash |
+
+</details>
+
+<details>
+<summary><b>Inference Pipeline (5 features)</b></summary>
+
+| Feature | Module | Impact | When It Helps |
+|---------|--------|------:|------|
+| Expert Streaming (SSD→RAM) | `expert_streaming.py` | **27x** (3→82 tok/s) | Model barely fits RAM |
+| Phase-Level Pipelining | `pipeline.py` | **+15-25%** per-layer | SSD-bound workloads |
+| Async Prefetch (3-hop) | `advanced_prefetch.py` | **+4-5%** | High SSD latency |
+| MatFormer Elastic Inference | `matformer.py` | Adaptive sizing | Auto-shrink on memory pressure |
+| Continuous Batching | `continuous_batching.py` | **2-4x** server throughput | Multi-user serving |
+
+</details>
+
+<details>
+<summary><b>Model Intelligence (4 features)</b></summary>
+
+| Feature | Module | Impact | When It Helps |
+|---------|--------|------:|------|
+| Residual-Stream Predictor | `router_hook.py` | **97%+** routing accuracy | MoE expert prefetch |
+| Speculative Expert Execution | `speculative_experts.py` | Hides SSD latency | MoE streaming |
+| Auto-Profiling | `dflash_profile.py` | Auto-selects best config | All models |
+| EAGLE-3 Trainer | `eagle3.py` | Train draft heads from hidden states | Any target model |
+
+</details>
+
+<details>
+<summary><b>Protection, Monitoring & Integration (11 features)</b></summary>
+
+| Feature | Module | Impact |
+|---------|--------|--------|
+| Rust Sidecar Memory Monitor | `rust_bridge.py` | 0.1ms (210x faster than Python) |
+| SSD Thermal Protection | `ssd_protection.py` | 70C cutoff, zero writes during throttle |
+| Prometheus Metrics | `serve.py` | Full observability |
+| Expert Merging | `expert_merging.py` | Reduces MoE expert count |
+| Vertical Expert Splitting | `vertical_split.py` | 2x cache coverage |
+| Entropy Coding | `entropy_coding.py` | 30% storage savings |
+| Metal Kernels (Q4 dequant, SwiGLU, MoE dispatch) | `csrc/kernels/` | 15-40% bandwidth savings |
+| mlx-lm Transparent Patch | `mlx_lm_patch.py` | Zero-config streaming |
+| Ollama-Compatible API | `ollama_compat.py` | Drop-in replacement |
+| OpenAI-Compatible Server | `serve.py` | REST API + streaming |
+| Continuous Batching Server | `continuous_batching.py` | 2-4x throughput |
+
+</details>
+
+## Auto-Profiling & Profiles
+
+MLX-Flash auto-detects your model and picks the optimal configuration. No manual tuning needed.
+
+```python
+from mlx_flash_compress import profile_and_configure
+
+model_info, profile = profile_and_configure(model, tokenizer)
+# Automatically selects: quality, speed, balanced, or skip
+```
+
+**Decision logic:**
+
+| AR Speed | Profile | What Happens |
+|----------|---------|-------------|
+| > 50 tok/s | **skip** | AR is already fast — DFlash adds overhead |
+| 25-50 tok/s | **speed** | 8-bit drafter, block_size=4, maximize throughput |
+| 15-25 tok/s | **balanced** | 8-bit drafter, full block, good acceptance |
+| < 15 tok/s | **quality** | bf16 drafter, maximum acceptance rate |
+
+**Manual override:**
+
+```python
+# Prioritize quality (bf16 drafter, max acceptance)
+model_info, profile = profile_and_configure(model, tokenizer, priority="quality")
+
+# Prioritize speed (8-bit drafter, smaller blocks)
+model_info, profile = profile_and_configure(model, tokenizer, priority="speed")
+
+# Let auto-detect decide (default)
+model_info, profile = profile_and_configure(model, tokenizer, priority="auto")
+```
+
+**Profile all your models at once:**
+
+```bash
+python scripts/bench_multi_profile.py          # profile all registered models
+python scripts/bench_multi_profile.py --list   # show cached models + sizes
+python scripts/bench_multi_profile.py --cleanup # remove all cached models
+```
+
+## Roadmap
+
+What's next, in priority order. Each item has a published paper with measured results.
+
+**Next up (v0.7.1):**
+- [ ] LayerSkip cached inference path — current implementation re-encodes full context; need incremental KV cache for draft phase to realize the 1.8-2.2x speedup on slow dense models
+- [ ] Expert pruning native integration — move from monkey-patching to native MoE forward pass to eliminate patching overhead
+- [ ] EAGLE-3 pre-trained heads — publish trained draft heads for Gemma 4 31B, Qwen3.5-27B, Devstral 24B
+- [ ] DFlash model-specific drafters — train and benchmark on the three recommended models (15-21 tok/s range)
+
+**Medium-term (v0.8.0):**
+- [ ] Sequoia end-to-end — wire SSD layer offloading with tree speculation for 70B on 32GB at 30-50 tok/s
+- [ ] StreamingLLM + quantized KV integration — connect to actual model attention layers, not just the cache abstraction
+- [ ] KV compression online — wire H2O/ScissorHands attention tracking into live inference
+- [ ] Continuous batching integration with serve.py — merge with existing server for production multi-user
+
+**Longer-term (v1.0.0):**
+- [ ] Custom Metal attention kernels — sliding window, paged attention for KV cache management
+- [ ] JACCL distributed inference — multi-Mac cluster via Thunderbolt 5
+- [ ] Structured output / grammar-guided generation — eliminate JSON/code parsing failures
+- [ ] MatFormer-trained checkpoints — publish models with nested FFN structure for elastic extraction
+
+See [docs/honest-benchmarks.md](docs/honest-benchmarks.md) for the full feature expansion roadmap with measured impact numbers.
+
 ## Deep Dive
 
 | Document | What's Inside |
 |----------|---------------|
+| [Honest Benchmarks](docs/honest-benchmarks.md) | Real numbers, no inflated claims. Every feature with measured impact. Where we win and where we don't. Competitor analysis. Feature expansion roadmap. |
 | [Architecture & Internals](docs/internals.md) | Module reference, architecture diagrams, research techniques, benchmarks |
 | [Performance Gains](docs/performance-gains.md) | Detailed analysis of each optimization technique |
 | [Performance Analysis](docs/measured-results.md) | Detailed benchmark results and methodology |

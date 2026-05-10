@@ -17,7 +17,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-
 KERNEL_DIR = Path(__file__).parent
 CACHE_DIR = Path.home() / ".cache" / "mlx-flash" / "kernels"
 
@@ -32,10 +31,7 @@ class MetalKernelLoader:
     @property
     def available(self) -> bool:
         if self._available is None:
-            self._available = (
-                sys.platform == "darwin"
-                and _has_metal_compiler()
-            )
+            self._available = sys.platform == "darwin" and _has_metal_compiler()
         return self._available
 
     def compile_shader(self, name: str) -> Optional[Path]:
@@ -58,18 +54,35 @@ class MetalKernelLoader:
         try:
             # Compile .metal → .air (intermediate)
             air_path = CACHE_DIR / f"{name}.air"
-            subprocess.run([
-                "xcrun", "-sdk", "macosx", "metal",
-                "-c", str(source),
-                "-o", str(air_path),
-            ], check=True, capture_output=True)
+            subprocess.run(
+                [
+                    "xcrun",
+                    "-sdk",
+                    "macosx",
+                    "metal",
+                    "-c",
+                    str(source),
+                    "-o",
+                    str(air_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
 
             # Link .air → .metallib
-            subprocess.run([
-                "xcrun", "-sdk", "macosx", "metallib",
-                str(air_path),
-                "-o", str(lib_path),
-            ], check=True, capture_output=True)
+            subprocess.run(
+                [
+                    "xcrun",
+                    "-sdk",
+                    "macosx",
+                    "metallib",
+                    str(air_path),
+                    "-o",
+                    str(lib_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
 
             # Clean up intermediate
             air_path.unlink(missing_ok=True)
@@ -101,7 +114,8 @@ def _has_metal_compiler() -> bool:
     try:
         result = subprocess.run(
             ["xcrun", "-sdk", "macosx", "metal", "--version"],
-            capture_output=True, timeout=5,
+            capture_output=True,
+            timeout=5,
         )
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):

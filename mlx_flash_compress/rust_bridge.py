@@ -1,4 +1,5 @@
 """Python client for the Rust expert cache Unix socket."""
+
 import json
 import socket
 import struct
@@ -18,7 +19,7 @@ def decode_message(buf: bytes) -> Optional[tuple[dict, int]]:
     length = struct.unpack(">I", buf[:4])[0]
     if len(buf) < 4 + length:
         return None
-    msg = json.loads(buf[4:4 + length])
+    msg = json.loads(buf[4 : 4 + length])
     return msg, 4 + length
 
 
@@ -58,11 +59,7 @@ class RustCacheClient:
         return buf
 
     def fetch_experts(self, layer: int, experts: list[int], request_id: int = 0) -> dict:
-        return self._send_recv({
-            "FetchExperts": {"layer": layer, "experts": experts, "request_id": request_id}
-        })
+        return self._send_recv({"FetchExperts": {"layer": layer, "experts": experts, "request_id": request_id}})
 
     def report_routing(self, layer: int, activated: list[int], token_idx: int) -> dict:
-        return self._send_recv({
-            "RoutingReport": {"layer": layer, "activated": activated, "token_idx": token_idx}
-        })
+        return self._send_recv({"RoutingReport": {"layer": layer, "activated": activated, "token_idx": token_idx}})

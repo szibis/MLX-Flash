@@ -1,13 +1,16 @@
 """Tests for web search and memory store."""
+
 import json
 import os
 import time
+
 import pytest
+
 from mlx_flash_compress.web_search import (
-    SearchResult,
-    format_search_results,
-    build_search_context,
     MemoryStore,
+    SearchResult,
+    build_search_context,
+    format_search_results,
 )
 
 

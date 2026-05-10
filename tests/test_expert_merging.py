@@ -1,12 +1,14 @@
 """Tests for offline expert merging."""
+
 import numpy as np
 import pytest
+
 from mlx_flash_compress.expert_merging import (
-    cosine_similarity_matrix,
-    plan_expert_merges,
-    apply_merges,
-    estimate_merge_savings,
     MergePlan,
+    apply_merges,
+    cosine_similarity_matrix,
+    estimate_merge_savings,
+    plan_expert_merges,
 )
 
 

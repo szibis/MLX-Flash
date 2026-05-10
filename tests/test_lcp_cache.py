@@ -9,10 +9,14 @@ import pytest
 
 from mlx_flash_compress.lcp_cache import LCPCache
 from mlx_flash_compress.mixed_precision import (
-    requantize_4bit_to_2bit, dequantize_2bit, ExpertHotness,
+    ExpertHotness,
+    dequantize_2bit,
+    requantize_4bit_to_2bit,
 )
 from mlx_flash_compress.smart_eviction import (
-    LeastStalePolicy, RoutingPredictor, simulate_prefetch,
+    LeastStalePolicy,
+    RoutingPredictor,
+    simulate_prefetch,
 )
 
 
@@ -38,7 +42,7 @@ class TestLCPCache:
         results = cache.fetch(0, [0, 1])
         sources = [r[1] for r in results]
         # Should be cold or skip (depends on dendritic)
-        assert all(s in ('cold', 'skip', 'dendritic_skip') for s in sources)
+        assert all(s in ("cold", "skip", "dendritic_skip") for s in sources)
 
         cache.advance_step()
         # Second fetch = cache hit
@@ -49,8 +53,9 @@ class TestLCPCache:
         cache.shutdown()
 
     def test_lcp_priority_decay(self, expert_dir):
-        cache = LCPCache(expert_dir=expert_dir, capacity_bytes=1024 * 1024,
-                        enable_dendritic=False, enable_skip_fallback=False)
+        cache = LCPCache(
+            expert_dir=expert_dir, capacity_bytes=1024 * 1024, enable_dendritic=False, enable_skip_fallback=False
+        )
         cache.fetch(0, [0])
         cache.advance_step()
 
@@ -64,33 +69,35 @@ class TestLCPCache:
         cache.shutdown()
 
     def test_prefetch(self, expert_dir):
-        cache = LCPCache(expert_dir=expert_dir, capacity_bytes=1024 * 1024,
-                        enable_dendritic=False, enable_skip_fallback=False)
+        cache = LCPCache(
+            expert_dir=expert_dir, capacity_bytes=1024 * 1024, enable_dendritic=False, enable_skip_fallback=False
+        )
         # Kick off async prefetch
         cache.prefetch(0, [0, 1])
         import time
+
         time.sleep(0.1)  # let prefetch complete
 
         # Fetch should find prefetched data
         results = cache.fetch(0, [0, 1])
-        has_prefetch = any(r[1] == 'prefetch' for r in results)
-        has_cache = any(r[1] == 'cache' for r in results)
+        has_prefetch = any(r[1] == "prefetch" for r in results)
+        has_cache = any(r[1] == "cache" for r in results)
         # Either prefetch hit or was inserted into cache already
         assert has_prefetch or has_cache or cache.stats.cold_loads > 0
         cache.shutdown()
 
     def test_skip_fallback(self, expert_dir):
-        cache = LCPCache(expert_dir=expert_dir, capacity_bytes=100,
-                        enable_skip_fallback=True, enable_dendritic=False)
+        cache = LCPCache(expert_dir=expert_dir, capacity_bytes=100, enable_skip_fallback=True, enable_dendritic=False)
         results = cache.fetch(0, [0, 1, 2, 3])
-        skip_count = sum(1 for r in results if r[1] == 'skip')
+        skip_count = sum(1 for r in results if r[1] == "skip")
         # With tiny cache, most should be skipped
         assert skip_count > 0
         cache.shutdown()
 
     def test_predict_next(self, expert_dir):
-        cache = LCPCache(expert_dir=expert_dir, capacity_bytes=1024 * 1024,
-                        enable_dendritic=False, enable_skip_fallback=False)
+        cache = LCPCache(
+            expert_dir=expert_dir, capacity_bytes=1024 * 1024, enable_dendritic=False, enable_skip_fallback=False
+        )
         # Build co-occurrence: layer 0 experts [0,1] → layer 1 experts [2,3]
         for _ in range(10):
             cache.advance_step()

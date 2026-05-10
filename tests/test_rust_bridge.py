@@ -1,8 +1,11 @@
 """Tests for the Python<->Rust Unix socket bridge protocol."""
+
 import json
 import struct
+
 import pytest
-from mlx_flash_compress.rust_bridge import encode_message, decode_message
+
+from mlx_flash_compress.rust_bridge import decode_message, encode_message
 
 
 class TestProtocol:

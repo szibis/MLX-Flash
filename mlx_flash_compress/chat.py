@@ -11,14 +11,16 @@ import sys
 import time
 
 import mlx.core as mx
-from mlx_lm import load, generate
+from mlx_lm import generate, load
 
 from mlx_flash_compress.hardware import detect_hardware
 from mlx_flash_compress.memory_manager import get_memory_state
 from mlx_flash_compress.web_search import (
-    web_search, format_search_results, build_search_context, MemoryStore,
+    MemoryStore,
+    build_search_context,
+    format_search_results,
+    web_search,
 )
-
 
 # -- Model catalog --
 
@@ -48,10 +50,10 @@ def auto_select_model(ram_gb: float) -> str:
 
     # Preference order: best Gemma 4 that fits, then best alternative
     gemma_preferences = [
-        ("mlx-community/gemma-4-31b-it-4bit", 20.0),       # 31B dense flagship
-        ("mlx-community/gemma-4-26b-it-4bit", 15.0),       # 26B MoE multimodal
-        ("mlx-community/gemma-4-E4B-it-4bit", 2.8),        # 4B edge
-        ("mlx-community/gemma-4-E2B-it-4bit", 1.5),        # 2B tiny
+        ("mlx-community/gemma-4-31b-it-4bit", 20.0),  # 31B dense flagship
+        ("mlx-community/gemma-4-26b-it-4bit", 15.0),  # 26B MoE multimodal
+        ("mlx-community/gemma-4-E4B-it-4bit", 2.8),  # 4B edge
+        ("mlx-community/gemma-4-E2B-it-4bit", 1.5),  # 2B tiny
     ]
 
     for model_name, size_gb in gemma_preferences:
@@ -63,6 +65,7 @@ def auto_select_model(ram_gb: float) -> str:
 
 
 # -- ANSI colors --
+
 
 class C:
     BOLD = "\033[1m"
@@ -88,6 +91,7 @@ def c(code, text):
 
 
 # -- UI components --
+
 
 def memory_bar(used_pct: float) -> str:
     bar_len = 25
@@ -125,7 +129,9 @@ def print_models(current_model: str, ram_gb: float, max_ram_pct: int = 75):
     budget = ram_gb * max_ram_pct / 100
 
     print(f"\n  {c(C.BOLD, '📦 Available Models')}")
-    print(f"  {c(C.DIM, f'   RAM: {ram_gb:.0f}GB total, {available:.1f}GB available, budget: {budget:.0f}GB ({max_ram_pct}% limit)')}")
+    print(
+        f"  {c(C.DIM, f'   RAM: {ram_gb:.0f}GB total, {available:.1f}GB available, budget: {budget:.0f}GB ({max_ram_pct}% limit)')}"
+    )
     print(f"  {c(C.DIM, '─' * 56)}")
 
     for i, (name, total, active, size, mtype, desc) in enumerate(MODELS, 1):
@@ -198,9 +204,7 @@ def print_help():
 def _fmt_prompt(tokenizer, messages):
     if hasattr(tokenizer, "apply_chat_template"):
         try:
-            return tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         except Exception:
             pass
     return "\n".join(f"{m['role']}: {m['content']}" for m in messages)
@@ -211,6 +215,7 @@ def load_model(model_name: str):
     if not os.path.isdir(model_name):
         try:
             from huggingface_hub import snapshot_download
+
             print(f"\n  {c(C.YELLOW, '⬇')}  Downloading {c(C.BOLD, model_name)}...")
             snapshot_download(
                 model_name,
@@ -229,7 +234,9 @@ def load_model(model_name: str):
 
     mem_after = get_memory_state()
     model_gb = max(mem_before.available_gb - mem_after.available_gb, 0)
-    print(f"  {c(C.GREEN, '✓')}  Loaded in {load_time:.1f}s (~{model_gb:.1f}GB, {mem_after.available_gb:.1f}GB remaining)")
+    print(
+        f"  {c(C.GREEN, '✓')}  Loaded in {load_time:.1f}s (~{model_gb:.1f}GB, {mem_after.available_gb:.1f}GB remaining)"
+    )
 
     if mem_after.pressure_level in ("warning", "critical"):
         print(f"  {c(C.RED, '⚠')}  Memory {_pressure_color(mem_after.pressure_level)} — try a smaller model")
@@ -239,15 +246,17 @@ def load_model(model_name: str):
 
 # -- Main --
 
+
 def main():
     parser = argparse.ArgumentParser(description="MLX-Flash: Interactive Chat")
-    parser.add_argument("--model", default=None,
-                        help="MLX model to chat with (default: auto-detect best Gemma 4 for your hardware)")
+    parser.add_argument(
+        "--model", default=None, help="MLX model to chat with (default: auto-detect best Gemma 4 for your hardware)"
+    )
     parser.add_argument("--max-tokens", type=int, default=512)
-    parser.add_argument("--max-ram-pct", type=int, default=75,
-                        help="Max RAM usage %% before blocking model load (default: 75)")
-    parser.add_argument("--system", default="You are a helpful AI assistant.",
-                        help="System prompt")
+    parser.add_argument(
+        "--max-ram-pct", type=int, default=75, help="Max RAM usage %% before blocking model load (default: 75)"
+    )
+    parser.add_argument("--system", default="You are a helpful AI assistant.", help="System prompt")
     args = parser.parse_args()
 
     print_header()
@@ -267,7 +276,9 @@ def main():
     # Auto-select best model if not specified
     if args.model is None:
         model_name = auto_select_model(hw.total_ram_gb)
-        print(f"  {c(C.CYAN, '🔍')} Auto-selected: {c(C.BOLD, model_name.split('/')[-1])} for {hw.total_ram_gb:.0f}GB RAM")
+        print(
+            f"  {c(C.CYAN, '🔍')} Auto-selected: {c(C.BOLD, model_name.split('/')[-1])} for {hw.total_ram_gb:.0f}GB RAM"
+        )
     else:
         model_name = args.model
     model, tokenizer = load_model(model_name)
@@ -301,17 +312,52 @@ def main():
 
         # Show command hints for incomplete slash commands
         if user_input == "/":
-            print(f"  {c(C.DIM, 'Commands: /help /models /model /search /ask /remember /memories /status /clear /quit')}")
+            print(
+                f"  {c(C.DIM, 'Commands: /help /models /model /search /ask /remember /memories /status /clear /quit')}"
+            )
             continue
 
-        if user_input.startswith("/") and user_input.lower() not in (
-            "/help", "/models", "/model", "/status", "/mem", "/memory",
-            "/clear", "/quit", "/exit", "/memories", "/mem-list",
-        ) and not any(user_input.lower().startswith(p) for p in (
-            "/model ", "/search ", "/ask ", "/remember ", "/forget ",
-        )):
+        if (
+            user_input.startswith("/")
+            and user_input.lower()
+            not in (
+                "/help",
+                "/models",
+                "/model",
+                "/status",
+                "/mem",
+                "/memory",
+                "/clear",
+                "/quit",
+                "/exit",
+                "/memories",
+                "/mem-list",
+            )
+            and not any(
+                user_input.lower().startswith(p)
+                for p in (
+                    "/model ",
+                    "/search ",
+                    "/ask ",
+                    "/remember ",
+                    "/forget ",
+                )
+            )
+        ):
             # Unknown command — suggest closest match
-            cmds = ["help", "models", "model", "search", "ask", "remember", "memories", "forget", "status", "clear", "quit"]
+            cmds = [
+                "help",
+                "models",
+                "model",
+                "search",
+                "ask",
+                "remember",
+                "memories",
+                "forget",
+                "status",
+                "clear",
+                "quit",
+            ]
             typed = user_input[1:].lower().split()[0] if len(user_input) > 1 else ""
             matches = [cmd for cmd in cmds if cmd.startswith(typed)]
             if matches:
@@ -371,8 +417,12 @@ def main():
             if model_size_gb:
                 budget_gb = mem.total_gb * args.max_ram_pct / 100
                 if model_size_gb > budget_gb:
-                    print(f"  {c(C.RED, '✗')}  Model needs ~{model_size_gb:.0f}GB but your budget is {budget_gb:.0f}GB ({args.max_ram_pct}% of {mem.total_gb:.0f}GB)")
-                    print(f"  {c(C.DIM, f'   Override with: --max-ram-pct {int(model_size_gb / mem.total_gb * 100) + 10}')}")
+                    print(
+                        f"  {c(C.RED, '✗')}  Model needs ~{model_size_gb:.0f}GB but your budget is {budget_gb:.0f}GB ({args.max_ram_pct}% of {mem.total_gb:.0f}GB)"
+                    )
+                    print(
+                        f"  {c(C.DIM, f'   Override with: --max-ram-pct {int(model_size_gb / mem.total_gb * 100) + 10}')}"
+                    )
                     print(f"  {c(C.DIM, '   Or choose a smaller model from /models')}")
                     continue
 
@@ -383,7 +433,9 @@ def main():
                 mx.clear_cache()
             except AttributeError:
                 pass
-            import gc; gc.collect()
+            import gc
+
+            gc.collect()
 
             # Set MLX memory limit to prevent system crash
             try:
@@ -452,8 +504,7 @@ def main():
 
                 print(f"\n  {c(C.MAGENTA, '◆ Assistant:')}", end=" ", flush=True)
                 t0 = time.monotonic()
-                output = generate(model, tokenizer, prompt=formatted,
-                                  max_tokens=args.max_tokens, verbose=False)
+                output = generate(model, tokenizer, prompt=formatted, max_tokens=args.max_tokens, verbose=False)
                 mx.synchronize()
                 elapsed = time.monotonic() - t0
 
@@ -531,7 +582,8 @@ def main():
         print(f"\n  {c(C.MAGENTA, '◆ Assistant:')}", end=" ", flush=True)
         t0 = time.monotonic()
         output = generate(
-            model, tokenizer,
+            model,
+            tokenizer,
             prompt=formatted,
             max_tokens=args.max_tokens,
             verbose=False,

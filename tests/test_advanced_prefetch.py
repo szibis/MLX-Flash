@@ -1,10 +1,12 @@
 """Tests for advanced prefetching: cross-layer and shadow model predictors."""
+
 import numpy as np
 import pytest
+
 from mlx_flash_compress.advanced_prefetch import (
     CrossLayerPredictor,
-    ShadowPredictor,
     PrefetchBenchResult,
+    ShadowPredictor,
     benchmark_predictors,
 )
 
@@ -131,9 +133,7 @@ class TestShadowPredictor:
 
 class TestBenchmarkPredictors:
     def test_benchmark_runs(self):
-        results = benchmark_predictors(
-            num_layers=4, num_experts=10, num_tokens=50, top_k=2, seed=42
-        )
+        results = benchmark_predictors(num_layers=4, num_experts=10, num_tokens=50, top_k=2, seed=42)
         assert len(results) == 3
         for r in results:
             assert isinstance(r, PrefetchBenchResult)
@@ -149,9 +149,7 @@ class TestBenchmarkPredictors:
 
     def test_shadow_beats_random(self):
         """Shadow predictor should beat random guessing (1/num_experts)."""
-        results = benchmark_predictors(
-            num_layers=8, num_experts=20, num_tokens=200, top_k=4, seed=42
-        )
+        results = benchmark_predictors(num_layers=8, num_experts=20, num_tokens=200, top_k=4, seed=42)
         shadow = [r for r in results if "shadow" in r.predictor_name][0]
         random_accuracy = 4 / 20  # top_k / num_experts
         assert shadow.avg_accuracy > random_accuracy

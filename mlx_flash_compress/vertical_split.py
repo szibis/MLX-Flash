@@ -15,13 +15,15 @@ contribute the most to the output. Caching top-half gives ~90-95%
 of the full expert's contribution.
 """
 
-import numpy as np
 from dataclasses import dataclass
+
+import numpy as np
 
 
 @dataclass
 class SplitConfig:
     """Configuration for vertical expert splitting."""
+
     split_factor: int = 2  # cache 1/split_factor of each expert
     exact_on_miss: bool = False  # load remaining rows on cache miss?
 
@@ -40,8 +42,7 @@ class VerticalSplitCache:
     Same memory footprint, double the expert coverage.
     """
 
-    def __init__(self, num_experts: int, rows: int, cols: int,
-                 capacity: int, split_factor: int = 2):
+    def __init__(self, num_experts: int, rows: int, cols: int, capacity: int, split_factor: int = 2):
         self.num_experts = num_experts
         self.rows = rows
         self.cols = cols
@@ -72,8 +73,7 @@ class VerticalSplitCache:
             "memory_per_expert_split": self.split_rows * self.cols,
         }
 
-    def plan_allocation(self, hot_expert_ids: list[int],
-                        warm_expert_ids: list[int]) -> dict:
+    def plan_allocation(self, hot_expert_ids: list[int], warm_expert_ids: list[int]) -> dict:
         """Plan how to allocate cache between full and partial experts.
 
         Hot experts: fully cached (all rows)
@@ -137,8 +137,7 @@ class VerticalSplitCache:
         }
 
 
-def estimate_split_benefit(num_experts: int, capacity: int,
-                           split_factor: int = 2) -> dict:
+def estimate_split_benefit(num_experts: int, capacity: int, split_factor: int = 2) -> dict:
     """Estimate the benefit of vertical splitting vs full caching.
 
     Assumes Zipf distribution of expert access (realistic for MoE).
@@ -153,7 +152,7 @@ def estimate_split_benefit(num_experts: int, capacity: int,
 
     # Split cache: top `capacity * split_factor` experts (partial)
     split_capacity = capacity * split_factor
-    split_cache_experts = np.argsort(probs)[-min(split_capacity, num_experts):]
+    split_cache_experts = np.argsort(probs)[-min(split_capacity, num_experts) :]
     split_hit_rate = probs[split_cache_experts].sum()
 
     # Effective split hit rate considers partial hits are ~90% as good

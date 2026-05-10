@@ -1,13 +1,16 @@
 """Tests for the inference server (no model loading)."""
+
 import json
 import sys
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 # Pre-import the module so mock.patch can resolve dotted paths.
 # The serve module imports mlx which may not be available.
 try:
     import mlx_flash_compress.serve
+
     HAS_SERVE = True
 except (ImportError, ModuleNotFoundError):
     HAS_SERVE = False
@@ -18,6 +21,7 @@ pytestmark = pytest.mark.skipif(not HAS_SERVE, reason="serve module requires mlx
 # ---------------------------------------------------------------------------
 # Helpers: build fake objects that stand in for hardware / memory state
 # ---------------------------------------------------------------------------
+
 
 def _make_fake_hw():
     hw = MagicMock()
@@ -62,10 +66,13 @@ def _make_state(model_name="test-model", pressure="normal"):
     fake_mgr = _make_fake_mem_mgr()
     fake_mem = _make_fake_mem(pressure)
 
-    with patch(HW_PATCH, return_value=_make_fake_hw()), \
-         patch(MGR_PATCH, return_value=fake_mgr), \
-         patch(MEM_PATCH, return_value=fake_mem):
+    with (
+        patch(HW_PATCH, return_value=_make_fake_hw()),
+        patch(MGR_PATCH, return_value=fake_mgr),
+        patch(MEM_PATCH, return_value=fake_mem),
+    ):
         from mlx_flash_compress.serve import InferenceState
+
         state = InferenceState(model_name)
 
     # Keep references so tests can inspect them
@@ -75,7 +82,6 @@ def _make_state(model_name="test-model", pressure="normal"):
 
 
 class TestInferenceState:
-
     def test_status_returns_valid_structure(self):
         state = _make_state()
         with patch(MEM_PATCH, return_value=_make_fake_mem()):
@@ -110,9 +116,11 @@ class TestInferenceState:
         state = _make_state()
         # load() raises because "nonexistent-model" can't be found;
         # we let it propagate to confirm load_model() is called.
-        with patch(MEM_PATCH, return_value=_make_fake_mem()), \
-             patch(LOAD_PATCH, side_effect=Exception("model not found")), \
-             patch(MX_PATCH):
+        with (
+            patch(MEM_PATCH, return_value=_make_fake_mem()),
+            patch(LOAD_PATCH, side_effect=Exception("model not found")),
+            patch(MX_PATCH),
+        ):
             with pytest.raises(Exception):
                 state.generate([{"role": "user", "content": "hi"}], max_tokens=5)
 

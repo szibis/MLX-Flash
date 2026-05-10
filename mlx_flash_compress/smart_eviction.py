@@ -19,10 +19,10 @@ Our implementation uses three signals:
   3. Layer affinity (experts in earlier layers are accessed more predictably)
 """
 
-import time
 import math
-from dataclasses import dataclass, field
+import time
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -31,6 +31,7 @@ import numpy as np
 @dataclass
 class ExpertAccessRecord:
     """Per-expert access history for eviction scoring."""
+
     total_count: int = 0
     recent_count: int = 0  # accesses in last N tokens
     last_token_pos: int = 0
@@ -70,9 +71,7 @@ class LeastStalePolicy:
         """Record an expert access event."""
         key = (layer_idx, expert_id)
         if key not in self._records:
-            self._records[key] = ExpertAccessRecord(
-                layer_idx=layer_idx, expert_id=expert_id
-            )
+            self._records[key] = ExpertAccessRecord(layer_idx=layer_idx, expert_id=expert_id)
         rec = self._records[key]
         rec.total_count += 1
         rec.last_token_pos = self._total_tokens
@@ -80,7 +79,7 @@ class LeastStalePolicy:
         self._recent_accesses.append(key)
         if len(self._recent_accesses) > self.recency_window * 4:
             # Trim to keep memory bounded
-            self._recent_accesses = self._recent_accesses[-self.recency_window:]
+            self._recent_accesses = self._recent_accesses[-self.recency_window :]
 
     def advance_token(self):
         """Call once per generated token to advance the clock."""
@@ -105,11 +104,7 @@ class LeastStalePolicy:
         # (tokens processed sequentially, router decisions correlate across positions)
         layer_score = 1.0 - (layer_idx / max(self.num_layers, 1))
 
-        return (
-            self.freq_w * freq +
-            self.rec_w * recency +
-            self.layer_w * layer_score
-        )
+        return self.freq_w * freq + self.rec_w * recency + self.layer_w * layer_score
 
     def select_eviction(
         self,
@@ -119,7 +114,7 @@ class LeastStalePolicy:
         if not cached_keys:
             raise ValueError("No cached keys to evict")
 
-        min_score = float('inf')
+        min_score = float("inf")
         min_key = cached_keys[0]
 
         for key in cached_keys:
@@ -161,9 +156,7 @@ class RoutingPredictor:
         # Co-occurrence matrix: for each layer pair (L, L+1),
         # count how often expert i at layer L co-occurs with expert j at L+1
         # Shape: (num_layers-1, num_experts, num_experts)
-        self._cooccurrence = np.zeros(
-            (num_layers - 1, num_experts, num_experts), dtype=np.float32
-        )
+        self._cooccurrence = np.zeros((num_layers - 1, num_experts, num_experts), dtype=np.float32)
         self._prev_experts: dict[int, list[int]] = {}
         self._total_observations = 0
 
@@ -200,7 +193,7 @@ class RoutingPredictor:
             # No data yet — return most globally frequent experts
             return list(range(min(self.top_k, self.num_experts)))
 
-        top_indices = np.argsort(scores)[-self.top_k:][::-1]
+        top_indices = np.argsort(scores)[-self.top_k :][::-1]
         return top_indices.tolist()
 
     def accuracy(self, predicted: list[int], actual: list[int]) -> float:
@@ -215,6 +208,7 @@ class RoutingPredictor:
 @dataclass
 class PrefetchResult:
     """Statistics from a prefetch simulation run."""
+
     total_predictions: int = 0
     correct_predictions: int = 0
     total_experts_prefetched: int = 0
@@ -252,6 +246,7 @@ def simulate_prefetch(
             predictor.observe(layer, experts)
 
     # Evaluation phase
+    prev_experts = []
     for token in range(warmup, num_tokens):
         for layer in range(num_layers):
             actual = rng.choice(num_experts, size=top_k, replace=False, p=expert_probs).tolist()

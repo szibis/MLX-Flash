@@ -26,13 +26,13 @@ from typing import Optional
 
 try:
     import mlx.core as mx
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
 
 from mlx_flash_compress.hardware import detect_hardware
 from mlx_flash_compress.page_cache import PageCacheAdvisor
-
 
 _original_load = None
 _patch_active = False
@@ -67,6 +67,7 @@ def _flash_load_wrapper(
     if _is_moe_model(model):
         try:
             from mlx_flash_compress.expert_streaming import enable_expert_streaming
+
             hw = detect_hardware()
             # Use 50% of available experts as capacity
             streaming = enable_expert_streaming(model, capacity_per_layer=64)
@@ -136,6 +137,7 @@ def remove_flash_patch():
 
     try:
         import mlx_lm
+
         mlx_lm.load = _original_load
     except ImportError:
         pass

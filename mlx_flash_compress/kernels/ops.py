@@ -20,18 +20,19 @@ from typing import Optional
 
 try:
     import mlx.core as mx
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
 
 try:
     import numpy as np
+
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
 
 from mlx_flash_compress.kernels.loader import get_kernel_loader
-
 
 _metal_swiglu_available: Optional[bool] = None
 _metal_moe_dispatch_available: Optional[bool] = None
@@ -130,8 +131,8 @@ def moe_dispatch(
 
     # Vectorized: gather selected experts, multiply by weights, sum
     selected = expert_outputs[selected_ids]  # (top_k, hidden_dim)
-    weights = routing_weights[:, None]        # (top_k, 1)
-    return mx.sum(selected * weights, axis=0) # (hidden_dim,)
+    weights = routing_weights[:, None]  # (top_k, 1)
+    return mx.sum(selected * weights, axis=0)  # (hidden_dim,)
 
 
 def moe_dispatch_numpy(

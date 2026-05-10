@@ -1,13 +1,19 @@
 """Tests for distributed experts, KV-cache sharing, and HF calculator."""
+
 import pytest
+
 from mlx_flash_compress.distributed_experts import (
-    ExpertShard, DistributedConfig, plan_expert_distribution,
+    DistributedConfig,
+    ExpertShard,
     estimate_distributed_speedup,
-)
-from mlx_flash_compress.kv_cache_sharing import (
-    plan_kv_sharing, estimate_kv_memory, KVSharingPlan,
+    plan_expert_distribution,
 )
 from mlx_flash_compress.hf_calculator import estimate_model, format_estimate
+from mlx_flash_compress.kv_cache_sharing import (
+    KVSharingPlan,
+    estimate_kv_memory,
+    plan_kv_sharing,
+)
 
 
 class TestExpertShard:
@@ -134,7 +140,6 @@ class TestHFCalculator:
         assert "GB" in text
 
     def test_custom_model(self):
-        est = estimate_model(total_params_b=100, active_params_b=10,
-                              num_experts=64, num_layers=40, ram_gb=48)
+        est = estimate_model(total_params_b=100, active_params_b=10, num_experts=64, num_layers=40, ram_gb=48)
         assert est["type"] == "MoE"
         assert est["savings_vs_full_pct"] > 0

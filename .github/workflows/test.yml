@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   push:
@@ -6,11 +6,24 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
 jobs:
-  test-python:
-    name: Python Tests (macOS Apple Silicon)
+  # ---------------------------------------------------------------------------
+  # Test matrix — Python 3.12 + 3.13 on macOS Apple Silicon
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (Python ${{ matrix.python-version }})
     runs-on: macos-15
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
 
@@ -21,12 +34,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install numpy psutil tabulate pytest pytest-cov lz4 zstandard safetensors huggingface-hub
-          # MLX requires Apple Silicon - install if available
+          # MLX requires Apple Silicon — install if available
           pip install mlx mlx-lm || echo "MLX install skipped (may need Metal GPU)"
 
       - name: Run tests with coverage
@@ -36,19 +50,134 @@ jobs:
             --cov-config=.coveragerc \
             --cov-report=term-missing \
             --cov-report=xml:coverage.xml \
-            --cov-fail-under=90
+            --cov-fail-under=90 \
+            --junitxml=test-results.xml
 
-      - name: Print coverage and test summary
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 14
+
+      - name: Upload test results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-py${{ matrix.python-version }}
+          path: test-results.xml
+          retention-days: 14
+
+      - name: Publish test results
+        if: always() && github.event_name == 'pull_request'
+        uses: dorny/test-reporter@v1
+        with:
+          name: Test Results (Python ${{ matrix.python-version }})
+          path: test-results.xml
+          reporter: java-junit
+          fail-on-error: false
+
+      - name: Print coverage summary
         if: always()
         run: |
           python -m coverage report --rcfile=.coveragerc | tail -5
-          echo ""
-          echo "=== Test & Coverage Summary ==="
-          TOTAL=$(python -m pytest tests/ --co -q 2>/dev/null | tail -1 | grep -oP '\d+' || echo "?")
-          COV=$(python -m coverage report --rcfile=.coveragerc 2>/dev/null | tail -1 | awk '{print $NF}' | tr -d '%' || echo "?")
-          echo "Total tests collected: ${TOTAL}"
-          echo "Coverage: ${COV}%"
 
+  # ---------------------------------------------------------------------------
+  # Test count gate — fail if test suite shrinks below 800
+  # ---------------------------------------------------------------------------
+  test-count:
+    name: Test count gate (min 800)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy psutil tabulate pytest lz4 zstandard safetensors huggingface-hub
+          pip install mlx mlx-lm || true
+
+      - name: Count tests and enforce minimum
+        run: |
+          COUNT=$(python -m pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -oE '^[0-9]+' || echo "0")
+          echo "Collected tests: ${COUNT}"
+          echo "### Test Count: ${COUNT}" >> $GITHUB_STEP_SUMMARY
+          if [ "${COUNT}" -lt 800 ]; then
+            echo "::error::Test count ${COUNT} is below minimum threshold of 800"
+            exit 1
+          fi
+          echo "Test count ${COUNT} meets minimum threshold of 800"
+
+  # ---------------------------------------------------------------------------
+  # Lint — ruff (replaces flake8 + black + isort) + import validation
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (ruff + imports)
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check (lint)
+        run: ruff check mlx_flash_compress/ tests/ --output-format=github
+
+      - name: Ruff format check
+        run: ruff format --check mlx_flash_compress/ tests/
+
+      - name: Validate imports (AST parse)
+        run: |
+          python -c "import ast; [ast.parse(open(f).read()) for f in __import__('glob').glob('mlx_flash_compress/*.py')]"
+          echo "All Python files parse successfully"
+
+  # ---------------------------------------------------------------------------
+  # Type checking — mypy (lenient)
+  # ---------------------------------------------------------------------------
+  typecheck:
+    name: Type check (mypy)
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy numpy psutil tabulate lz4 zstandard safetensors huggingface-hub
+          pip install mlx mlx-lm || true
+
+      - name: Run mypy (lenient)
+        run: |
+          mypy mlx_flash_compress/ \
+            --ignore-missing-imports \
+            --no-error-summary \
+            --no-strict \
+            || echo "::warning::mypy found type issues (non-blocking)"
+
+  # ---------------------------------------------------------------------------
+  # Rust sidecar tests
+  # ---------------------------------------------------------------------------
   test-rust:
     name: Rust Tests
     runs-on: macos-15
@@ -64,20 +193,3 @@ jobs:
         run: |
           cargo test --all-targets
           cargo build --release
-
-  lint:
-    name: Lint
-    runs-on: macos-15
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Check imports
-        run: |
-          python -c "import ast; [ast.parse(open(f).read()) for f in __import__('glob').glob('mlx_flash_compress/*.py')]"
-          echo "All Python files parse successfully"

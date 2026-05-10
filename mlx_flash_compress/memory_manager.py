@@ -33,12 +33,13 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 
 @dataclass
 class MemoryState:
     """Current system memory state."""
+
     total_gb: float = 0.0
     free_gb: float = 0.0
     active_gb: float = 0.0
@@ -78,7 +79,9 @@ def get_memory_state() -> MemoryState:
     try:
         result = subprocess.run(
             ["sysctl", "-n", "hw.memsize"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         state.total_gb = int(result.stdout.strip()) / (1024**3)
     except (subprocess.TimeoutExpired, ValueError):
@@ -87,7 +90,10 @@ def get_memory_state() -> MemoryState:
     # Detailed stats from vm_stat
     try:
         result = subprocess.run(
-            ["vm_stat"], capture_output=True, text=True, timeout=5,
+            ["vm_stat"],
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         page_size = 16384  # default on Apple Silicon
         ps_match = re.search(r"page size of (\d+) bytes", result.stdout)
@@ -110,7 +116,9 @@ def get_memory_state() -> MemoryState:
         try:
             swap_result = subprocess.run(
                 ["sysctl", "-n", "vm.swapusage"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             swap_used_match = re.search(r"used\s*=\s*([\d.]+)M", swap_result.stdout)
             if swap_used_match:
@@ -125,7 +133,9 @@ def get_memory_state() -> MemoryState:
     try:
         result = subprocess.run(
             ["memory_pressure", "-Q"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         output = result.stdout.lower()
         if "normal" in output or "green" in output:
@@ -295,58 +305,70 @@ class MemoryManager:
 
         # Critical pressure
         if state.pressure_level in ("red", "critical"):
-            hints.append({
-                "priority": "critical",
-                "action": "reduce_cache",
-                "message": "Memory pressure critical. Reduce cache size or close apps.",
-                "detail": f"Only {state.free_gb:.1f}GB free, {state.swap_used_gb:.1f}GB in swap.",
-            })
-            hints.append({
-                "priority": "critical",
-                "action": "enable_mixed_precision",
-                "message": "Enable mixed precision to reduce model footprint by ~20%.",
-                "detail": "Cold experts at 2-bit saves significant RAM with minimal quality loss.",
-            })
+            hints.append(
+                {
+                    "priority": "critical",
+                    "action": "reduce_cache",
+                    "message": "Memory pressure critical. Reduce cache size or close apps.",
+                    "detail": f"Only {state.free_gb:.1f}GB free, {state.swap_used_gb:.1f}GB in swap.",
+                }
+            )
+            hints.append(
+                {
+                    "priority": "critical",
+                    "action": "enable_mixed_precision",
+                    "message": "Enable mixed precision to reduce model footprint by ~20%.",
+                    "detail": "Cold experts at 2-bit saves significant RAM with minimal quality loss.",
+                }
+            )
 
         # Warning pressure
         elif state.pressure_level in ("yellow", "warning"):
-            hints.append({
-                "priority": "warning",
-                "action": "shrink_cache",
-                "message": f"Memory pressure warning. Consider reducing cache by 50%.",
-                "detail": f"Available: {state.available_gb:.1f}GB, swap: {state.swap_used_gb:.1f}GB.",
-            })
+            hints.append(
+                {
+                    "priority": "warning",
+                    "action": "shrink_cache",
+                    "message": "Memory pressure warning. Consider reducing cache by 50%.",
+                    "detail": f"Available: {state.available_gb:.1f}GB, swap: {state.swap_used_gb:.1f}GB.",
+                }
+            )
 
         # High swap usage
         if state.swap_used_gb > 2.0:
-            hints.append({
-                "priority": "warning",
-                "action": "close_apps",
-                "message": f"High swap usage ({state.swap_used_gb:.1f}GB). Close unused apps.",
-                "detail": "Browser tabs (~100-500MB each), Xcode (1-4GB), Docker (1-2GB).",
-            })
+            hints.append(
+                {
+                    "priority": "warning",
+                    "action": "close_apps",
+                    "message": f"High swap usage ({state.swap_used_gb:.1f}GB). Close unused apps.",
+                    "detail": "Browser tabs (~100-500MB each), Xcode (1-4GB), Docker (1-2GB).",
+                }
+            )
 
         # Good conditions — can expand
         if state.pressure_level in ("green", "normal") and state.available_gb > 8.0:
             budget_gb = self.get_cache_budget_gb()
             if budget_gb < state.available_gb * 0.5:
-                hints.append({
-                    "priority": "info",
-                    "action": "expand_cache",
-                    "message": f"Plenty of RAM available ({state.available_gb:.1f}GB). "
-                               f"Cache could grow from {budget_gb:.1f}GB to {state.available_gb * 0.7:.1f}GB.",
-                    "detail": "Larger cache = higher hit rate = faster inference.",
-                })
+                hints.append(
+                    {
+                        "priority": "info",
+                        "action": "expand_cache",
+                        "message": f"Plenty of RAM available ({state.available_gb:.1f}GB). "
+                        f"Cache could grow from {budget_gb:.1f}GB to {state.available_gb * 0.7:.1f}GB.",
+                        "detail": "Larger cache = higher hit rate = faster inference.",
+                    }
+                )
 
         # Mixed precision suggestion for tight fits
         budget_gb = self.get_cache_budget_gb()
         if 0 < budget_gb < 2.0:
-            hints.append({
-                "priority": "info",
-                "action": "enable_mixed_precision",
-                "message": "Small cache budget. Mixed precision would help.",
-                "detail": "Hot experts at 4-bit, cold at 2-bit = 20% smaller footprint.",
-            })
+            hints.append(
+                {
+                    "priority": "info",
+                    "action": "enable_mixed_precision",
+                    "message": "Small cache budget. Mixed precision would help.",
+                    "detail": "Hot experts at 4-bit, cold at 2-bit = 20% smaller footprint.",
+                }
+            )
 
         return hints
 
@@ -362,9 +384,11 @@ class MemoryManager:
         if state.pressure_level in ("red", "critical"):
             try:
                 import mlx.core as mx
+
                 # Clear MLX memory pool (releases unused cached allocations)
                 mx.clear_memory_pool()
                 import gc
+
                 gc.collect()
                 mx.synchronize()
 
@@ -383,8 +407,7 @@ class MemoryManager:
         return result
 
 
-def optimize_wired_memory_limit(total_ram_gb: float = None,
-                                 os_reserve_gb: float = 4.0) -> dict:
+def optimize_wired_memory_limit(total_ram_gb: float = None, os_reserve_gb: float = 4.0) -> dict:
     """Suggest and optionally set the optimal iogpu.wired_limit_mb.
 
     macOS defaults to wiring ~65-75% of unified memory for GPU. For large

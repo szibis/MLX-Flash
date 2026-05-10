@@ -8,13 +8,13 @@ import time
 
 import pytest
 
+from mlx_flash_compress.page_cache import EvictionStrategy, PageCacheAdvisor
 from mlx_flash_compress.pipeline import (
+    LayerPhase,
     PipelinedExecutor,
     PipelineStats,
     PrefetchWorker,
-    LayerPhase,
 )
-from mlx_flash_compress.page_cache import PageCacheAdvisor, EvictionStrategy
 
 
 @pytest.fixture

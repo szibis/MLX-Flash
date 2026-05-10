@@ -21,10 +21,10 @@ This is inspired by:
 """
 
 import json
-import time
 import threading
+import time
 from collections import defaultdict
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +34,7 @@ import numpy as np
 @dataclass
 class ExpertProfile:
     """A profile of which experts matter for a specific task/domain."""
+
     name: str
     description: str = ""
     # Per-layer expert importance scores (0.0 = never used, 1.0 = always used)
@@ -97,6 +98,7 @@ class ExpertProfile:
 
 
 # ── Predefined task profiles ──
+
 
 def _generate_task_profile(
     task_name: str,
@@ -164,6 +166,7 @@ def get_predefined_profile(
 
 # ── Custom calibration ──
 
+
 class ProfileCalibrator:
     """Build a custom expert profile from sample prompts.
 
@@ -214,6 +217,7 @@ class ProfileCalibrator:
 
 
 # ── Adaptive live profiling ──
+
 
 class AdaptiveProfiler:
     """Live profiler that adapts cache priorities during inference.
@@ -276,10 +280,7 @@ class AdaptiveProfiler:
             for layer in range(self.num_layers):
                 top_indices = np.argsort(self._scores[layer])[-top_k_per_layer:][::-1]
                 # Only include experts with non-zero score
-                result[layer] = [
-                    int(idx) for idx in top_indices
-                    if self._scores[layer, idx] > 0.01
-                ]
+                result[layer] = [int(idx) for idx in top_indices if self._scores[layer, idx] > 0.01]
             return result
 
     def get_cache_recommendation(self, cache_slots: int) -> list[tuple[int, int]]:

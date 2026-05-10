@@ -1,17 +1,19 @@
 """Tests for mlx-lm monkey patch integration."""
 
 import sys
+
 import pytest
 
 from mlx_flash_compress.mlx_lm_patch import (
-    apply_flash_patch,
-    remove_flash_patch,
-    is_patched,
     _is_moe_model,
+    apply_flash_patch,
+    is_patched,
+    remove_flash_patch,
 )
 
 try:
     import mlx_lm
+
     HAS_MLX_LM = True
 except ImportError:
     HAS_MLX_LM = False
@@ -36,15 +38,21 @@ class TestMoEDetection:
         assert _is_moe_model(model) is False
 
     def test_detect_by_expert_layer(self):
-        model = _make_model("SomeModel", named_modules_result=[
-            ("layer.0.expert_gate", None),
-        ])
+        model = _make_model(
+            "SomeModel",
+            named_modules_result=[
+                ("layer.0.expert_gate", None),
+            ],
+        )
         assert _is_moe_model(model) is True
 
     def test_detect_by_gate_layer(self):
-        model = _make_model("CustomModel", named_modules_result=[
-            ("layer.0.gate", None),
-        ])
+        model = _make_model(
+            "CustomModel",
+            named_modules_result=[
+                ("layer.0.gate", None),
+            ],
+        )
         assert _is_moe_model(model) is True
 
     def test_deepseek_detection(self):

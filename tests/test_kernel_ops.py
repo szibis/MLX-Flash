@@ -1,17 +1,19 @@
 """Tests for wired Metal kernel operations."""
 
-import pytest
 import numpy as np
+import pytest
 
 from mlx_flash_compress.kernels.ops import (
-    moe_dispatch_numpy,
-    is_metal_available,
     get_kernel_status,
+    is_metal_available,
+    moe_dispatch_numpy,
 )
 
 try:
     import mlx.core as mx
-    from mlx_flash_compress.kernels.ops import swiglu, moe_dispatch, _swiglu_mlx
+
+    from mlx_flash_compress.kernels.ops import _swiglu_mlx, moe_dispatch, swiglu
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
@@ -65,11 +67,13 @@ class TestSwiGLU:
 class TestMoEDispatch:
     @pytest.mark.skipif(not HAS_MLX, reason="MLX required")
     def test_basic_dispatch(self):
-        expert_outputs = mx.array([
-            [1.0, 0.0, 0.0],  # expert 0
-            [0.0, 1.0, 0.0],  # expert 1
-            [0.0, 0.0, 1.0],  # expert 2
-        ])
+        expert_outputs = mx.array(
+            [
+                [1.0, 0.0, 0.0],  # expert 0
+                [0.0, 1.0, 0.0],  # expert 1
+                [0.0, 0.0, 1.0],  # expert 2
+            ]
+        )
         selected = mx.array([0, 2])
         weights = mx.array([0.7, 0.3])
         result = moe_dispatch(expert_outputs, selected, weights)
@@ -90,10 +94,12 @@ class TestMoEDispatch:
 
     @pytest.mark.skipif(not HAS_MLX, reason="MLX required")
     def test_equal_weights(self):
-        expert_outputs = mx.array([
-            [2.0, 0.0],
-            [0.0, 4.0],
-        ])
+        expert_outputs = mx.array(
+            [
+                [2.0, 0.0],
+                [0.0, 4.0],
+            ]
+        )
         selected = mx.array([0, 1])
         weights = mx.array([0.5, 0.5])
         result = moe_dispatch(expert_outputs, selected, weights)
@@ -104,10 +110,12 @@ class TestMoEDispatch:
 
 class TestMoEDispatchNumpy:
     def test_basic(self):
-        expert_outputs = np.array([
-            [1.0, 0.0],
-            [0.0, 1.0],
-        ])
+        expert_outputs = np.array(
+            [
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ]
+        )
         selected = np.array([0, 1])
         weights = np.array([0.6, 0.4])
         result = moe_dispatch_numpy(expert_outputs, selected, weights)

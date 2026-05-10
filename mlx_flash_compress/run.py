@@ -15,33 +15,33 @@ import os
 import shutil
 import sys
 import time
-from pathlib import Path
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
-import numpy as np
-
 import mlx.core as mx
-from mlx_lm import load, generate
+import numpy as np
+from mlx_lm import generate, load
 
+from mlx_flash_compress.bench_real import _find_expert_params_flat, extract_expert_weights_to_disk
 from mlx_flash_compress.config import FlashConfig, get_config
-from mlx_flash_compress.hardware import detect_hardware, MacHardware
+from mlx_flash_compress.hardware import MacHardware, detect_hardware
 from mlx_flash_compress.lcp_cache import LCPCache
-from mlx_flash_compress.router_hook import RouterHook
 from mlx_flash_compress.memory_manager import MemoryManager, get_memory_state
+from mlx_flash_compress.router_hook import RouterHook
+from mlx_flash_compress.ssd_protection import SSDProtectedReader, estimate_ssd_impact
 from mlx_flash_compress.task_profiler import AdaptiveProfiler, get_predefined_profile
-from mlx_flash_compress.ssd_protection import estimate_ssd_impact, SSDProtectedReader
-from mlx_flash_compress.bench_real import extract_expert_weights_to_disk, _find_expert_params_flat
-
 
 # ── Helpers ──
+
 
 def _fmt_prompt(tokenizer, prompt):
     if hasattr(tokenizer, "apply_chat_template"):
         try:
             return tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
-                tokenize=False, add_generation_prompt=True,
+                tokenize=False,
+                add_generation_prompt=True,
             )
         except Exception:
             pass
@@ -66,6 +66,7 @@ def _warmup(model, tokenizer, formatted):
 
 # ── Main pipeline ──
 
+
 @dataclass
 class RunResult:
     name: str
@@ -81,6 +82,7 @@ class RunResult:
 def run_baseline(model, tokenizer, formatted, max_tokens, runs=3) -> RunResult:
     """Pure MLX inference — no optimizations."""
     import psutil
+
     process = psutil.Process(os.getpid())
 
     _warmup(model, tokenizer, formatted)
@@ -98,18 +100,28 @@ def run_baseline(model, tokenizer, formatted, max_tokens, runs=3) -> RunResult:
 
     return RunResult(
         name="Pure MLX (baseline)",
-        tokens=best[0], time_s=best[1], tok_per_s=avg_tps,
-        memory_mb=avg_mem, output_preview=best[4][:150],
+        tokens=best[0],
+        time_s=best[1],
+        tok_per_s=avg_tps,
+        memory_mb=avg_mem,
+        output_preview=best[4][:150],
     )
 
 
 def run_with_cache(
-    model, tokenizer, formatted, max_tokens,
-    expert_dir, num_layers, num_experts,
-    cfg: FlashConfig, hw: MacHardware,
+    model,
+    tokenizer,
+    formatted,
+    max_tokens,
+    expert_dir,
+    num_layers,
+    num_experts,
+    cfg: FlashConfig,
+    hw: MacHardware,
 ) -> RunResult:
     """MLX inference + LCP cache + router hook (full pipeline)."""
     import psutil
+
     process = psutil.Process(os.getpid())
 
     cache_bytes = cfg.cache.ram_mb * 1024 * 1024
@@ -119,6 +131,7 @@ def run_with_cache(
     if cfg.engine.backend == "c_gcd":
         try:
             from mlx_flash_compress.fast_cache_bindings import FastCacheC, is_available
+
             use_c = is_available()
         except ImportError:
             pass
@@ -177,7 +190,9 @@ def run_with_cache(
 
     return RunResult(
         name=f"MLX + LCP cache ({cfg.engine.backend})",
-        tokens=tokens, time_s=effective_time, tok_per_s=tps,
+        tokens=tokens,
+        time_s=effective_time,
+        tok_per_s=tps,
         memory_mb=max(mem_before, mem_after),
         cache_hit_rate=stats.hit_rate,
         cache_overhead_ms=cache_time * 1000,
@@ -211,11 +226,15 @@ def print_comparison(baseline: RunResult, optimized: RunResult, hw: MacHardware)
         print(f"║  Speedup: {speedup:.2f}x FASTER                                           ║")
     else:
         overhead_pct = (1 - speedup) * 100
-        print(f"║  Overhead: {overhead_pct:.1f}% (cache adds {overhead:.0f}ms, fits in GPU time: {'YES' if overhead < gpu_ms * baseline.tokens else 'NO'})  ║")
+        print(
+            f"║  Overhead: {overhead_pct:.1f}% (cache adds {overhead:.0f}ms, fits in GPU time: {'YES' if overhead < gpu_ms * baseline.tokens else 'NO'})  ║"
+        )
 
     print("║                                                                      ║")
     print(f"║  Cache hit rate:     {optimized.cache_hit_rate:.1%}                                          ║")
-    print(f"║  Cache overhead:     {overhead:.0f}ms total ({overhead/max(optimized.tokens,1):.1f}ms/token)                      ║")
+    print(
+        f"║  Cache overhead:     {overhead:.0f}ms total ({overhead / max(optimized.tokens, 1):.1f}ms/token)                      ║"
+    )
     print(f"║  GPU time/token:     {gpu_ms:.1f}ms                                            ║")
     fits = "YES — zero additional latency" if overhead / max(optimized.tokens, 1) < gpu_ms else "NO — adds latency"
     print(f"║  Cache fits in GPU:  {fits:<40s}   ║")
@@ -260,17 +279,18 @@ def print_comparison(baseline: RunResult, optimized: RunResult, hw: MacHardware)
 def main():
     parser = argparse.ArgumentParser(description="MLX-Flash: Run with all optimizations")
     parser.add_argument("--model", required=True, help="MLX model name or path")
-    parser.add_argument("--prompt", default="Explain how mixture of experts architecture works in neural networks and why it matters for running large AI models efficiently on consumer hardware like MacBooks.",
-                        help="Prompt for generation")
+    parser.add_argument(
+        "--prompt",
+        default="Explain how mixture of experts architecture works in neural networks and why it matters for running large AI models efficiently on consumer hardware like MacBooks.",
+        help="Prompt for generation",
+    )
     parser.add_argument("--tokens", type=int, default=100, help="Max tokens to generate")
     parser.add_argument("--config", type=str, default=None, help="Config file path (YAML/JSON)")
     parser.add_argument("--cache-mb", type=int, default=0, help="Override cache size (MB, 0=auto)")
     parser.add_argument("--baseline-only", action="store_true", help="Only run baseline (no cache)")
     parser.add_argument("--runs", type=int, default=3, help="Number of baseline runs for averaging")
-    parser.add_argument("--task", type=str, default=None,
-                        help="Task profile: coding, writing, math, chat, analysis")
-    parser.add_argument("--adaptive", action="store_true",
-                        help="Enable adaptive live profiling")
+    parser.add_argument("--task", type=str, default=None, help="Task profile: coding, writing, math, chat, analysis")
+    parser.add_argument("--adaptive", action="store_true", help="Enable adaptive live profiling")
     parser.add_argument("--work-dir", default="/tmp/mlx_flash_run", help="Working directory")
     args = parser.parse_args()
 
@@ -303,7 +323,7 @@ def main():
     if args.task:
         print(f"    Task profile: {args.task}")
     elif args.adaptive:
-        print(f"    Adaptive profiling: ON")
+        print("    Adaptive profiling: ON")
 
     # Step 3: Load model
     print(f"  Step 3: Loading model: {args.model}")
@@ -335,23 +355,34 @@ def main():
         print("    No MoE experts found — model may be dense.")
         print("    Running cache simulation with model structure estimate...")
         # Estimate from model config
-        if hasattr(model, 'model') and hasattr(model.model, 'layers'):
+        if hasattr(model, "model") and hasattr(model.model, "layers"):
             num_layers = len(model.model.layers)
         num_experts = 60  # default
 
     # Create synthetic experts for cache simulation
     from mlx_flash_compress.bench import create_synthetic_experts
+
     expert_dir = create_synthetic_experts(
-        str(work_dir), num_layers=num_layers, num_experts=num_experts,
-        expert_size_bytes=128 * 1024, quantized=True,
+        str(work_dir),
+        num_layers=num_layers,
+        num_experts=num_experts,
+        expert_size_bytes=128 * 1024,
+        quantized=True,
     )
     print(f"    {num_layers} layers, {num_experts} experts")
 
     # Step 6: Run with cache
     print(f"  Step 6: Running with LCP cache ({cfg.cache.ram_mb}MB)...")
     optimized = run_with_cache(
-        model, tokenizer, formatted, args.tokens,
-        expert_dir, num_layers, num_experts, cfg, hw,
+        model,
+        tokenizer,
+        formatted,
+        args.tokens,
+        expert_dir,
+        num_layers,
+        num_experts,
+        cfg,
+        hw,
     )
     print(f"    Optimized: {optimized.tok_per_s:.1f} tok/s, cache hit: {optimized.cache_hit_rate:.1%}")
 

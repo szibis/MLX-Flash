@@ -31,9 +31,9 @@ from typing import Optional
 
 
 class EvictionStrategy(Enum):
-    MADV_FREE = "madv_free"           # macOS: lazy free (best)
-    MADV_DONTNEED = "madv_dontneed"   # POSIX: advisory discard
-    NONE = "none"                      # no hints, trust OS
+    MADV_FREE = "madv_free"  # macOS: lazy free (best)
+    MADV_DONTNEED = "madv_dontneed"  # POSIX: advisory discard
+    NONE = "none"  # no hints, trust OS
 
 
 # macOS madvise constants
@@ -41,7 +41,7 @@ _MADV_NORMAL = 0
 _MADV_SEQUENTIAL = 2
 _MADV_WILLNEED = 3
 _MADV_DONTNEED = 4
-_MADV_FREE = 5           # macOS specific
+_MADV_FREE = 5  # macOS specific
 _MADV_FREE_REUSABLE = 7  # macOS specific: mark as reusable
 
 
@@ -76,6 +76,7 @@ def _mmap_base_address(mm: mmap.mmap) -> Optional[int]:
 @dataclass
 class PageCacheStats:
     """Track page cache advisory operations."""
+
     will_need_calls: int = 0
     will_need_bytes: int = 0
     free_calls: int = 0

@@ -38,6 +38,14 @@ omit =
     mlx_flash_compress/bit_parity.py
     # mlx-lm patch apply/remove requires real mlx-lm
     mlx_flash_compress/mlx_lm_patch.py
+    # DFlash requires real model + drafter for full coverage
+    mlx_flash_compress/dflash.py
+    mlx_flash_compress/dflash_model.py
+    mlx_flash_compress/dflash_profile.py
+    # Sequoia requires SSD offloading + real model
+    mlx_flash_compress/sequoia.py
+    # MCP server requires running HTTP server
+    mlx_flash_compress/mcp_server.py
     # Trivial entry points
     mlx_flash_compress/__init__.py
     mlx_flash_compress/__main__.py
