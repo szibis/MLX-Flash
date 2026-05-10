@@ -18,11 +18,12 @@ Two techniques that improve on the basic 1-layer co-occurrence predictor:
    Inspired by: mlx-od-moe's shadow model approach.
 """
 
-import numpy as np
 from dataclasses import dataclass, field
 
+import numpy as np
 
 # -- Cross-layer prefetch --
+
 
 class CrossLayerPredictor:
     """Predict experts N layers ahead using transitive co-occurrence.
@@ -34,8 +35,7 @@ class CrossLayerPredictor:
     The deeper predictions are less accurate but give more prefetch lead time.
     """
 
-    def __init__(self, num_layers: int, num_experts: int, top_k: int = 4,
-                 lookahead: int = 3, decay: float = 0.7):
+    def __init__(self, num_layers: int, num_experts: int, top_k: int = 4, lookahead: int = 3, decay: float = 0.7):
         self.num_layers = num_layers
         self.num_experts = num_experts
         self.top_k = top_k
@@ -43,9 +43,7 @@ class CrossLayerPredictor:
         self.decay = decay  # confidence decay per hop
 
         # Per-layer-pair co-occurrence: (num_layers-1, num_experts, num_experts)
-        self._cooccurrence = np.zeros(
-            (max(num_layers - 1, 1), num_experts, num_experts), dtype=np.float32
-        )
+        self._cooccurrence = np.zeros((max(num_layers - 1, 1), num_experts, num_experts), dtype=np.float32)
         self._prev_experts: dict[int, list[int]] = {}
         self._observations = 0
 
@@ -90,7 +88,7 @@ class CrossLayerPredictor:
 
             if scores.sum() > 0:
                 # Apply confidence decay for deeper predictions
-                confidence = self.decay ** hop
+                confidence = self.decay**hop
                 scores *= confidence
 
                 # Top-K predicted experts
@@ -128,6 +126,7 @@ class CrossLayerPredictor:
 
 # -- Shadow model predictor --
 
+
 class ShadowPredictor:
     """Lightweight MLP that learns to predict expert routing online.
 
@@ -143,8 +142,9 @@ class ShadowPredictor:
     matrices (num_layers * num_experts^2 vs num_layers * hidden_dim * num_experts).
     """
 
-    def __init__(self, num_layers: int, num_experts: int, top_k: int = 4,
-                 hidden_dim: int = 64, lr: float = 0.01, seed: int = 0):
+    def __init__(
+        self, num_layers: int, num_experts: int, top_k: int = 4, hidden_dim: int = 64, lr: float = 0.01, seed: int = 0
+    ):
         self.num_layers = num_layers
         self.num_experts = num_experts
         self.top_k = top_k
@@ -256,7 +256,7 @@ class ShadowPredictor:
                 x[eid] = 1.0
 
         probs = self._forward(pair_idx, x)
-        top_indices = np.argsort(probs)[-self.top_k:][::-1]
+        top_indices = np.argsort(probs)[-self.top_k :][::-1]
         return top_indices.tolist()
 
     def accuracy(self, predicted: list[int], actual: list[int]) -> float:
@@ -277,9 +277,11 @@ class ShadowPredictor:
 
 # -- Benchmarking --
 
+
 @dataclass
 class PrefetchBenchResult:
     """Comparison results from benchmarking predictors."""
+
     predictor_name: str = ""
     total_predictions: int = 0
     correct_predictions: int = 0
@@ -287,9 +289,9 @@ class PrefetchBenchResult:
     warmup_tokens: int = 0
 
 
-def benchmark_predictors(num_layers: int = 24, num_experts: int = 60,
-                         num_tokens: int = 200, top_k: int = 4,
-                         seed: int = 42) -> list[PrefetchBenchResult]:
+def benchmark_predictors(
+    num_layers: int = 24, num_experts: int = 60, num_tokens: int = 200, top_k: int = 4, seed: int = 42
+) -> list[PrefetchBenchResult]:
     """Benchmark all predictor types against the same routing trace."""
     from mlx_flash_compress.smart_eviction import RoutingPredictor
 
@@ -331,12 +333,14 @@ def benchmark_predictors(num_layers: int = 24, num_experts: int = 60,
                 pred.observe(layer_idx, experts)
 
         avg_acc = correct / max(total, 1)
-        results.append(PrefetchBenchResult(
-            predictor_name=name,
-            total_predictions=total,
-            correct_predictions=correct,
-            avg_accuracy=round(avg_acc, 4),
-            warmup_tokens=warmup,
-        ))
+        results.append(
+            PrefetchBenchResult(
+                predictor_name=name,
+                total_predictions=total,
+                correct_predictions=correct,
+                avg_accuracy=round(avg_acc, 4),
+                warmup_tokens=warmup,
+            )
+        )
 
     return results

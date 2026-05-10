@@ -1,20 +1,20 @@
 """Tests for quantized KV cache."""
 
-import pytest
 import mlx.core as mx
+import pytest
 
 from mlx_flash_compress.quantized_kv_cache import (
+    QuantizedKVCacheManager,
     QuantizedKVConfig,
     QuantizedKVEntry,
-    QuantizedKVCacheManager,
-    quantize_tensor,
     dequantize_tensor,
+    quantize_tensor,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def normal_data():
@@ -32,13 +32,13 @@ def kv_data():
 
 @pytest.fixture
 def default_config():
-    return QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64,
-                              calibration_tokens=8)
+    return QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64, calibration_tokens=8)
 
 
 # ---------------------------------------------------------------------------
 # quantize_tensor / dequantize_tensor roundtrip
 # ---------------------------------------------------------------------------
+
 
 class TestQuantizeDequantize:
     """Test quantize/dequantize roundtrip quality."""
@@ -46,27 +46,21 @@ class TestQuantizeDequantize:
     def test_4bit_roundtrip_quality(self, normal_data):
         """4-bit roundtrip MSE should be < 0.01 for standard normal data."""
         packed, scales, zeros = quantize_tensor(normal_data, bits=4, group_size=64)
-        restored = dequantize_tensor(packed, scales, zeros, bits=4,
-                                      original_shape=normal_data.shape,
-                                      group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=4, original_shape=normal_data.shape, group_size=64)
         mse = mx.mean((normal_data.astype(mx.float32) - restored) ** 2).item()
         assert mse < 0.02, f"4-bit MSE {mse} exceeds threshold 0.02"
 
     def test_8bit_roundtrip_quality(self, normal_data):
         """8-bit should be near-lossless."""
         packed, scales, zeros = quantize_tensor(normal_data, bits=8, group_size=64)
-        restored = dequantize_tensor(packed, scales, zeros, bits=8,
-                                      original_shape=normal_data.shape,
-                                      group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=8, original_shape=normal_data.shape, group_size=64)
         mse = mx.mean((normal_data.astype(mx.float32) - restored) ** 2).item()
         assert mse < 0.001, f"8-bit MSE {mse} exceeds threshold 0.001"
 
     def test_2bit_roundtrip(self, normal_data):
         """2-bit has higher error but should still reconstruct."""
         packed, scales, zeros = quantize_tensor(normal_data, bits=2, group_size=64)
-        restored = dequantize_tensor(packed, scales, zeros, bits=2,
-                                      original_shape=normal_data.shape,
-                                      group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=2, original_shape=normal_data.shape, group_size=64)
         mse = mx.mean((normal_data.astype(mx.float32) - restored) ** 2).item()
         # 2-bit is lossy but should be bounded
         assert mse < 0.6, f"2-bit MSE {mse} exceeds threshold 0.6"
@@ -78,24 +72,21 @@ class TestQuantizeDequantize:
         mx.random.seed(0)
         x = mx.random.normal(shape=(10, 8, 64))
         packed, scales, zeros = quantize_tensor(x, bits=4, group_size=64)
-        restored = dequantize_tensor(packed, scales, zeros, bits=4,
-                                      original_shape=x.shape, group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=4, original_shape=x.shape, group_size=64)
         assert restored.shape == x.shape
 
     def test_8bit_preserves_shape(self):
         mx.random.seed(0)
         x = mx.random.normal(shape=(5, 4, 128))
         packed, scales, zeros = quantize_tensor(x, bits=8, group_size=64)
-        restored = dequantize_tensor(packed, scales, zeros, bits=8,
-                                      original_shape=x.shape, group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=8, original_shape=x.shape, group_size=64)
         assert restored.shape == x.shape
 
     def test_2bit_preserves_shape(self):
         mx.random.seed(0)
         x = mx.random.normal(shape=(3, 2, 32))
         packed, scales, zeros = quantize_tensor(x, bits=2, group_size=32)
-        restored = dequantize_tensor(packed, scales, zeros, bits=2,
-                                      original_shape=x.shape, group_size=32)
+        restored = dequantize_tensor(packed, scales, zeros, bits=2, original_shape=x.shape, group_size=32)
         assert restored.shape == x.shape
 
     def test_invalid_bits_raises(self):
@@ -109,8 +100,7 @@ class TestQuantizeDequantize:
         """All-zero tensor should roundtrip cleanly."""
         x = mx.zeros((64,))
         packed, scales, zeros = quantize_tensor(x, bits=4, group_size=64)
-        restored = dequantize_tensor(packed, scales, zeros, bits=4,
-                                      original_shape=x.shape, group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=4, original_shape=x.shape, group_size=64)
         mse = mx.mean((x.astype(mx.float32) - restored) ** 2).item()
         assert mse == 0.0
 
@@ -120,8 +110,7 @@ class TestQuantizeDequantize:
         x = mx.random.normal(shape=(32, 8, 128))
         for bits in (2, 4, 8):
             packed, scales, zeros = quantize_tensor(x, bits=bits, group_size=64)
-            restored = dequantize_tensor(packed, scales, zeros, bits=bits,
-                                          original_shape=x.shape, group_size=64)
+            restored = dequantize_tensor(packed, scales, zeros, bits=bits, original_shape=x.shape, group_size=64)
             assert restored.shape == x.shape
             mse = mx.mean((x.astype(mx.float32) - restored) ** 2).item()
             if bits == 8:
@@ -133,6 +122,7 @@ class TestQuantizeDequantize:
 # ---------------------------------------------------------------------------
 # Bit packing correctness
 # ---------------------------------------------------------------------------
+
 
 class TestBitPacking:
     """Verify 4-bit and 2-bit packing produces expected sizes."""
@@ -162,6 +152,7 @@ class TestBitPacking:
 # Edge cases
 # ---------------------------------------------------------------------------
 
+
 class TestEdgeCases:
     """Edge cases for quantization."""
 
@@ -170,8 +161,7 @@ class TestEdgeCases:
         x = mx.array([1.5])
         for bits in (2, 4, 8):
             packed, scales, zeros = quantize_tensor(x, bits=bits, group_size=64)
-            restored = dequantize_tensor(packed, scales, zeros, bits=bits,
-                                          original_shape=x.shape, group_size=64)
+            restored = dequantize_tensor(packed, scales, zeros, bits=bits, original_shape=x.shape, group_size=64)
             assert restored.shape == (1,)
             # Single element: scale = |x| / max_int, so it should roundtrip well
             assert abs(restored.item() - x.item()) < 1.0
@@ -180,8 +170,7 @@ class TestEdgeCases:
         """group_size > tensor length should still work."""
         x = mx.random.normal(shape=(8,))
         packed, scales, zeros = quantize_tensor(x, bits=4, group_size=256)
-        restored = dequantize_tensor(packed, scales, zeros, bits=4,
-                                      original_shape=x.shape, group_size=256)
+        restored = dequantize_tensor(packed, scales, zeros, bits=4, original_shape=x.shape, group_size=256)
         assert restored.shape == x.shape
         mse = mx.mean((x.astype(mx.float32) - restored) ** 2).item()
         assert mse < 0.05
@@ -190,24 +179,21 @@ class TestEdgeCases:
         """Tensor length not divisible by group_size."""
         x = mx.random.normal(shape=(100,))  # not divisible by 64
         packed, scales, zeros = quantize_tensor(x, bits=4, group_size=64)
-        restored = dequantize_tensor(packed, scales, zeros, bits=4,
-                                      original_shape=x.shape, group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=4, original_shape=x.shape, group_size=64)
         assert restored.shape == (100,)
 
     def test_very_small_values(self):
         """Values very close to zero."""
         x = mx.array([1e-10, -1e-10, 0.0, 1e-10])
         packed, scales, zeros = quantize_tensor(x, bits=4, group_size=4)
-        restored = dequantize_tensor(packed, scales, zeros, bits=4,
-                                      original_shape=x.shape, group_size=4)
+        restored = dequantize_tensor(packed, scales, zeros, bits=4, original_shape=x.shape, group_size=4)
         assert restored.shape == x.shape
 
     def test_large_values(self):
         """Large magnitude values."""
         x = mx.array([1000.0, -500.0, 750.0, -250.0] * 16)  # 64 elements
         packed, scales, zeros = quantize_tensor(x, bits=4, group_size=64)
-        restored = dequantize_tensor(packed, scales, zeros, bits=4,
-                                      original_shape=x.shape, group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=4, original_shape=x.shape, group_size=64)
         assert restored.shape == x.shape
         # Relative error should be bounded
         max_abs = mx.max(mx.abs(x)).item()
@@ -218,6 +204,7 @@ class TestEdgeCases:
 # ---------------------------------------------------------------------------
 # QuantizedKVEntry
 # ---------------------------------------------------------------------------
+
 
 class TestQuantizedKVEntry:
     """Test the per-layer KV cache entry."""
@@ -302,8 +289,7 @@ class TestQuantizedKVEntry:
 
     def test_roundtrip_quality_through_entry(self, default_config):
         """Data through entry should have acceptable quality."""
-        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64,
-                                    calibration_tokens=0)
+        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64, calibration_tokens=0)
         entry = QuantizedKVEntry(num_heads=8, head_dim=64, config=config)
         mx.random.seed(0)
         keys = mx.random.normal(shape=(16, 8, 64))
@@ -323,6 +309,7 @@ class TestQuantizedKVEntry:
 # Memory savings calculation
 # ---------------------------------------------------------------------------
 
+
 class TestMemorySavings:
     """Test memory accounting."""
 
@@ -340,8 +327,7 @@ class TestMemorySavings:
 
     def test_quantized_memory_less_than_full(self, default_config):
         """Quantized memory should be less than full precision."""
-        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64,
-                                    calibration_tokens=0)
+        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64, calibration_tokens=0)
         entry = QuantizedKVEntry(num_heads=8, head_dim=128, config=config)
         mx.random.seed(0)
         keys = mx.random.normal(shape=(64, 8, 128))
@@ -373,14 +359,13 @@ class TestMemorySavings:
 # QuantizedKVCacheManager
 # ---------------------------------------------------------------------------
 
+
 class TestQuantizedKVCacheManager:
     """Test multi-layer cache manager."""
 
     def test_basic_update_and_get(self):
-        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64,
-                                    calibration_tokens=0)
-        manager = QuantizedKVCacheManager(config, num_layers=4,
-                                           num_kv_heads=8, head_dim=64)
+        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64, calibration_tokens=0)
+        manager = QuantizedKVCacheManager(config, num_layers=4, num_kv_heads=8, head_dim=64)
         mx.random.seed(0)
         for layer in range(4):
             keys = mx.random.normal(shape=(8, 8, 64))
@@ -394,8 +379,7 @@ class TestQuantizedKVCacheManager:
 
     def test_invalid_layer_raises(self):
         config = QuantizedKVConfig()
-        manager = QuantizedKVCacheManager(config, num_layers=4,
-                                           num_kv_heads=8, head_dim=64)
+        manager = QuantizedKVCacheManager(config, num_layers=4, num_kv_heads=8, head_dim=64)
         mx.random.seed(0)
         keys = mx.random.normal(shape=(1, 8, 64))
         values = mx.random.normal(shape=(1, 8, 64))
@@ -406,10 +390,8 @@ class TestQuantizedKVCacheManager:
             manager.get_kv(-1)
 
     def test_compression_ratio(self):
-        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64,
-                                    calibration_tokens=0)
-        manager = QuantizedKVCacheManager(config, num_layers=2,
-                                           num_kv_heads=8, head_dim=128)
+        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64, calibration_tokens=0)
+        manager = QuantizedKVCacheManager(config, num_layers=2, num_kv_heads=8, head_dim=128)
         mx.random.seed(0)
         for layer in range(2):
             keys = mx.random.normal(shape=(64, 8, 128))
@@ -420,10 +402,8 @@ class TestQuantizedKVCacheManager:
         assert 0 < ratio < 0.5
 
     def test_get_stats(self):
-        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64,
-                                    calibration_tokens=0)
-        manager = QuantizedKVCacheManager(config, num_layers=2,
-                                           num_kv_heads=4, head_dim=64)
+        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64, calibration_tokens=0)
+        manager = QuantizedKVCacheManager(config, num_layers=2, num_kv_heads=4, head_dim=64)
         mx.random.seed(0)
         for layer in range(2):
             keys = mx.random.normal(shape=(16, 4, 64))
@@ -439,10 +419,8 @@ class TestQuantizedKVCacheManager:
         assert len(stats["per_layer"]) == 2
 
     def test_reset(self):
-        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64,
-                                    calibration_tokens=0)
-        manager = QuantizedKVCacheManager(config, num_layers=2,
-                                           num_kv_heads=4, head_dim=64)
+        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64, calibration_tokens=0)
+        manager = QuantizedKVCacheManager(config, num_layers=2, num_kv_heads=4, head_dim=64)
         mx.random.seed(0)
         keys = mx.random.normal(shape=(8, 4, 64))
         values = mx.random.normal(shape=(8, 4, 64))
@@ -454,16 +432,13 @@ class TestQuantizedKVCacheManager:
 
     def test_empty_compression_ratio(self):
         config = QuantizedKVConfig()
-        manager = QuantizedKVCacheManager(config, num_layers=2,
-                                           num_kv_heads=4, head_dim=64)
+        manager = QuantizedKVCacheManager(config, num_layers=2, num_kv_heads=4, head_dim=64)
         assert manager.get_compression_ratio() == 1.0
 
     def test_incremental_updates(self):
         """Simulate token-by-token generation."""
-        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64,
-                                    calibration_tokens=4)
-        manager = QuantizedKVCacheManager(config, num_layers=2,
-                                           num_kv_heads=4, head_dim=64)
+        config = QuantizedKVConfig(key_bits=4, value_bits=4, group_size=64, calibration_tokens=4)
+        manager = QuantizedKVCacheManager(config, num_layers=2, num_kv_heads=4, head_dim=64)
         mx.random.seed(0)
 
         # Feed tokens one at a time
@@ -480,10 +455,8 @@ class TestQuantizedKVCacheManager:
 
     def test_8bit_mode(self):
         """8-bit mode should work with near-lossless quality."""
-        config = QuantizedKVConfig(key_bits=8, value_bits=8, group_size=64,
-                                    calibration_tokens=0)
-        manager = QuantizedKVCacheManager(config, num_layers=1,
-                                           num_kv_heads=4, head_dim=64)
+        config = QuantizedKVConfig(key_bits=8, value_bits=8, group_size=64, calibration_tokens=0)
+        manager = QuantizedKVCacheManager(config, num_layers=1, num_kv_heads=4, head_dim=64)
         mx.random.seed(0)
         keys = mx.random.normal(shape=(16, 4, 64))
         values = mx.random.normal(shape=(16, 4, 64))
@@ -495,10 +468,8 @@ class TestQuantizedKVCacheManager:
 
     def test_2bit_mode(self):
         """2-bit mode should work (lossy but functional)."""
-        config = QuantizedKVConfig(key_bits=2, value_bits=2, group_size=64,
-                                    calibration_tokens=0)
-        manager = QuantizedKVCacheManager(config, num_layers=1,
-                                           num_kv_heads=4, head_dim=64)
+        config = QuantizedKVConfig(key_bits=2, value_bits=2, group_size=64, calibration_tokens=0)
+        manager = QuantizedKVCacheManager(config, num_layers=1, num_kv_heads=4, head_dim=64)
         mx.random.seed(0)
         keys = mx.random.normal(shape=(16, 4, 64))
         values = mx.random.normal(shape=(16, 4, 64))
@@ -513,6 +484,7 @@ class TestQuantizedKVCacheManager:
 # ---------------------------------------------------------------------------
 # Calibration behavior
 # ---------------------------------------------------------------------------
+
 
 class TestCalibration:
     """Detailed calibration period tests."""

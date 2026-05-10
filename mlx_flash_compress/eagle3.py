@@ -44,6 +44,7 @@ import mlx.optimizers as optim
 @dataclass
 class EAGLE3Config:
     """Configuration for EAGLE-3 speculative decoding."""
+
     num_draft_tokens: int = 6  # tokens to draft per cycle
     hidden_dim: int = 0  # auto-detect from model (0 = auto)
     num_heads: int = 4
@@ -77,8 +78,7 @@ class EAGLEDraftHead(nn.Module):
         self.output_norm = nn.RMSNorm(hidden_dim)
         self.output_proj = nn.Linear(hidden_dim, hidden_dim)
 
-    def __call__(self, hidden_state: mx.array,
-                 token_embedding: mx.array) -> mx.array:
+    def __call__(self, hidden_state: mx.array, token_embedding: mx.array) -> mx.array:
         """Predict next hidden state from current hidden state + token embedding.
 
         Args:
@@ -132,8 +132,7 @@ class EAGLE3Engine:
     Verification uses standard speculative decoding.
     """
 
-    def __init__(self, model, tokenizer, config: EAGLE3Config = None,
-                 draft_head: EAGLEDraftHead = None):
+    def __init__(self, model, tokenizer, config: EAGLE3Config = None, draft_head: EAGLEDraftHead = None):
         self.model = model
         self.tokenizer = tokenizer
         self.config = config or EAGLE3Config()
@@ -242,8 +241,7 @@ class EAGLE3Engine:
         """
         return self._lm_head_fn(hidden)
 
-    def draft(self, last_hidden: mx.array,
-              last_token_id: int) -> tuple[mx.array, mx.array]:
+    def draft(self, last_hidden: mx.array, last_token_id: int) -> tuple[mx.array, mx.array]:
         """Autoregressively draft tokens using the draft head.
 
         1. Use draft_head to predict next hidden state
@@ -273,9 +271,7 @@ class EAGLE3Engine:
             token_embed = self._embed_fn(token_ids)  # [1, 1, hidden_dim]
 
             # Predict next hidden state
-            predicted_hidden = self.draft_head(
-                current_hidden, token_embed
-            )  # [B, 1, hidden_dim]
+            predicted_hidden = self.draft_head(current_hidden, token_embed)  # [B, 1, hidden_dim]
 
             draft_hiddens.append(predicted_hidden)
 
@@ -286,9 +282,7 @@ class EAGLE3Engine:
                 next_token = mx.argmax(logits, axis=-1)  # [B, 1]
             else:
                 probs = mx.softmax(logits / self.config.temperature, axis=-1)
-                next_token = mx.random.categorical(
-                    mx.log(probs + 1e-10).squeeze(1)
-                ).reshape(-1, 1)
+                next_token = mx.random.categorical(mx.log(probs + 1e-10).squeeze(1)).reshape(-1, 1)
 
             draft_ids.append(next_token)
             mx.eval(next_token)
@@ -304,8 +298,7 @@ class EAGLE3Engine:
 
         return draft_token_ids, draft_hidden_states
 
-    def verify(self, input_ids: mx.array,
-               draft_tokens: mx.array) -> tuple[mx.array, int]:
+    def verify(self, input_ids: mx.array, draft_tokens: mx.array) -> tuple[mx.array, int]:
         """Verify draft tokens with full model forward pass.
 
         Args:
@@ -324,7 +317,7 @@ class EAGLE3Engine:
         n_draft = draft_tokens.shape[-1]
 
         # Logits at position i predict token i+1
-        verify_logits = logits[:, ctx_len - 1: ctx_len - 1 + n_draft, :]
+        verify_logits = logits[:, ctx_len - 1 : ctx_len - 1 + n_draft, :]
         target_ids = mx.argmax(verify_logits, axis=-1)
         mx.eval(target_ids)
 
@@ -353,8 +346,7 @@ class EAGLE3Engine:
 
         return mx.array(accepted, dtype=mx.int32), len(accepted)
 
-    def generate(self, prompt_tokens: mx.array, max_tokens: int = 100,
-                 callback=None) -> mx.array:
+    def generate(self, prompt_tokens: mx.array, max_tokens: int = 100, callback=None) -> mx.array:
         """Full generation loop with EAGLE-3 speculation.
 
         Args:
@@ -433,6 +425,7 @@ class EAGLE3Engine:
         speedup = tokens_per_step
 
         import numpy as np
+
         return {
             "total_draft_tokens": total_drafts,
             "total_accepted": total_accepted,
@@ -440,8 +433,12 @@ class EAGLE3Engine:
             "acceptance_rate": round(acceptance_rate, 3),
             "tokens_per_step": round(tokens_per_step, 1),
             "speedup_factor": round(speedup, 2),
-            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1) if self.stats["draft_times_ms"] else 0,
-            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1) if self.stats["verify_times_ms"] else 0,
+            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1)
+            if self.stats["draft_times_ms"]
+            else 0,
+            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1)
+            if self.stats["verify_times_ms"]
+            else 0,
         }
 
 
@@ -519,9 +516,7 @@ class EAGLE3Trainer:
             h = self._norm_fn(h)
         return h
 
-    def collect_training_data(self, texts: list[str],
-                              max_tokens_per_text: int = 256
-                              ) -> tuple[mx.array, mx.array]:
+    def collect_training_data(self, texts: list[str], max_tokens_per_text: int = 256) -> tuple[mx.array, mx.array]:
         """Collect (hidden_state_t, hidden_state_t+1) pairs from target model.
 
         Runs the target model on each text and extracts consecutive hidden
@@ -578,9 +573,9 @@ class EAGLE3Trainer:
 
         return input_pairs, target_hiddens
 
-    def train(self, hidden_pairs: tuple[mx.array, mx.array],
-              num_steps: int = 1000, lr: float = 1e-3,
-              batch_size: int = 32) -> EAGLEDraftHead:
+    def train(
+        self, hidden_pairs: tuple[mx.array, mx.array], num_steps: int = 1000, lr: float = 1e-3, batch_size: int = 32
+    ) -> EAGLEDraftHead:
         """Train draft head to predict next hidden state.
 
         Uses MSE loss between predicted and actual next hidden states.
@@ -626,9 +621,7 @@ class EAGLE3Trainer:
             x_hidden = batch_inputs[:, :hidden_dim].reshape(-1, 1, hidden_dim)
             x_embed = batch_inputs[:, hidden_dim:].reshape(-1, 1, hidden_dim)
 
-            loss, grads = loss_and_grad(
-                draft_head, x_hidden, x_embed, batch_targets
-            )
+            loss, grads = loss_and_grad(draft_head, x_hidden, x_embed, batch_targets)
             optimizer.update(draft_head, grads)
             mx.eval(draft_head.parameters(), optimizer.state)
 
@@ -647,9 +640,7 @@ class EAGLE3Trainer:
         mx.save_safetensors(path, flat)
 
     @staticmethod
-    def load(path: str, hidden_dim: int,
-             num_heads: int = 4,
-             num_layers: int = 1) -> EAGLEDraftHead:
+    def load(path: str, hidden_dim: int, num_heads: int = 4, num_layers: int = 1) -> EAGLEDraftHead:
         """Load trained draft head.
 
         Args:

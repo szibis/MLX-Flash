@@ -4,14 +4,15 @@ import pytest
 
 try:
     import mlx.core as mx
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
 
 from mlx_flash_compress.kv_compression import (
-    KVCompressionConfig,
     AttentionScoreTracker,
     CompressedKVCache,
+    KVCompressionConfig,
 )
 
 pytestmark = pytest.mark.skipif(not HAS_MLX, reason="MLX required")
@@ -88,9 +89,9 @@ def _make_heavy_hitter_attention(num_heads, seq_len, heavy_indices, seed=0):
         logits_list = []
         for j in range(seq_len):
             if j == idx:
-                logits_list.append(logits[:, :, j:j+1] + 5.0)
+                logits_list.append(logits[:, :, j : j + 1] + 5.0)
             else:
-                logits_list.append(logits[:, :, j:j+1])
+                logits_list.append(logits[:, :, j : j + 1])
         logits = mx.concatenate(logits_list, axis=-1)
 
     weights = mx.softmax(logits, axis=-1)
@@ -291,8 +292,7 @@ class TestCompressedKVCacheCompression:
         # Add rest with attention weights
         combined_len = 100
         weights = _make_attention_weights(NUM_HEADS, combined_len)
-        out_k, out_v = h2o_cache.update(0, rest_k, rest_v,
-                                         attention_weights=weights)
+        out_k, out_v = h2o_cache.update(0, rest_k, rest_v, attention_weights=weights)
 
         mx.eval(out_k, out_v)
         # First 4 tokens should be our sinks
@@ -312,8 +312,7 @@ class TestCompressedKVCacheCompression:
         recent_v = mx.ones((NUM_HEADS, 8, HEAD_DIM)) * 666.0
         combined_len = 88
         weights2 = _make_attention_weights(NUM_HEADS, combined_len, seed=1)
-        out_k, out_v = h2o_cache.update(0, recent_k, recent_v,
-                                         attention_weights=weights2)
+        out_k, out_v = h2o_cache.update(0, recent_k, recent_v, attention_weights=weights2)
 
         mx.eval(out_k, out_v)
         # Last 8 tokens should be our recent window
@@ -364,8 +363,7 @@ class TestCompressedKVCacheScissorHands:
         """ScissorHands scoring should also compress correctly."""
         k, v = _make_kv(100)
         weights = _make_attention_weights(NUM_HEADS, 100)
-        out_k, out_v = scissorhands_cache.update(0, k, v,
-                                                  attention_weights=weights)
+        out_k, out_v = scissorhands_cache.update(0, k, v, attention_weights=weights)
         mx.eval(out_k)
         assert out_k.shape[1] <= 100
         assert out_k.shape[1] >= 12
@@ -421,8 +419,7 @@ class TestCompressedKVCacheEdgeCases:
 
     def test_budget_ratio_one(self):
         """budget_ratio=1.0 should keep everything."""
-        config = KVCompressionConfig(budget_ratio=1.0, sink_tokens=2,
-                                     recent_window=4)
+        config = KVCompressionConfig(budget_ratio=1.0, sink_tokens=2, recent_window=4)
         cache = CompressedKVCache(config, NUM_LAYERS, NUM_HEADS, HEAD_DIM)
         k, v = _make_kv(50)
         weights = _make_attention_weights(NUM_HEADS, 50)
@@ -432,8 +429,7 @@ class TestCompressedKVCacheEdgeCases:
 
     def test_budget_very_small(self):
         """Very small budget should still keep sink + window."""
-        config = KVCompressionConfig(budget_ratio=0.01, sink_tokens=2,
-                                     recent_window=3)
+        config = KVCompressionConfig(budget_ratio=0.01, sink_tokens=2, recent_window=3)
         cache = CompressedKVCache(config, NUM_LAYERS, NUM_HEADS, HEAD_DIM)
         k, v = _make_kv(100)
         weights = _make_attention_weights(NUM_HEADS, 100)
@@ -444,8 +440,7 @@ class TestCompressedKVCacheEdgeCases:
 
     def test_sink_plus_window_exceeds_seq(self):
         """When sink + window > seq_len, no compression should happen."""
-        config = KVCompressionConfig(budget_ratio=0.2, sink_tokens=10,
-                                     recent_window=10)
+        config = KVCompressionConfig(budget_ratio=0.2, sink_tokens=10, recent_window=10)
         cache = CompressedKVCache(config, NUM_LAYERS, NUM_HEADS, HEAD_DIM)
         k, v = _make_kv(5)
         out_k, _ = cache.update(0, k, v)

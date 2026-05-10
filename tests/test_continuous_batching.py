@@ -1,13 +1,15 @@
 """Tests for continuous batching engine (no real model loading)."""
 
-import time
 import threading
-import pytest
+import time
 from unittest.mock import MagicMock
+
+import pytest
 
 try:
     import mlx.core as mx
     import mlx.nn as nn
+
     HAS_MLX = True
 except (ImportError, ModuleNotFoundError):
     HAS_MLX = False
@@ -17,12 +19,12 @@ pytestmark = pytest.mark.skipif(not HAS_MLX, reason="requires mlx")
 # Import after guard so collection doesn't fail without mlx
 if HAS_MLX:
     from mlx_flash_compress.continuous_batching import (
-        RequestStatus,
-        InferenceRequest,
-        BatchSchedulerConfig,
-        KVCachePool,
         BatchScheduler,
+        BatchSchedulerConfig,
         ContinuousBatchingEngine,
+        InferenceRequest,
+        KVCachePool,
+        RequestStatus,
         create_batching_server,
     )
 
@@ -31,6 +33,7 @@ if HAS_MLX:
 # Mock model: a simple linear layer that produces logits
 # ---------------------------------------------------------------------------
 
+
 class MockModel:
     """Minimal model that returns deterministic logits of the right shape.
 
@@ -38,8 +41,7 @@ class MockModel:
     so they work correctly with thread-local streams.
     """
 
-    def __init__(self, vocab_size: int = 32, num_layers: int = 2,
-                 num_kv_heads: int = 2, head_dim: int = 8):
+    def __init__(self, vocab_size: int = 32, num_layers: int = 2, num_kv_heads: int = 2, head_dim: int = 8):
         self.vocab_size = vocab_size
         self.num_layers = num_layers
         self.num_kv_heads = num_kv_heads
@@ -91,8 +93,8 @@ def _make_tokenizer(vocab_size=32):
 # InferenceRequest
 # ===========================================================================
 
-class TestInferenceRequest:
 
+class TestInferenceRequest:
     def test_initial_status_is_queued(self):
         req = InferenceRequest(request_id="r1", prompt_tokens=[1, 2, 3])
         assert req.status == RequestStatus.QUEUED
@@ -144,47 +146,41 @@ class TestInferenceRequest:
 # KV Cache Pool
 # ===========================================================================
 
-class TestKVCachePool:
 
+class TestKVCachePool:
     def test_allocate_returns_slot(self):
-        pool = KVCachePool(max_batch_size=4, num_layers=2,
-                           num_kv_heads=2, head_dim=8)
+        pool = KVCachePool(max_batch_size=4, num_layers=2, num_kv_heads=2, head_dim=8)
         slot = pool.allocate("r1")
         assert isinstance(slot, int)
         assert 0 <= slot < 4
 
     def test_allocate_idempotent(self):
-        pool = KVCachePool(max_batch_size=4, num_layers=2,
-                           num_kv_heads=2, head_dim=8)
+        pool = KVCachePool(max_batch_size=4, num_layers=2, num_kv_heads=2, head_dim=8)
         s1 = pool.allocate("r1")
         s2 = pool.allocate("r1")
         assert s1 == s2
 
     def test_free_returns_slot(self):
-        pool = KVCachePool(max_batch_size=2, num_layers=1,
-                           num_kv_heads=1, head_dim=4)
+        pool = KVCachePool(max_batch_size=2, num_layers=1, num_kv_heads=1, head_dim=4)
         pool.allocate("r1")
         assert pool.num_free_slots == 1
         pool.free("r1")
         assert pool.num_free_slots == 2
 
     def test_free_nonexistent_is_noop(self):
-        pool = KVCachePool(max_batch_size=2, num_layers=1,
-                           num_kv_heads=1, head_dim=4)
+        pool = KVCachePool(max_batch_size=2, num_layers=1, num_kv_heads=1, head_dim=4)
         pool.free("nonexistent")  # should not raise
         assert pool.num_free_slots == 2
 
     def test_exhaust_pool_raises(self):
-        pool = KVCachePool(max_batch_size=2, num_layers=1,
-                           num_kv_heads=1, head_dim=4)
+        pool = KVCachePool(max_batch_size=2, num_layers=1, num_kv_heads=1, head_dim=4)
         pool.allocate("r1")
         pool.allocate("r2")
         with pytest.raises(RuntimeError, match="exhausted"):
             pool.allocate("r3")
 
     def test_utilization(self):
-        pool = KVCachePool(max_batch_size=4, num_layers=1,
-                           num_kv_heads=1, head_dim=4)
+        pool = KVCachePool(max_batch_size=4, num_layers=1, num_kv_heads=1, head_dim=4)
         assert pool.utilization == 0.0
         pool.allocate("r1")
         assert abs(pool.utilization - 0.25) < 1e-6
@@ -192,10 +188,9 @@ class TestKVCachePool:
         assert abs(pool.utilization - 0.5) < 1e-6
 
     def test_update_and_get_kv(self):
-        pool = KVCachePool(max_batch_size=2, num_layers=2,
-                           num_kv_heads=2, head_dim=4)
+        pool = KVCachePool(max_batch_size=2, num_layers=2, num_kv_heads=2, head_dim=4)
         slot = pool.allocate("r1")
-        keys = mx.ones((3, 2, 4))    # 3 tokens
+        keys = mx.ones((3, 2, 4))  # 3 tokens
         values = mx.zeros((3, 2, 4))
         pool.update_kv(slot, layer=0, keys=keys, values=values)
 
@@ -204,8 +199,7 @@ class TestKVCachePool:
         assert v.shape == (3, 2, 4)
 
     def test_update_kv_appends(self):
-        pool = KVCachePool(max_batch_size=2, num_layers=1,
-                           num_kv_heads=1, head_dim=4)
+        pool = KVCachePool(max_batch_size=2, num_layers=1, num_kv_heads=1, head_dim=4)
         slot = pool.allocate("r1")
 
         pool.update_kv(slot, 0, mx.ones((2, 1, 4)), mx.ones((2, 1, 4)))
@@ -216,16 +210,14 @@ class TestKVCachePool:
         assert pool.get_seq_len(slot) == 5
 
     def test_get_kv_empty_slot(self):
-        pool = KVCachePool(max_batch_size=2, num_layers=1,
-                           num_kv_heads=1, head_dim=4)
+        pool = KVCachePool(max_batch_size=2, num_layers=1, num_kv_heads=1, head_dim=4)
         slot = pool.allocate("r1")
         k, v = pool.get_kv(slot, 0)
         assert k is None
         assert v is None
 
     def test_free_clears_cache(self):
-        pool = KVCachePool(max_batch_size=2, num_layers=1,
-                           num_kv_heads=1, head_dim=4)
+        pool = KVCachePool(max_batch_size=2, num_layers=1, num_kv_heads=1, head_dim=4)
         slot = pool.allocate("r1")
         pool.update_kv(slot, 0, mx.ones((2, 1, 4)), mx.ones((2, 1, 4)))
         pool.free("r1")
@@ -238,8 +230,7 @@ class TestKVCachePool:
 
     def test_concurrent_allocate(self):
         """Multiple threads allocating should not produce conflicts."""
-        pool = KVCachePool(max_batch_size=16, num_layers=1,
-                           num_kv_heads=1, head_dim=4)
+        pool = KVCachePool(max_batch_size=16, num_layers=1, num_kv_heads=1, head_dim=4)
         results = {}
         errors = []
 
@@ -250,10 +241,7 @@ class TestKVCachePool:
             except Exception as e:
                 errors.append(e)
 
-        threads = [
-            threading.Thread(target=alloc, args=(f"r{i}",))
-            for i in range(16)
-        ]
+        threads = [threading.Thread(target=alloc, args=(f"r{i}",)) for i in range(16)]
         for t in threads:
             t.start()
         for t in threads:
@@ -267,8 +255,8 @@ class TestKVCachePool:
 # Batch Scheduler
 # ===========================================================================
 
-class TestBatchScheduler:
 
+class TestBatchScheduler:
     def test_add_and_get_batch(self):
         sched = BatchScheduler(BatchSchedulerConfig(max_batch_size=4))
         req = InferenceRequest(request_id="r1", prompt_tokens=[1, 2])
@@ -281,9 +269,7 @@ class TestBatchScheduler:
     def test_fcfs_ordering(self):
         sched = BatchScheduler(BatchSchedulerConfig(max_batch_size=4))
         for i in range(3):
-            sched.add_request(InferenceRequest(
-                request_id=f"r{i}", prompt_tokens=[1] * (10 - i)
-            ))
+            sched.add_request(InferenceRequest(request_id=f"r{i}", prompt_tokens=[1] * (10 - i)))
         batch = sched.get_batch()
         assert [r.request_id for r in batch] == ["r0", "r1", "r2"]
 
@@ -301,9 +287,7 @@ class TestBatchScheduler:
     def test_max_batch_size_respected(self):
         sched = BatchScheduler(BatchSchedulerConfig(max_batch_size=2))
         for i in range(5):
-            sched.add_request(InferenceRequest(
-                request_id=f"r{i}", prompt_tokens=[1]
-            ))
+            sched.add_request(InferenceRequest(request_id=f"r{i}", prompt_tokens=[1]))
         batch = sched.get_batch()
         assert len(batch) == 2
         # Remaining 3 still in queue
@@ -382,9 +366,7 @@ class TestBatchScheduler:
 
         # Add requests
         for i in range(3):
-            sched.add_request(InferenceRequest(
-                request_id=f"r{i}", prompt_tokens=[1]
-            ))
+            sched.add_request(InferenceRequest(request_id=f"r{i}", prompt_tokens=[1]))
         stats = sched.get_stats()
         assert stats["queue_depth"] == 3
 
@@ -416,8 +398,8 @@ class TestBatchScheduler:
 # ContinuousBatchingEngine
 # ===========================================================================
 
-class TestContinuousBatchingEngine:
 
+class TestContinuousBatchingEngine:
     def _make_engine(self, max_batch=4, vocab_size=32, max_tokens_default=8):
         model = _make_model(vocab_size=vocab_size)
         tokenizer = _make_tokenizer(vocab_size=vocab_size)
@@ -472,14 +454,8 @@ class TestContinuousBatchingEngine:
         engine = self._make_engine(max_batch=4)
         engine.start()
         try:
-            requests = [
-                engine.submit(f"prompt {i}", max_tokens=4)
-                for i in range(4)
-            ]
-            results = [
-                engine.wait_for_completion(r, timeout=15.0)
-                for r in requests
-            ]
+            requests = [engine.submit(f"prompt {i}", max_tokens=4) for i in range(4)]
+            results = [engine.wait_for_completion(r, timeout=15.0) for r in requests]
             for r in results:
                 assert r.status == RequestStatus.COMPLETED
                 assert len(r.generated_tokens) > 0
@@ -538,10 +514,7 @@ class TestContinuousBatchingEngine:
         engine = self._make_engine(max_batch=2)
         engine.start()
         try:
-            requests = [
-                engine.submit(f"req {i}", max_tokens=2)
-                for i in range(4)
-            ]
+            requests = [engine.submit(f"req {i}", max_tokens=2) for i in range(4)]
             for r in requests:
                 engine.wait_for_completion(r, timeout=20.0)
             completed = sum(1 for r in requests if r.status == RequestStatus.COMPLETED)
@@ -554,8 +527,8 @@ class TestContinuousBatchingEngine:
 # Factory function
 # ===========================================================================
 
-class TestCreateBatchingServer:
 
+class TestCreateBatchingServer:
     def test_returns_engine(self):
         model = _make_model()
         tokenizer = _make_tokenizer()
@@ -578,8 +551,8 @@ class TestCreateBatchingServer:
 # BatchSchedulerConfig
 # ===========================================================================
 
-class TestBatchSchedulerConfig:
 
+class TestBatchSchedulerConfig:
     def test_defaults(self):
         cfg = BatchSchedulerConfig()
         assert cfg.max_batch_size == 8
@@ -601,8 +574,8 @@ class TestBatchSchedulerConfig:
 # RequestStatus enum
 # ===========================================================================
 
-class TestRequestStatus:
 
+class TestRequestStatus:
     def test_all_statuses_exist(self):
         assert RequestStatus.QUEUED
         assert RequestStatus.PREFILLING

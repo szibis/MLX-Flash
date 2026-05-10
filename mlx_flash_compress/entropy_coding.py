@@ -17,14 +17,15 @@ This module provides:
   4. analyze_distribution: measure entropy and potential compression ratio
 """
 
-import numpy as np
-from collections import Counter
-from dataclasses import dataclass, field
 import heapq
 import struct
+from collections import Counter
+from dataclasses import dataclass, field
 
+import numpy as np
 
 # -- Huffman tree --
+
 
 class _HuffmanNode:
     """Node in a Huffman tree."""
@@ -42,6 +43,7 @@ class _HuffmanNode:
 @dataclass
 class HuffmanCodebook:
     """Huffman codebook mapping symbols to variable-length bit codes."""
+
     codes: dict = field(default_factory=dict)  # symbol -> bit string
     decode_table: dict = field(default_factory=dict)  # bit string -> symbol
     avg_bits: float = 0.0
@@ -125,9 +127,11 @@ def _extract_codes(node, prefix, codes):
 
 # -- Weight analysis --
 
+
 @dataclass
 class WeightDistribution:
     """Analysis of a quantized weight tensor's value distribution."""
+
     counts: dict = field(default_factory=dict)
     total_values: int = 0
     unique_values: int = 0
@@ -162,6 +166,7 @@ def analyze_distribution(weights: np.ndarray, nominal_bits: int = 4) -> WeightDi
 
 # -- Encoding / Decoding --
 
+
 def encode_weights(weights: np.ndarray, codebook: HuffmanCodebook) -> tuple[bytes, int]:
     """Encode quantized weights to a compressed bitstream.
 
@@ -181,14 +186,13 @@ def encode_weights(weights: np.ndarray, codebook: HuffmanCodebook) -> tuple[byte
     # Convert to bytes
     result = bytearray()
     for i in range(0, len(bitstring), 8):
-        byte = int(bitstring[i:i + 8], 2)
+        byte = int(bitstring[i : i + 8], 2)
         result.append(byte)
 
     return bytes(result), len(flat)
 
 
-def decode_weights(data: bytes, count: int, codebook: HuffmanCodebook,
-                   shape: tuple = None) -> np.ndarray:
+def decode_weights(data: bytes, count: int, codebook: HuffmanCodebook, shape: tuple = None) -> np.ndarray:
     """Decode compressed bitstream back to quantized weights."""
     # Convert bytes to bit string
     bitstring = "".join(f"{byte:08b}" for byte in data)
@@ -201,7 +205,7 @@ def decode_weights(data: bytes, count: int, codebook: HuffmanCodebook,
         for length in range(1, codebook.max_bits + 1):
             if pos + length > len(bitstring):
                 break
-            candidate = bitstring[pos:pos + length]
+            candidate = bitstring[pos : pos + length]
             if candidate in codebook.decode_table:
                 values.append(codebook.decode_table[candidate])
                 pos += length
@@ -217,6 +221,7 @@ def decode_weights(data: bytes, count: int, codebook: HuffmanCodebook,
 
 
 # -- High-level API --
+
 
 def compress_tensor(weights: np.ndarray, nominal_bits: int = 4) -> dict:
     """Compress a quantized weight tensor using Huffman coding.

@@ -1,0 +1,104 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 4 * * 1'    # Monday 4am UTC
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Trivy — filesystem scan for HIGH/CRITICAL vulnerabilities
+  # ---------------------------------------------------------------------------
+  trivy:
+    name: Trivy vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+
+  # ---------------------------------------------------------------------------
+  # Gitleaks — secret detection across git history
+  # ---------------------------------------------------------------------------
+  gitleaks:
+    name: Gitleaks secret detection
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------------------------------------------------------------------------
+  # pip-audit — Python dependency vulnerability scan
+  # ---------------------------------------------------------------------------
+  pip-audit:
+    name: pip-audit dependency scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies and pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+          # Install project deps (skip mlx — macOS-only, not auditable on Linux)
+          pip install numpy psutil tabulate safetensors huggingface-hub lz4 zstandard
+
+      - name: Run pip-audit
+        run: pip-audit --strict --desc
+
+  # ---------------------------------------------------------------------------
+  # Bandit — Python static security analysis (lenient)
+  # ---------------------------------------------------------------------------
+  bandit:
+    name: Bandit security scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install bandit
+        run: pip install bandit[toml]
+
+      - name: Run bandit
+        run: |
+          bandit -r mlx_flash_compress/ \
+            --severity-level medium \
+            --confidence-level medium \
+            -f json -o bandit-report.json || true
+          bandit -r mlx_flash_compress/ \
+            --severity-level medium \
+            --confidence-level medium \
+            || true
+
+      - name: Upload bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+          retention-days: 30

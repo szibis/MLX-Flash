@@ -39,13 +39,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 RUST_BINARY = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "mlx-flash-server", "target", "release", "mlx-flash-server"
+    "mlx-flash-server",
+    "target",
+    "release",
+    "mlx-flash-server",
 )
 SOCKET_PATH = "/tmp/mlx-flash-e2e-test.sock"
 
 
-def create_test_experts(base_dir: str, num_layers: int = 4, num_experts: int = 8,
-                        size_bytes: int = 1024) -> str:
+def create_test_experts(base_dir: str, num_layers: int = 4, num_experts: int = 8, size_bytes: int = 1024) -> str:
     """Create synthetic expert weight files."""
     expert_dir = os.path.join(base_dir, "experts")
     rng = np.random.default_rng(42)
@@ -83,10 +85,14 @@ def cache_server():
     proc = subprocess.Popen(
         [
             RUST_BINARY,
-            "--port", "0",  # don't bind HTTP (use random or skip)
-            "--expert-dir", expert_dir,
-            "--cache-mb", "1",  # 1MB cache
-            "--socket-path", SOCKET_PATH,
+            "--port",
+            "0",  # don't bind HTTP (use random or skip)
+            "--expert-dir",
+            expert_dir,
+            "--cache-mb",
+            "1",  # 1MB cache
+            "--socket-path",
+            SOCKET_PATH,
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -134,8 +140,9 @@ class TestCacheRoundtrip:
         data = result["ExpertData"]
         assert data["request_id"] == 1
         assert len(data["expert_sizes"]) == 3
-        assert all(s == 1024 for s in data["expert_sizes"]), \
+        assert all(s == 1024 for s in data["expert_sizes"]), (
             f"Expected 1024 bytes per expert, got {data['expert_sizes']}"
+        )
 
         client.close()
 
@@ -219,8 +226,7 @@ class TestCacheRoundtrip:
         stats = result["CacheStatsResponse"]
 
         # After 20 accesses of the same experts, hit rate should be high
-        assert stats["hit_rate"] > 0.8, \
-            f"Expected hit rate > 80% after warm-up, got {stats['hit_rate']:.1%}"
+        assert stats["hit_rate"] > 0.8, f"Expected hit rate > 80% after warm-up, got {stats['hit_rate']:.1%}"
 
         client.close()
 
@@ -242,9 +248,9 @@ def main():
 
     print("Starting Rust cache server...")
     proc = subprocess.Popen(
-        [RUST_BINARY, "--port", "0", "--expert-dir", expert_dir,
-         "--cache-mb", "1", "--socket-path", SOCKET_PATH],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        [RUST_BINARY, "--port", "0", "--expert-dir", expert_dir, "--cache-mb", "1", "--socket-path", SOCKET_PATH],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
 
     for _ in range(30):
@@ -270,7 +276,7 @@ def main():
     # Test 2: Warm fetch
     result = client.fetch_experts(layer=0, experts=[1, 2, 3], request_id=2)
     assert all(s == 1024 for s in result["ExpertData"]["expert_sizes"])
-    print(f"  Warm fetch: OK (cache hit)")
+    print("  Warm fetch: OK (cache hit)")
 
     # Test 3: Routing report
     result = client.report_routing(layer=0, activated=[1, 2], token_idx=0)

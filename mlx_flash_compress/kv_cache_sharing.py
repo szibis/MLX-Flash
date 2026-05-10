@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 @dataclass
 class KVSharingPlan:
     """Plan for which layers share KV caches."""
+
     num_layers: int = 0
     strategy: str = "pair"
     # Donor layers: compute their own KV cache
@@ -64,8 +65,7 @@ class KVSharingPlan:
         }
 
 
-def plan_kv_sharing(num_layers: int, strategy: str = "pair",
-                     group_size: int = 2) -> KVSharingPlan:
+def plan_kv_sharing(num_layers: int, strategy: str = "pair", group_size: int = 2) -> KVSharingPlan:
     """Plan KV-cache sharing between transformer layers.
 
     Strategies:
@@ -95,10 +95,15 @@ def plan_kv_sharing(num_layers: int, strategy: str = "pair",
     return plan
 
 
-def estimate_kv_memory(num_layers: int, hidden_dim: int = 4096,
-                        num_heads: int = 32, head_dim: int = 128,
-                        max_seq_len: int = 4096, kv_bits: int = 16,
-                        strategy: str = "pair") -> dict:
+def estimate_kv_memory(
+    num_layers: int,
+    hidden_dim: int = 4096,
+    num_heads: int = 32,
+    head_dim: int = 128,
+    max_seq_len: int = 4096,
+    kv_bits: int = 16,
+    strategy: str = "pair",
+) -> dict:
     """Estimate KV cache memory with and without sharing.
 
     Returns memory estimates in GB.
@@ -106,7 +111,7 @@ def estimate_kv_memory(num_layers: int, hidden_dim: int = 4096,
     # KV cache per layer: 2 (K+V) * num_heads * head_dim * max_seq_len * bytes
     bytes_per_element = kv_bits / 8
     kv_per_layer = 2 * num_heads * head_dim * max_seq_len * bytes_per_element
-    kv_per_layer_gb = kv_per_layer / (1024 ** 3)
+    kv_per_layer_gb = kv_per_layer / (1024**3)
 
     # Without sharing
     total_no_sharing = kv_per_layer_gb * num_layers
@@ -120,7 +125,7 @@ def estimate_kv_memory(num_layers: int, hidden_dim: int = 4096,
     return {
         "num_layers": num_layers,
         "strategy": strategy,
-        "kv_per_layer_mb": round(kv_per_layer / (1024 ** 2), 1),
+        "kv_per_layer_mb": round(kv_per_layer / (1024**2), 1),
         "total_no_sharing_gb": round(total_no_sharing, 2),
         "total_with_sharing_gb": round(total_with_sharing, 2),
         "savings_gb": round(savings_gb, 2),

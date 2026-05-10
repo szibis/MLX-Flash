@@ -6,20 +6,21 @@ import pytest
 try:
     import mlx.core as mx
     import mlx.nn as nn
+
     MLX_AVAILABLE = True
 except ImportError:
     MLX_AVAILABLE = False
 
 from mlx_flash_compress.eagle3 import (
     EAGLE3Config,
-    EAGLEDraftHead,
     EAGLE3Engine,
     EAGLE3Trainer,
+    EAGLEDraftHead,
     _flatten_dict,
 )
 
-
 # -- Mock Model Components --
+
 
 class MockLayer(nn.Module):
     """Simple linear layer that mimics a transformer layer."""
@@ -35,8 +36,7 @@ class MockLayer(nn.Module):
 class MockInnerModel(nn.Module):
     """Mimics model.model with embed_tokens, layers, and norm."""
 
-    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32,
-                 num_layers: int = 8):
+    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 8):
         super().__init__()
         self.embed_tokens = nn.Embedding(vocab_size, hidden_dim)
         self.layers = [MockLayer(hidden_dim) for _ in range(num_layers)]
@@ -46,8 +46,7 @@ class MockInnerModel(nn.Module):
 class MockModel(nn.Module):
     """Mimics a standard HuggingFace/MLX causal LM structure."""
 
-    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32,
-                 num_layers: int = 8):
+    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 8):
         super().__init__()
         self.model = MockInnerModel(vocab_size, hidden_dim, num_layers)
         self.lm_head = nn.Linear(hidden_dim, vocab_size)
@@ -62,6 +61,7 @@ class MockModel(nn.Module):
 
 class MockTokenizer:
     """Minimal tokenizer for testing."""
+
     eos_token_id = 99
 
     def encode(self, text: str) -> list[int]:
@@ -72,6 +72,7 @@ class MockTokenizer:
 
 
 # -- Config Tests --
+
 
 class TestEAGLE3Config:
     def test_default_config(self):
@@ -97,6 +98,7 @@ class TestEAGLE3Config:
 
 
 # -- Draft Head Tests --
+
 
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestEAGLEDraftHead:
@@ -169,7 +171,7 @@ class TestEAGLEDraftHead:
 
         def loss_fn(model, h, e):
             out = model(h, e)
-            return mx.mean(out ** 2)
+            return mx.mean(out**2)
 
         h = mx.random.normal((1, 1, 32))
         e = mx.random.normal((1, 1, 32))
@@ -191,6 +193,7 @@ class TestEAGLEDraftHead:
 
 
 # -- Engine Tests --
+
 
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestEAGLE3Engine:
@@ -320,6 +323,7 @@ class TestEAGLE3Engine:
 
 # -- Trainer Tests --
 
+
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestEAGLE3Trainer:
     def setup_method(self):
@@ -336,7 +340,8 @@ class TestEAGLE3Trainer:
         trainer = EAGLE3Trainer(self.model, self.tokenizer)
         texts = ["hello world test"]
         input_pairs, target_hiddens = trainer.collect_training_data(
-            texts, max_tokens_per_text=10,
+            texts,
+            max_tokens_per_text=10,
         )
         mx.eval(input_pairs, target_hiddens)
 
@@ -362,7 +367,8 @@ class TestEAGLE3Trainer:
         trainer = EAGLE3Trainer(self.model, self.tokenizer)
         texts = ["hello world", "test data", "more text here"]
         input_pairs, target_hiddens = trainer.collect_training_data(
-            texts, max_tokens_per_text=10,
+            texts,
+            max_tokens_per_text=10,
         )
         mx.eval(input_pairs, target_hiddens)
 
@@ -391,7 +397,8 @@ class TestEAGLE3Trainer:
         trainer = EAGLE3Trainer(self.model, self.tokenizer)
         texts = ["hello world test data for training"] * 3
         input_pairs, target_hiddens = trainer.collect_training_data(
-            texts, max_tokens_per_text=20,
+            texts,
+            max_tokens_per_text=20,
         )
 
         hidden_dim = 32
@@ -409,7 +416,9 @@ class TestEAGLE3Trainer:
         # Train
         draft_head = trainer.train(
             (input_pairs, target_hiddens),
-            num_steps=50, lr=1e-3, batch_size=8,
+            num_steps=50,
+            lr=1e-3,
+            batch_size=8,
         )
 
         pred_after = draft_head(sample_h, sample_e).squeeze(1)
@@ -428,6 +437,7 @@ class TestEAGLE3Trainer:
 
 
 # -- Save/Load Tests --
+
 
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestEAGLE3SaveLoad:
@@ -463,6 +473,7 @@ class TestEAGLE3SaveLoad:
 
 # -- Helper Tests --
 
+
 class TestFlattenDict:
     def test_simple(self):
         d = {"a": 1, "b": 2}
@@ -484,6 +495,7 @@ class TestFlattenDict:
 
 
 # -- Edge Cases --
+
 
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestEAGLE3EdgeCases:

@@ -32,13 +32,14 @@ Usage:
 import threading
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 import numpy as np
 
 try:
     import mlx.core as mx
     import mlx.nn as nn
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
@@ -47,6 +48,7 @@ except ImportError:
 @dataclass
 class RoutingEvent:
     """A single routing decision captured from the model."""
+
     token_idx: int
     layer_idx: int
     expert_ids: list[int]
@@ -56,6 +58,7 @@ class RoutingEvent:
 @dataclass
 class RouterHookStats:
     """Statistics from router interception."""
+
     total_events: int = 0
     total_tokens: int = 0
     expert_frequency: dict = field(default_factory=lambda: defaultdict(int))
@@ -94,9 +97,7 @@ class RouterHook:
         self._lock = threading.Lock()
 
         # Co-occurrence predictor
-        self._cooccurrence = np.zeros(
-            (num_layers, num_experts, num_experts), dtype=np.float32
-        )
+        self._cooccurrence = np.zeros((num_layers, num_experts, num_experts), dtype=np.float32)
         self._prev_experts: dict[int, list[int]] = {}
 
         self.stats = RouterHookStats()
@@ -123,18 +124,18 @@ class RouterHook:
         self._gate_modules = {}
 
         # Find gate modules: model.layers[i].mlp.gate
-        if hasattr(model, 'model') and hasattr(model.model, 'layers'):
+        if hasattr(model, "model") and hasattr(model.model, "layers"):
             layers = model.model.layers
-        elif hasattr(model, 'layers'):
+        elif hasattr(model, "layers"):
             layers = model.layers
         else:
             return
 
         for i, layer in enumerate(layers):
             gate = None
-            if hasattr(layer, 'mlp') and hasattr(layer.mlp, 'gate'):
+            if hasattr(layer, "mlp") and hasattr(layer.mlp, "gate"):
                 gate = layer.mlp.gate
-            elif hasattr(layer, 'block_sparse_moe') and hasattr(layer.block_sparse_moe, 'gate'):
+            elif hasattr(layer, "block_sparse_moe") and hasattr(layer.block_sparse_moe, "gate"):
                 gate = layer.block_sparse_moe.gate
 
             if gate is not None:
@@ -153,12 +154,13 @@ class RouterHook:
 
         class HookedGate:
             """Wrapper that captures routing decisions."""
+
             def __init__(self, original, layer_idx):
                 self._original = original
                 self._layer_idx = layer_idx
                 # Copy all attributes from original
                 for attr in dir(original):
-                    if not attr.startswith('_') and attr != '__call__':
+                    if not attr.startswith("_") and attr != "__call__":
                         try:
                             setattr(self, attr, getattr(original, attr))
                         except (AttributeError, TypeError):
@@ -177,7 +179,7 @@ class RouterHook:
                         if logits.ndim >= 2:
                             # Take last token's routing (for autoregressive)
                             last_logits = logits.reshape(-1, logits.shape[-1])[-1]
-                            top_k_idx = np.argsort(last_logits)[-hook_self.top_k:][::-1]
+                            top_k_idx = np.argsort(last_logits)[-hook_self.top_k :][::-1]
                             top_k_weights = last_logits[top_k_idx]
 
                             hook_self._record_routing(
@@ -242,7 +244,7 @@ class RouterHook:
         if scores.sum() == 0:
             return []
 
-        top_indices = np.argsort(scores)[-self.top_k:][::-1]
+        top_indices = np.argsort(scores)[-self.top_k :][::-1]
         return top_indices.tolist()
 
     def get_routing_log(self) -> list[RoutingEvent]:
@@ -297,8 +299,7 @@ class RouterHook:
             freqs = self.stats.layer_expert_frequency.get(layer_idx, {})
             total = sum(freqs.values()) if freqs else 1
             hot_experts = [
-                eid for eid, count in sorted(freqs.items(), key=lambda x: -x[1])
-                if count / total >= threshold
+                eid for eid, count in sorted(freqs.items(), key=lambda x: -x[1]) if count / total >= threshold
             ]
             if hot_experts:
                 hot[layer_idx] = hot_experts

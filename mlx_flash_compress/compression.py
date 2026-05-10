@@ -32,6 +32,7 @@ class CompressionAlgo(Enum):
 @dataclass
 class CompressedBuffer:
     """A compressed expert weight buffer with metadata."""
+
     data: bytes
     original_size: int
     compressed_size: int

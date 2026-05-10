@@ -5,10 +5,10 @@ import sys
 import pytest
 
 from mlx_flash_compress.kernels.loader import (
-    MetalKernelLoader,
-    get_kernel_loader,
-    _has_metal_compiler,
     KERNEL_DIR,
+    MetalKernelLoader,
+    _has_metal_compiler,
+    get_kernel_loader,
 )
 
 

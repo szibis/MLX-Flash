@@ -19,6 +19,7 @@ from typing import Optional
 try:
     import mlx.core as mx
     import numpy as np
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
@@ -27,12 +28,13 @@ except ImportError:
 @dataclass
 class ParityResult:
     """Result of a bit-parity verification run."""
+
     model_name: str
     prompt: str
     tokens_compared: int
-    max_delta: float           # max absolute difference in logits
-    mean_delta: float          # mean absolute difference
-    bit_perfect: bool          # True if max_delta == 0.0
+    max_delta: float  # max absolute difference in logits
+    mean_delta: float  # mean absolute difference
+    bit_perfect: bool  # True if max_delta == 0.0
     logits_shape: tuple = ()
     fp32_accumulation: bool = True
 
@@ -104,7 +106,7 @@ def verify_parity(
         )
 
     try:
-        from mlx_lm import load, generate
+        from mlx_lm import generate, load
     except ImportError:
         return ParityResult(
             model_name=model_name,

@@ -5,6 +5,7 @@ import pytest
 
 try:
     import mlx.core as mx
+
     MLX_AVAILABLE = True
 except ImportError:
     MLX_AVAILABLE = False
@@ -67,7 +68,7 @@ class TestDDTreeBuilder:
         ctx_len = 5
         total_len = ctx_len + tree.size
         verify_logits = mx.zeros((1, total_len, 10))
-        verify_logits = verify_logits.at[:, ctx_len - 1:, 3].add(100.0)
+        verify_logits = verify_logits.at[:, ctx_len - 1 :, 3].add(100.0)
 
         accepted, n = builder.verify_tree(tree, verify_logits, ctx_len)
         assert n > 0

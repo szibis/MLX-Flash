@@ -29,7 +29,7 @@ from typing import Optional
 
 import numpy as np
 
-from mlx_flash_compress.cache import ExpertCacheManager, CacheStats, CacheTier
+from mlx_flash_compress.cache import CacheStats, CacheTier, ExpertCacheManager
 from mlx_flash_compress.compression import (
     CompressionAlgo,
     LZ4Compressor,
@@ -37,8 +37,8 @@ from mlx_flash_compress.compression import (
 )
 from mlx_flash_compress.engine import InferenceMode, InferenceResult
 
-
 # ─── Synthetic expert generation ────────────────────────────────
+
 
 def create_synthetic_experts(
     work_dir: str,
@@ -158,16 +158,16 @@ def _generate_quantized_expert(rng: np.random.Generator, size_bytes: int) -> byt
 
     # Dead neuron blocks: ~10% of blocks are all-zero-point (0x88)
     # Shuffle some dead blocks in (creates long compressible runs)
-    result = bytearray(b''.join(parts))
-    dead_block = bytes([0x88] * packed_per_block) + b'\x00\x00\x00\x00'
+    result = bytearray(b"".join(parts))
+    dead_block = bytes([0x88] * packed_per_block) + b"\x00\x00\x00\x00"
     num_dead = num_blocks // 10
     dead_positions = rng.choice(num_blocks, size=num_dead, replace=False)
     for pos in dead_positions:
         offset = pos * bytes_per_block
-        result[offset:offset + bytes_per_block] = dead_block
+        result[offset : offset + bytes_per_block] = dead_block
 
     if remainder > 0:
-        result.extend(b'\x00' * remainder)
+        result.extend(b"\x00" * remainder)
 
     return bytes(result)
 
@@ -179,6 +179,7 @@ def purge_os_cache_for_dir(expert_dir: Path):
     This isn't perfect but reduces the OS cache advantage for 'SSD' reads.
     """
     import fcntl
+
     F_NOCACHE = 48  # macOS fcntl constant
 
     for path in expert_dir.rglob("*.bin"):
@@ -193,6 +194,7 @@ def purge_os_cache_for_dir(expert_dir: Path):
 
 
 # ─── Compression ratio measurement ─────────────────────────────
+
 
 @dataclass
 class CompressionBenchResult:
@@ -264,23 +266,25 @@ def benchmark_compression_ratios(
         compress_speed = (total_original / 1e6) / total_compress_time if total_compress_time > 0 else 0
         decompress_speed = (total_original / 1e6) / total_decompress_time if total_decompress_time > 0 else 0
 
-        results.append(CompressionBenchResult(
-            algo=name,
-            original_bytes=total_original,
-            compressed_bytes=total_compressed,
-            ratio=total_original / total_compressed if total_compressed > 0 else 0,
-            compress_speed_mbs=compress_speed,
-            decompress_speed_mbs=decompress_speed,
-            compress_time_ms=total_compress_time * 1000,
-            decompress_time_ms=total_decompress_time * 1000,
-        ))
+        results.append(
+            CompressionBenchResult(
+                algo=name,
+                original_bytes=total_original,
+                compressed_bytes=total_compressed,
+                ratio=total_original / total_compressed if total_compressed > 0 else 0,
+                compress_speed_mbs=compress_speed,
+                decompress_speed_mbs=decompress_speed,
+                compress_time_ms=total_compress_time * 1000,
+                decompress_time_ms=total_decompress_time * 1000,
+            )
+        )
 
     # Apple native compression via libcompression (LZFSE, LZ4_RAW, native ZSTD)
-    from mlx_flash_compress.compression_native import is_available, NativeCompressor, Algorithm
+    from mlx_flash_compress.compression_native import Algorithm, NativeCompressor, is_available
 
     if is_available():
         # Concatenate all sample data for native benchmark
-        all_data = b''.join(path.read_bytes() for path in sample_files)
+        all_data = b"".join(path.read_bytes() for path in sample_files)
 
         native_algos = [
             ("LZFSE (native)", Algorithm.LZFSE),
@@ -311,16 +315,18 @@ def benchmark_compression_ratios(
                 avg_dt = sum(decompress_times) / len(decompress_times)
                 data_mb = len(all_data) / 1e6
 
-                results.append(CompressionBenchResult(
-                    algo=name,
-                    original_bytes=len(all_data),
-                    compressed_bytes=nbuf.compressed_size,
-                    ratio=len(all_data) / nbuf.compressed_size if nbuf.compressed_size > 0 else 0,
-                    compress_speed_mbs=data_mb / avg_ct if avg_ct > 0 else 0,
-                    decompress_speed_mbs=data_mb / avg_dt if avg_dt > 0 else 0,
-                    compress_time_ms=avg_ct * 1000,
-                    decompress_time_ms=avg_dt * 1000,
-                ))
+                results.append(
+                    CompressionBenchResult(
+                        algo=name,
+                        original_bytes=len(all_data),
+                        compressed_bytes=nbuf.compressed_size,
+                        ratio=len(all_data) / nbuf.compressed_size if nbuf.compressed_size > 0 else 0,
+                        compress_speed_mbs=data_mb / avg_ct if avg_ct > 0 else 0,
+                        decompress_speed_mbs=data_mb / avg_dt if avg_dt > 0 else 0,
+                        compress_time_ms=avg_ct * 1000,
+                        decompress_time_ms=avg_dt * 1000,
+                    )
+                )
             except (RuntimeError, OSError):
                 pass
 
@@ -328,6 +334,7 @@ def benchmark_compression_ratios(
 
 
 # ─── Cache subsystem benchmark ──────────────────────────────────
+
 
 @dataclass
 class CacheBenchResult:
@@ -389,9 +396,7 @@ def benchmark_cache_mode(
 
     for token_idx in range(num_tokens):
         for layer_idx in range(num_layers):
-            expert_ids = rng.choice(
-                num_experts, size=k, replace=False, p=expert_probs
-            ).tolist()
+            expert_ids = rng.choice(num_experts, size=k, replace=False, p=expert_probs).tolist()
             cache.fetch_experts(layer_idx, expert_ids, expert_dtype)
 
     total_time = time.monotonic() - t0
@@ -421,6 +426,7 @@ def benchmark_cache_mode(
 
 # ─── Pure MLX benchmark ────────────────────────────────────────
 
+
 @dataclass
 class MLXBenchResult:
     mode: str
@@ -441,12 +447,13 @@ def benchmark_pure_mlx(
     """Benchmark pure MLX inference (baseline)."""
     try:
         import mlx.core as mx
-        from mlx_lm import load, generate
+        from mlx_lm import generate, load
     except ImportError:
         print("  SKIP: mlx/mlx-lm not installed")
         return None
 
     import psutil
+
     process = psutil.Process(os.getpid())
 
     print(f"  Loading model: {model_name}")
@@ -459,9 +466,7 @@ def benchmark_pure_mlx(
     if hasattr(tokenizer, "apply_chat_template"):
         messages = [{"role": "user", "content": prompt}]
         try:
-            formatted = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         except Exception:
             formatted = prompt
     else:
@@ -502,6 +507,7 @@ def benchmark_pure_mlx(
 
 
 # ─── Main benchmark runner ──────────────────────────────────────
+
 
 def print_separator(title: str):
     width = 70
@@ -555,14 +561,16 @@ def run_synthetic_benchmarks(args) -> dict:
     headers = ["Algorithm", "Ratio", "Compress MB/s", "Decompress MB/s", "Compress ms", "Decompress ms"]
     rows = []
     for r in comp_results:
-        rows.append([
-            r.algo,
-            f"{r.ratio:.2f}x",
-            f"{r.compress_speed_mbs:.0f}",
-            f"{r.decompress_speed_mbs:.0f}",
-            f"{r.compress_time_ms:.1f}",
-            f"{r.decompress_time_ms:.1f}",
-        ])
+        rows.append(
+            [
+                r.algo,
+                f"{r.ratio:.2f}x",
+                f"{r.compress_speed_mbs:.0f}",
+                f"{r.decompress_speed_mbs:.0f}",
+                f"{r.compress_time_ms:.1f}",
+                f"{r.decompress_time_ms:.1f}",
+            ]
+        )
     print_table(headers, rows)
 
     # Step 3: Cache subsystem benchmarks
@@ -573,13 +581,13 @@ def run_synthetic_benchmarks(args) -> dict:
 
     # (mode_name, hot_enabled, warm_enabled, hot_algo, description)
     cache_configs = [
-        ("no_cache_ssd",     False, False, "lz4",    "No cache (SSD only)"),
-        ("lz4_cache",        True,  False, "lz4",    "LZ4 hot cache (Python C ext)"),
-        ("lzfse_cache",      True,  False, "lzfse",  "LZFSE hot cache (Apple native)"),
-        ("lz4_native_cache", True,  False, "lz4_native", "LZ4 hot cache (Apple native)"),
-        ("zstd_cache",       False, True,  "lz4",    "ZSTD warm cache only"),
-        ("tiered_lz4+zstd",  True,  True,  "lz4",    "Tiered (LZ4 hot + ZSTD warm)"),
-        ("tiered_lzfse+zstd",True,  True,  "lzfse",  "Tiered (LZFSE hot + ZSTD warm)"),
+        ("no_cache_ssd", False, False, "lz4", "No cache (SSD only)"),
+        ("lz4_cache", True, False, "lz4", "LZ4 hot cache (Python C ext)"),
+        ("lzfse_cache", True, False, "lzfse", "LZFSE hot cache (Apple native)"),
+        ("lz4_native_cache", True, False, "lz4_native", "LZ4 hot cache (Apple native)"),
+        ("zstd_cache", False, True, "lz4", "ZSTD warm cache only"),
+        ("tiered_lz4+zstd", True, True, "lz4", "Tiered (LZ4 hot + ZSTD warm)"),
+        ("tiered_lzfse+zstd", True, True, "lzfse", "Tiered (LZFSE hot + ZSTD warm)"),
     ]
 
     cache_results = []
@@ -610,16 +618,18 @@ def run_synthetic_benchmarks(args) -> dict:
     headers = ["Mode", "tok/s", "Avg Layer ms", "Hit Rate", "Hot Hits", "Warm Hits", "Cold Hits", "Evictions"]
     rows = []
     for r in cache_results:
-        rows.append([
-            r.mode,
-            f"{r.tokens_per_second:.2f}",
-            f"{r.avg_layer_ms:.3f}",
-            f"{r.cache_hit_rate:.1%}",
-            str(r.hot_hits),
-            str(r.warm_hits),
-            str(r.cold_hits),
-            str(r.evictions),
-        ])
+        rows.append(
+            [
+                r.mode,
+                f"{r.tokens_per_second:.2f}",
+                f"{r.avg_layer_ms:.3f}",
+                f"{r.cache_hit_rate:.1%}",
+                str(r.hot_hits),
+                str(r.warm_hits),
+                str(r.cold_hits),
+                str(r.evictions),
+            ]
+        )
     print_table(headers, rows)
 
     # Speedup comparison
@@ -640,14 +650,16 @@ def run_synthetic_benchmarks(args) -> dict:
         total_ms = r.total_time_s * 1000
         decomp_pct = (r.total_decompress_ms / total_ms * 100) if total_ms > 0 else 0
         ssd_pct = (r.total_ssd_read_ms / total_ms * 100) if total_ms > 0 else 0
-        rows.append([
-            r.mode,
-            f"{r.total_time_s:.3f}",
-            f"{r.total_decompress_ms:.1f}",
-            f"{r.total_ssd_read_ms:.1f}",
-            f"{decomp_pct:.1f}%",
-            f"{ssd_pct:.1f}%",
-        ])
+        rows.append(
+            [
+                r.mode,
+                f"{r.total_time_s:.3f}",
+                f"{r.total_decompress_ms:.1f}",
+                f"{r.total_ssd_read_ms:.1f}",
+                f"{decomp_pct:.1f}%",
+                f"{ssd_pct:.1f}%",
+            ]
+        )
     print_table(headers, rows)
 
     # Memory usage
@@ -667,14 +679,14 @@ def run_synthetic_benchmarks(args) -> dict:
     print_separator("6. Simulated Real SSD Latency (model exceeds RAM)")
     ssd_latency = 0.4  # ms per 2MB (Apple NVMe with memory bus contention)
     print(f"  Simulated NVMe latency: {ssd_latency} ms per 2MB expert read")
-    print(f"  (Real Apple NVMe: ~17.5 GB/s = ~0.12ms/2MB, +contention = ~0.4ms)")
+    print("  (Real Apple NVMe: ~17.5 GB/s = ~0.12ms/2MB, +contention = ~0.4ms)")
     print()
 
     # Only run key configs for the simulated benchmark
     sim_configs = [
-        ("SSD_only (sim)",     False, False, "lz4",   "SSD only (simulated latency)"),
-        ("LZ4_cache (sim)",    True,  False, "lz4",   "LZ4 hot cache + simulated SSD"),
-        ("Tiered (sim)",       True,  True,  "lz4",   "Tiered LZ4+ZSTD + simulated SSD"),
+        ("SSD_only (sim)", False, False, "lz4", "SSD only (simulated latency)"),
+        ("LZ4_cache (sim)", True, False, "lz4", "LZ4 hot cache + simulated SSD"),
+        ("Tiered (sim)", True, True, "lz4", "Tiered LZ4+ZSTD + simulated SSD"),
     ]
 
     sim_results = []
@@ -706,16 +718,18 @@ def run_synthetic_benchmarks(args) -> dict:
     sim_baseline = sim_results[0].tokens_per_second
     for r in sim_results:
         speedup = r.tokens_per_second / sim_baseline if sim_baseline > 0 else 0
-        rows.append([
-            r.mode,
-            f"{r.tokens_per_second:.2f}",
-            f"{r.avg_layer_ms:.3f}",
-            f"{r.cache_hit_rate:.1%}",
-            str(r.hot_hits),
-            str(r.warm_hits),
-            str(r.cold_hits),
-            f"{speedup:.2f}x",
-        ])
+        rows.append(
+            [
+                r.mode,
+                f"{r.tokens_per_second:.2f}",
+                f"{r.avg_layer_ms:.3f}",
+                f"{r.cache_hit_rate:.1%}",
+                str(r.hot_hits),
+                str(r.warm_hits),
+                str(r.cold_hits),
+                f"{speedup:.2f}x",
+            ]
+        )
     print_table(headers, rows)
 
     # Simulated speedup chart
@@ -800,7 +814,9 @@ Examples:
     parser.add_argument("--hot-mb", type=int, default=256, help="Hot tier cache size in MB")
     parser.add_argument("--warm-mb", type=int, default=128, help="Warm tier cache size in MB")
     parser.add_argument("--workers", type=int, default=4, help="Parallel decompression workers")
-    parser.add_argument("--work-dir", type=str, default="/tmp/mlx_flash_compress", help="Working directory for temp files")
+    parser.add_argument(
+        "--work-dir", type=str, default="/tmp/mlx_flash_compress", help="Working directory for temp files"
+    )
 
     args = parser.parse_args()
 

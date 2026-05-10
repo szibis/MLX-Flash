@@ -48,6 +48,7 @@ class KVCompressionConfig:
         quantize_evicted: If True, kept entries are quantized to 4-bit
             after compression (further memory reduction).
     """
+
     budget_ratio: float = 0.2
     sink_tokens: int = 4
     recent_window: int = 128
@@ -65,8 +66,7 @@ class AttentionScoreTracker:
         average to capture temporal persistence of importance.
     """
 
-    def __init__(self, num_layers: int, max_seq_len: int = 8192,
-                 scoring: str = "h2o"):
+    def __init__(self, num_layers: int, max_seq_len: int = 8192, scoring: str = "h2o"):
         self.num_layers = num_layers
         self.max_seq_len = max_seq_len
         self.scoring = scoring
@@ -105,8 +105,7 @@ class AttentionScoreTracker:
         else:
             self._record_scissorhands(layer_idx, token_scores, seq_len)
 
-    def _record_h2o(self, layer_idx: int, token_scores: mx.array,
-                    seq_len: int):
+    def _record_h2o(self, layer_idx: int, token_scores: mx.array, seq_len: int):
         """H2O: Accumulate attention across layers."""
         if self._importance[layer_idx] is None:
             self._importance[layer_idx] = token_scores
@@ -115,28 +114,19 @@ class AttentionScoreTracker:
             if seq_len > cur_len:
                 # Pad existing scores for new tokens
                 padding = mx.zeros((seq_len - cur_len,))
-                self._importance[layer_idx] = mx.concatenate(
-                    [self._importance[layer_idx], padding]
-                )
+                self._importance[layer_idx] = mx.concatenate([self._importance[layer_idx], padding])
             # Accumulate (sum attention received across steps)
-            self._importance[layer_idx] = (
-                self._importance[layer_idx][:seq_len] + token_scores
-            )
+            self._importance[layer_idx] = self._importance[layer_idx][:seq_len] + token_scores
 
         # Update global (cross-layer) importance
         if self._global_importance is None:
             self._global_importance = mx.zeros((seq_len,))
         if self._global_importance.shape[0] < seq_len:
             padding = mx.zeros((seq_len - self._global_importance.shape[0],))
-            self._global_importance = mx.concatenate(
-                [self._global_importance, padding]
-            )
-        self._global_importance = (
-            self._global_importance[:seq_len] + token_scores
-        )
+            self._global_importance = mx.concatenate([self._global_importance, padding])
+        self._global_importance = self._global_importance[:seq_len] + token_scores
 
-    def _record_scissorhands(self, layer_idx: int, token_scores: mx.array,
-                             seq_len: int):
+    def _record_scissorhands(self, layer_idx: int, token_scores: mx.array, seq_len: int):
         """ScissorHands: Exponential moving average of per-step attention."""
         if self._importance[layer_idx] is None:
             self._importance[layer_idx] = token_scores
@@ -144,13 +134,10 @@ class AttentionScoreTracker:
             cur_len = self._importance[layer_idx].shape[0]
             if seq_len > cur_len:
                 padding = mx.zeros((seq_len - cur_len,))
-                self._importance[layer_idx] = mx.concatenate(
-                    [self._importance[layer_idx], padding]
-                )
+                self._importance[layer_idx] = mx.concatenate([self._importance[layer_idx], padding])
             # EMA update: importance = decay * old + (1 - decay) * new
             self._importance[layer_idx] = (
-                self._ema_decay * self._importance[layer_idx][:seq_len]
-                + (1.0 - self._ema_decay) * token_scores
+                self._ema_decay * self._importance[layer_idx][:seq_len] + (1.0 - self._ema_decay) * token_scores
             )
 
     def get_token_importance(self, layer_idx: int) -> mx.array:
@@ -233,8 +220,7 @@ class CompressedKVCache:
       - Importance is determined by AttentionScoreTracker (H2O or ScissorHands)
     """
 
-    def __init__(self, config: KVCompressionConfig, num_layers: int,
-                 num_heads: int, head_dim: int):
+    def __init__(self, config: KVCompressionConfig, num_layers: int, num_heads: int, head_dim: int):
         self.config = config
         self.num_layers = num_layers
         self.num_heads = num_heads
@@ -246,18 +232,16 @@ class CompressedKVCache:
         self._values: list[mx.array | None] = [None] * num_layers
 
         # Attention score tracker
-        self.tracker = AttentionScoreTracker(
-            num_layers, scoring=config.scoring
-        )
+        self.tracker = AttentionScoreTracker(num_layers, scoring=config.scoring)
 
         # Statistics
         self._total_tokens_seen: int = 0
         self._compression_count: int = 0
         self._total_evicted: int = 0
 
-    def update(self, layer_idx: int, new_keys: mx.array,
-               new_values: mx.array,
-               attention_weights: mx.array = None) -> tuple[mx.array, mx.array]:
+    def update(
+        self, layer_idx: int, new_keys: mx.array, new_values: mx.array, attention_weights: mx.array = None
+    ) -> tuple[mx.array, mx.array]:
         """Add new KV entries, evict unimportant tokens if over budget.
 
         Args:
@@ -280,12 +264,8 @@ class CompressedKVCache:
             self._keys[layer_idx] = new_keys
             self._values[layer_idx] = new_values
         else:
-            self._keys[layer_idx] = mx.concatenate(
-                [self._keys[layer_idx], new_keys], axis=1
-            )
-            self._values[layer_idx] = mx.concatenate(
-                [self._values[layer_idx], new_values], axis=1
-            )
+            self._keys[layer_idx] = mx.concatenate([self._keys[layer_idx], new_keys], axis=1)
+            self._values[layer_idx] = mx.concatenate([self._values[layer_idx], new_values], axis=1)
 
         # Record attention scores if provided
         if attention_weights is not None:
@@ -365,9 +345,7 @@ class CompressedKVCache:
         window_indices = mx.arange(middle_end, cur_len)
 
         if middle_budget > 0:
-            keep_indices = mx.concatenate(
-                [sink_indices, keep_middle_global, window_indices]
-            )
+            keep_indices = mx.concatenate([sink_indices, keep_middle_global, window_indices])
         else:
             keep_indices = mx.concatenate([sink_indices, window_indices])
 
@@ -452,8 +430,7 @@ class CompressedKVCache:
         self._total_evicted = 0
 
 
-def apply_kv_compression(model,
-                         config: KVCompressionConfig = None) -> CompressedKVCache:
+def apply_kv_compression(model, config: KVCompressionConfig = None) -> CompressedKVCache:
     """Create a compressed KV cache sized for the given model.
 
     Inspects the model to determine num_layers, num_heads, and head_dim,
@@ -474,26 +451,16 @@ def apply_kv_compression(model,
     num_layers = len(model.layers)
 
     first_layer = model.layers[0]
-    attn = getattr(first_layer, "self_attn", None) or getattr(
-        first_layer, "attention", None
-    )
+    attn = getattr(first_layer, "self_attn", None) or getattr(first_layer, "attention", None)
     if attn is None:
-        raise ValueError(
-            "Cannot find attention module on model layer. "
-            "Expected .self_attn or .attention attribute."
-        )
+        raise ValueError("Cannot find attention module on model layer. Expected .self_attn or .attention attribute.")
 
-    num_heads = getattr(attn, "num_heads", None) or getattr(
-        attn, "n_heads", None
-    )
-    head_dim = getattr(attn, "head_dim", None) or getattr(
-        attn, "d_head", None
-    )
+    num_heads = getattr(attn, "num_heads", None) or getattr(attn, "n_heads", None)
+    head_dim = getattr(attn, "head_dim", None) or getattr(attn, "d_head", None)
 
     if num_heads is None or head_dim is None:
         raise ValueError(
-            "Cannot determine num_heads/head_dim from attention module. "
-            f"Available attributes: {dir(attn)}"
+            f"Cannot determine num_heads/head_dim from attention module. Available attributes: {dir(attn)}"
         )
 
     return CompressedKVCache(config, num_layers, num_heads, head_dim)

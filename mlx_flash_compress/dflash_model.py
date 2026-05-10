@@ -28,6 +28,7 @@ import mlx.nn as nn
 @dataclass
 class DFlashModelConfig:
     """Configuration matching z-lab's DFlash drafter config.json."""
+
     hidden_size: int = 2048
     intermediate_size: int = 6144
     num_hidden_layers: int = 8
@@ -120,7 +121,7 @@ class DFlashAttention(nn.Module):
         self.num_kv_heads = config.num_key_value_heads
         self.num_kv_groups = self.num_heads // self.num_kv_heads
         self.head_dim = config.head_dim
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
 
         self.q_proj = nn.Linear(config.hidden_size, self.num_heads * self.head_dim, bias=config.attention_bias)
         self.k_proj = nn.Linear(config.hidden_size, self.num_kv_heads * self.head_dim, bias=config.attention_bias)
@@ -211,8 +212,9 @@ class DFlashDraftModel(nn.Module):
         self.layers = [DFlashDecoderLayer(config, i) for i in range(config.num_hidden_layers)]
         self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-    def __call__(self, noise_embedding: mx.array, target_hidden: mx.array,
-                 num_active_layers: int | None = None) -> mx.array:
+    def __call__(
+        self, noise_embedding: mx.array, target_hidden: mx.array, num_active_layers: int | None = None
+    ) -> mx.array:
         """Forward pass.
 
         Args:
@@ -255,15 +257,21 @@ class DFlashRunner:
     Handles hidden state extraction, draft generation, and verification.
     """
 
-    def __init__(self, target_model, tokenizer, drafter: DFlashDraftModel,
-                 config: DFlashModelConfig, *,
-                 inference_block_size: int | None = None,
-                 hidden_dtype: mx.Dtype | None = None,
-                 compile_drafter: bool = False,
-                 num_denoise_steps: int = 1,
-                 draft_temperature: float | None = None,
-                 num_active_layers: int | None = None,
-                 quantize_drafter: int | None = None):
+    def __init__(
+        self,
+        target_model,
+        tokenizer,
+        drafter: DFlashDraftModel,
+        config: DFlashModelConfig,
+        *,
+        inference_block_size: int | None = None,
+        hidden_dtype: mx.Dtype | None = None,
+        compile_drafter: bool = False,
+        num_denoise_steps: int = 1,
+        draft_temperature: float | None = None,
+        num_active_layers: int | None = None,
+        quantize_drafter: int | None = None,
+    ):
         self.target = target_model
         self.tokenizer = tokenizer
         self.drafter = drafter
@@ -370,11 +378,13 @@ class DFlashRunner:
         _, hidden = self._forward_target(input_ids)
         return hidden
 
-    def draft_tokens(self, input_ids: mx.array,
-                     target_hidden: mx.array | None = None,
-                     num_denoise_steps: int | None = None,
-                     draft_temperature: float | None = None,
-                     ) -> tuple[mx.array, mx.array]:
+    def draft_tokens(
+        self,
+        input_ids: mx.array,
+        target_hidden: mx.array | None = None,
+        num_denoise_steps: int | None = None,
+        draft_temperature: float | None = None,
+    ) -> tuple[mx.array, mx.array]:
         """Generate draft tokens via block diffusion.
 
         The draft block is [anchor_token, MASK, MASK, ...] where anchor is the
@@ -394,6 +404,7 @@ class DFlashRunner:
             (draft_token_ids [B, block_size-1], draft_logits [B, block_size-1, vocab])
         """
         import time
+
         t0 = time.perf_counter()
 
         if target_hidden is None:
@@ -417,8 +428,7 @@ class DFlashRunner:
         for step_i in range(steps):
             noise_embedding = self._embed_fn(block_ids)
             if self._num_active_layers is not None:
-                refined = drafter_fn(noise_embedding, target_hidden,
-                                     num_active_layers=self._num_active_layers)
+                refined = drafter_fn(noise_embedding, target_hidden, num_active_layers=self._num_active_layers)
             else:
                 refined = drafter_fn(noise_embedding, target_hidden)
 
@@ -457,6 +467,7 @@ class DFlashRunner:
         Returns (accepted_token_ids, num_accepted).
         """
         import time
+
         t0 = time.perf_counter()
 
         full_ids = mx.concatenate([input_ids, draft_ids], axis=-1)
@@ -494,10 +505,11 @@ class DFlashRunner:
 
     def _make_cache(self):
         """Create per-layer KV/SSM cache for the target model."""
-        if self._inner_model is not None and hasattr(self._inner_model, 'make_cache'):
+        if self._inner_model is not None and hasattr(self._inner_model, "make_cache"):
             return self._inner_model.make_cache()
 
         from mlx_lm.models.cache import KVCache
+
         try:
             from mlx_lm.models.cache import ArraysCache
         except ImportError:
@@ -505,7 +517,7 @@ class DFlashRunner:
 
         cache = []
         for layer in self._layers:
-            is_ssm = getattr(layer, 'is_linear', False) or getattr(layer, 'is_mamba', False)
+            is_ssm = getattr(layer, "is_linear", False) or getattr(layer, "is_mamba", False)
             if is_ssm and ArraysCache is not None:
                 cache.append(ArraysCache(size=2))
             else:
@@ -517,7 +529,7 @@ class DFlashRunner:
         fa_cache = None
         ssm_cache_ref = None
         for i, layer in enumerate(self._layers):
-            if getattr(layer, 'is_linear', False):
+            if getattr(layer, "is_linear", False):
                 if ssm_cache_ref is None:
                     ssm_cache_ref = cache[i]
             else:
@@ -525,8 +537,7 @@ class DFlashRunner:
                     fa_cache = cache[i]
         return fa_cache, ssm_cache_ref
 
-    def _forward_target_cached(self, input_ids: mx.array, cache: list
-                                ) -> tuple[mx.array, mx.array]:
+    def _forward_target_cached(self, input_ids: mx.array, cache: list) -> tuple[mx.array, mx.array]:
         """Forward pass using KV/SSM cache. Processes only new tokens.
 
         Returns (logits [B, new_len, vocab], new_hidden [B, new_len, checkpoints*hidden]).
@@ -541,7 +552,7 @@ class DFlashRunner:
 
         checkpoint_hiddens = []
         for i, layer in enumerate(self._layers):
-            is_linear = getattr(layer, 'is_linear', False)
+            is_linear = getattr(layer, "is_linear", False)
             mask = ssm_mask if is_linear else fa_mask
             h = layer(h, mask=mask, cache=cache[i])
             if i in self.config.target_layer_ids:
@@ -556,9 +567,9 @@ class DFlashRunner:
 
         return logits, new_hidden
 
-    def _forward_target_tree_cached(self, tree_token_ids: mx.array,
-                                     tree_attention_mask: mx.array,
-                                     cache: list) -> mx.array:
+    def _forward_target_tree_cached(
+        self, tree_token_ids: mx.array, tree_attention_mask: mx.array, cache: list
+    ) -> mx.array:
         """Forward pass for tree verification with KV cache.
 
         Tree nodes attend to all cached context (prefix) plus other tree nodes
@@ -588,7 +599,7 @@ class DFlashRunner:
         ssm_mask = create_ssm_mask(h, ssm_cache_ref)
 
         for i, layer in enumerate(self._layers):
-            is_linear = getattr(layer, 'is_linear', False)
+            is_linear = getattr(layer, "is_linear", False)
             mask = ssm_mask if is_linear else fa_mask
             h = layer(h, mask=mask, cache=cache[i])
 
@@ -596,9 +607,9 @@ class DFlashRunner:
         logits = self._lm_head_fn(h)
         return logits
 
-    def generate(self, prompt: str, max_tokens: int = 128,
-                 use_cache: bool = True,
-                 accept_top_k: int = 1) -> tuple[str, dict]:
+    def generate(
+        self, prompt: str, max_tokens: int = 128, use_cache: bool = True, accept_top_k: int = 1
+    ) -> tuple[str, dict]:
         """Generate text with DFlash speculative decoding.
 
         With use_cache=True (default), uses KV/SSM cache to avoid
@@ -613,23 +624,25 @@ class DFlashRunner:
         """
         if use_cache:
             try:
-                return self._generate_cached(prompt, max_tokens,
-                                             accept_top_k=accept_top_k)
+                return self._generate_cached(prompt, max_tokens, accept_top_k=accept_top_k)
             except Exception:
                 pass
-        return self._generate_no_cache(prompt, max_tokens,
-                                       accept_top_k=accept_top_k)
+        return self._generate_no_cache(prompt, max_tokens, accept_top_k=accept_top_k)
 
-    def _generate_cached(self, prompt: str, max_tokens: int = 128,
-                         accept_top_k: int = 1) -> tuple[str, dict]:
+    def _generate_cached(self, prompt: str, max_tokens: int = 128, accept_top_k: int = 1) -> tuple[str, dict]:
         """Cached DFlash generation — processes only new tokens per step."""
         import copy
         import time
+
         import numpy as np
 
         self.stats = {
-            "total_drafts": 0, "total_accepted": 0, "total_target_calls": 0,
-            "draft_times_ms": [], "verify_times_ms": [], "verify_steps": 0,
+            "total_drafts": 0,
+            "total_accepted": 0,
+            "total_target_calls": 0,
+            "draft_times_ms": [],
+            "verify_times_ms": [],
+            "verify_steps": 0,
         }
 
         tokens = self.tokenizer.encode(prompt)
@@ -655,14 +668,16 @@ class DFlashRunner:
             cache_snapshot = copy.deepcopy(cache)
 
             verify_logits, verify_hidden = self._forward_target_cached(
-                draft_ids, cache,
+                draft_ids,
+                cache,
             )
             mx.eval(verify_logits)
             self.stats["total_target_calls"] += 1
 
             # last_logit predicts draft[0]; verify_logits[:,i,:] predicts draft[i+1]
             predictions = mx.concatenate(
-                [last_logit, verify_logits[:, :-1, :]], axis=1,
+                [last_logit, verify_logits[:, :-1, :]],
+                axis=1,
             )
 
             draft_np = draft_ids[0].tolist()
@@ -709,7 +724,8 @@ class DFlashRunner:
 
             replay_ids = mx.array([accepted])
             replay_logits, replay_hidden = self._forward_target_cached(
-                replay_ids, cache,
+                replay_ids,
+                cache,
             )
             mx.eval(replay_logits, replay_hidden)
             self.stats["total_target_calls"] += 1
@@ -737,22 +753,28 @@ class DFlashRunner:
             "total_accepted": self.stats["total_accepted"],
             "acceptance_rate": round(self.stats["total_accepted"] / max(1, self.stats["total_drafts"]), 3),
             "tokens_per_step": round(self.stats["total_accepted"] / steps, 1),
-            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1) if self.stats["draft_times_ms"] else 0,
-            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1) if self.stats["verify_times_ms"] else 0,
+            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1)
+            if self.stats["draft_times_ms"]
+            else 0,
+            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1)
+            if self.stats["verify_times_ms"]
+            else 0,
             "cached": True,
         }
 
-        text = self.tokenizer.decode(generated[len(tokens):])
+        text = self.tokenizer.decode(generated[len(tokens) :])
         return text, summary
 
-    def _generate_no_cache(self, prompt: str, max_tokens: int = 128,
-                           accept_top_k: int = 1) -> tuple[str, dict]:
+    def _generate_no_cache(self, prompt: str, max_tokens: int = 128, accept_top_k: int = 1) -> tuple[str, dict]:
         """Non-cached DFlash generation — reprocesses full context each step."""
         import time
 
         self.stats = {
-            "total_drafts": 0, "total_accepted": 0, "total_target_calls": 0,
-            "draft_times_ms": [], "verify_times_ms": [],
+            "total_drafts": 0,
+            "total_accepted": 0,
+            "total_target_calls": 0,
+            "draft_times_ms": [],
+            "verify_times_ms": [],
         }
 
         tokens = self.tokenizer.encode(prompt)
@@ -832,6 +854,7 @@ class DFlashRunner:
         tok_per_sec = n_gen / elapsed if elapsed > 0 else 0
 
         import numpy as np
+
         summary = {
             "tokens_generated": n_gen,
             "wall_time_s": round(elapsed, 2),
@@ -841,18 +864,26 @@ class DFlashRunner:
             "total_accepted": self.stats["total_accepted"],
             "acceptance_rate": round(self.stats["total_accepted"] / max(1, self.stats["total_drafts"]), 3),
             "tokens_per_step": round(self.stats["total_accepted"] / max(1, self.stats["total_target_calls"]), 1),
-            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1) if self.stats["draft_times_ms"] else 0,
-            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1) if self.stats["verify_times_ms"] else 0,
+            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1)
+            if self.stats["draft_times_ms"]
+            else 0,
+            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1)
+            if self.stats["verify_times_ms"]
+            else 0,
             "cached": False,
         }
 
-        text = self.tokenizer.decode(generated[len(tokens):])
+        text = self.tokenizer.decode(generated[len(tokens) :])
         return text, summary
 
-    def generate_with_tree(self, prompt: str, max_tokens: int = 128,
-                           tree_width: int = 5, max_tree_size: int = 60,
-                           use_cache: bool = True,
-                           ) -> tuple[str, dict]:
+    def generate_with_tree(
+        self,
+        prompt: str,
+        max_tokens: int = 128,
+        tree_width: int = 5,
+        max_tree_size: int = 60,
+        use_cache: bool = True,
+    ) -> tuple[str, dict]:
         """Generate text with DFlash + DDTree speculative decoding.
 
         With use_cache=True (default), uses KV/SSM cache for context and
@@ -863,20 +894,24 @@ class DFlashRunner:
         """
         if use_cache:
             try:
-                return self._generate_with_tree_cached(
-                    prompt, max_tokens, tree_width, max_tree_size)
+                return self._generate_with_tree_cached(prompt, max_tokens, tree_width, max_tree_size)
             except Exception:
                 pass
-        return self._generate_with_tree_no_cache(
-            prompt, max_tokens, tree_width, max_tree_size)
+        return self._generate_with_tree_no_cache(prompt, max_tokens, tree_width, max_tree_size)
 
-    def _generate_with_tree_cached(self, prompt: str, max_tokens: int = 128,
-                                    tree_width: int = 5, max_tree_size: int = 60,
-                                    ) -> tuple[str, dict]:
+    def _generate_with_tree_cached(
+        self,
+        prompt: str,
+        max_tokens: int = 128,
+        tree_width: int = 5,
+        max_tree_size: int = 60,
+    ) -> tuple[str, dict]:
         """Cached DDTree generation — tree verification with KV cache."""
         import copy
         import time
+
         import numpy as np
+
         from mlx_flash_compress.ddtree import DDTreeBuilder, DDTreeConfig
 
         tree_config = DDTreeConfig(
@@ -886,8 +921,12 @@ class DFlashRunner:
         tree_builder = DDTreeBuilder(tree_config)
 
         self.stats = {
-            "total_drafts": 0, "total_accepted": 0, "total_target_calls": 0,
-            "draft_times_ms": [], "verify_times_ms": [], "verify_steps": 0,
+            "total_drafts": 0,
+            "total_accepted": 0,
+            "total_target_calls": 0,
+            "draft_times_ms": [],
+            "verify_times_ms": [],
+            "verify_steps": 0,
         }
 
         tokens = self.tokenizer.encode(prompt)
@@ -918,7 +957,9 @@ class DFlashRunner:
 
             tree_ids = tree.token_ids.reshape(1, -1)
             tree_logits = self._forward_target_tree_cached(
-                tree_ids, tree.attention_mask, cache,
+                tree_ids,
+                tree.attention_mask,
+                cache,
             )
             mx.eval(tree_logits)
             self.stats["total_target_calls"] += 1
@@ -931,7 +972,9 @@ class DFlashRunner:
             full_logits = mx.concatenate([padding, last_logit, tree_logits], axis=1)
 
             accepted, n_accepted = tree_builder.verify_tree(
-                tree, full_logits, ctx_len,
+                tree,
+                full_logits,
+                ctx_len,
             )
             self.stats["verify_times_ms"].append((time.perf_counter() - t_verify) * 1000)
             self.stats["total_drafts"] += tree.size
@@ -948,7 +991,8 @@ class DFlashRunner:
 
             replay_ids = mx.array([accepted])
             replay_logits, replay_hidden = self._forward_target_cached(
-                replay_ids, cache,
+                replay_ids,
+                cache,
             )
             mx.eval(replay_logits, replay_hidden)
             self.stats["total_target_calls"] += 1
@@ -977,22 +1021,32 @@ class DFlashRunner:
             "total_accepted": self.stats["total_accepted"],
             "acceptance_rate": round(self.stats["total_accepted"] / max(1, self.stats["total_drafts"]), 3),
             "tokens_per_step": round(self.stats["total_accepted"] / steps, 1),
-            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1) if self.stats["draft_times_ms"] else 0,
-            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1) if self.stats["verify_times_ms"] else 0,
+            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1)
+            if self.stats["draft_times_ms"]
+            else 0,
+            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1)
+            if self.stats["verify_times_ms"]
+            else 0,
             "avg_tree_size": tree_stats["avg_tree_size"],
             "avg_path_length": tree_stats["avg_path_length"],
             "cached": True,
         }
 
-        text = self.tokenizer.decode(generated[len(tokens):])
+        text = self.tokenizer.decode(generated[len(tokens) :])
         return text, summary
 
-    def _generate_with_tree_no_cache(self, prompt: str, max_tokens: int = 128,
-                                      tree_width: int = 5, max_tree_size: int = 60,
-                                      ) -> tuple[str, dict]:
+    def _generate_with_tree_no_cache(
+        self,
+        prompt: str,
+        max_tokens: int = 128,
+        tree_width: int = 5,
+        max_tree_size: int = 60,
+    ) -> tuple[str, dict]:
         """Non-cached DDTree generation — reprocesses full context each step."""
         import time
+
         import numpy as np
+
         from mlx_flash_compress.ddtree import DDTreeBuilder, DDTreeConfig
 
         tree_config = DDTreeConfig(
@@ -1002,8 +1056,11 @@ class DFlashRunner:
         tree_builder = DDTreeBuilder(tree_config)
 
         self.stats = {
-            "total_drafts": 0, "total_accepted": 0, "total_target_calls": 0,
-            "draft_times_ms": [], "verify_times_ms": [],
+            "total_drafts": 0,
+            "total_accepted": 0,
+            "total_target_calls": 0,
+            "draft_times_ms": [],
+            "verify_times_ms": [],
         }
 
         tokens = self.tokenizer.encode(prompt)
@@ -1028,9 +1085,7 @@ class DFlashRunner:
             verify_logits, new_hidden = self._forward_target(full_ids)
             self.stats["total_target_calls"] += 1
 
-            accepted, n_accepted = tree_builder.verify_tree(
-                tree, verify_logits, ctx_len
-            )
+            accepted, n_accepted = tree_builder.verify_tree(tree, verify_logits, ctx_len)
             self.stats["verify_times_ms"].append((time.perf_counter() - t_verify) * 1000)
             self.stats["total_drafts"] += tree.size
             self.stats["total_accepted"] += n_accepted
@@ -1066,12 +1121,16 @@ class DFlashRunner:
             "total_accepted": self.stats["total_accepted"],
             "acceptance_rate": round(self.stats["total_accepted"] / max(1, self.stats["total_drafts"]), 3),
             "tokens_per_step": round(self.stats["total_accepted"] / max(1, self.stats["total_target_calls"]), 1),
-            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1) if self.stats["draft_times_ms"] else 0,
-            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1) if self.stats["verify_times_ms"] else 0,
+            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1)
+            if self.stats["draft_times_ms"]
+            else 0,
+            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1)
+            if self.stats["verify_times_ms"]
+            else 0,
             "avg_tree_size": tree_stats["avg_tree_size"],
             "avg_path_length": tree_stats["avg_path_length"],
             "cached": False,
         }
 
-        text = self.tokenizer.decode(generated[len(tokens):])
+        text = self.tokenizer.decode(generated[len(tokens) :])
         return text, summary

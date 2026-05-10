@@ -42,7 +42,7 @@ Usage:
 
 import json
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -50,16 +50,18 @@ from typing import Optional
 @dataclass
 class CacheConfig:
     enable: bool = True
-    ram_mb: int = 0          # 0 = auto (use 80% of available)
-    eviction: str = "lcp"    # lcp, lfu, least_stale
-    hot_algo: str = "lz4"    # lz4, lzfse, none
+    ram_mb: int = 0  # 0 = auto (use 80% of available)
+    eviction: str = "lcp"  # lcp, lfu, least_stale
+    hot_algo: str = "lz4"  # lz4, lzfse, none
     lcp_base: float = 0.25
     lcp_decay: int = 128
+
 
 @dataclass
 class PrefetchConfig:
     enable: bool = True
     workers: int = 2
+
 
 @dataclass
 class MixedPrecisionConfig:
@@ -68,10 +70,12 @@ class MixedPrecisionConfig:
     hot_bits: int = 4
     threshold: float = 0.05  # activation frequency below this = cold
 
+
 @dataclass
 class SkipFallbackConfig:
-    enable: bool = False     # off by default (quality trade-off)
+    enable: bool = False  # off by default (quality trade-off)
     renormalize: bool = True
+
 
 @dataclass
 class SSDProtectionConfig:
@@ -80,17 +84,21 @@ class SSDProtectionConfig:
     rate_limit: bool = True
     cooldown_ms: float = 10.0
 
+
 @dataclass
 class EngineConfig:
-    backend: str = "auto"    # auto, python, c_gcd
+    backend: str = "auto"  # auto, python, c_gcd
+
 
 @dataclass
 class RouterHookConfig:
-    enable: bool = False     # off by default (requires MLX model)
+    enable: bool = False  # off by default (requires MLX model)
+
 
 @dataclass
 class FlashConfig:
     """Master configuration for MLX-Flash."""
+
     cache: CacheConfig = field(default_factory=CacheConfig)
     prefetch: PrefetchConfig = field(default_factory=PrefetchConfig)
     mixed_precision: MixedPrecisionConfig = field(default_factory=MixedPrecisionConfig)
@@ -111,6 +119,7 @@ class FlashConfig:
 
         try:
             from mlx_flash_compress.hardware import detect_hardware
+
             hw = detect_hardware()
             cfg.detected_chip = hw.chip
             cfg.detected_ram_gb = hw.total_ram_gb
@@ -124,6 +133,7 @@ class FlashConfig:
             if cfg.engine.backend == "auto":
                 try:
                     from mlx_flash_compress.fast_cache_bindings import is_available
+
                     cfg.engine.backend = "c_gcd" if is_available() else "python"
                 except ImportError:
                     cfg.engine.backend = "python"
@@ -144,9 +154,10 @@ class FlashConfig:
 
         text = p.read_text()
 
-        if p.suffix in ('.yaml', '.yml'):
+        if p.suffix in (".yaml", ".yml"):
             try:
                 import yaml
+
                 data = yaml.safe_load(text)
             except ImportError:
                 raise ImportError("PyYAML required for YAML config: pip install pyyaml")
@@ -179,9 +190,9 @@ class FlashConfig:
             val = os.environ.get(env_key)
             if val is not None:
                 section_obj = getattr(cfg, section)
-                if typ == bool:
-                    setattr(section_obj, field_name, val.lower() in ('1', 'true', 'yes'))
-                elif typ == int:
+                if typ is bool:
+                    setattr(section_obj, field_name, val.lower() in ("1", "true", "yes"))
+                elif typ is int:
                     setattr(section_obj, field_name, int(val))
                 else:
                     setattr(section_obj, field_name, val)
@@ -191,8 +202,15 @@ class FlashConfig:
     @classmethod
     def _from_dict(cls, data: dict) -> "FlashConfig":
         cfg = cls.auto_detect()
-        for section_name in ('cache', 'prefetch', 'mixed_precision', 'skip_fallback',
-                            'ssd_protection', 'engine', 'router_hook'):
+        for section_name in (
+            "cache",
+            "prefetch",
+            "mixed_precision",
+            "skip_fallback",
+            "ssd_protection",
+            "engine",
+            "router_hook",
+        ):
             if section_name in data:
                 section_obj = getattr(cfg, section_name)
                 for k, v in data[section_name].items():
@@ -211,7 +229,7 @@ class FlashConfig:
 
     def summary(self) -> str:
         lines = [
-            f"MLX-Flash Configuration",
+            "MLX-Flash Configuration",
             f"  Hardware: {self.detected_chip}, {self.detected_ram_gb:.0f}GB RAM",
             f"  Cache:    {'ON' if self.cache.enable else 'OFF'} — {self.cache.ram_mb}MB, {self.cache.eviction} eviction",
             f"  Prefetch: {'ON' if self.prefetch.enable else 'OFF'} — {self.prefetch.workers} workers",

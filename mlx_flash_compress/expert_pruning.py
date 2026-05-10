@@ -29,8 +29,8 @@ Usage:
     pruner = install_expert_pruning(model)
 """
 
-import types
 import threading
+import types
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -41,10 +41,11 @@ import mlx.nn as nn
 @dataclass
 class ExpertPruningConfig:
     """Configuration for dynamic expert pruning."""
-    gate_threshold: float = 0.05    # skip if weight < 5% of top-1
-    min_experts: int = 1            # always compute at least 1 expert
-    adaptive: bool = True           # adapt threshold based on running stats
-    warmup_tokens: int = 100        # don't prune during warmup
+
+    gate_threshold: float = 0.05  # skip if weight < 5% of top-1
+    min_experts: int = 1  # always compute at least 1 expert
+    adaptive: bool = True  # adapt threshold based on running stats
+    warmup_tokens: int = 100  # don't prune during warmup
 
     def __post_init__(self):
         if self.gate_threshold < 0.0 or self.gate_threshold > 1.0:
@@ -146,10 +147,7 @@ class ExpertPruner:
 
             if self.config.adaptive and total_count > 0:
                 prune_ratio = pruned_count / total_count
-                self._ema_ratio = (
-                    self._ema_alpha * prune_ratio
-                    + (1 - self._ema_alpha) * self._ema_ratio
-                )
+                self._ema_ratio = self._ema_alpha * prune_ratio + (1 - self._ema_alpha) * self._ema_ratio
 
                 # Adaptive threshold adjustment: if we're pruning too
                 # aggressively (>80% of experts), raise the threshold to
@@ -178,16 +176,8 @@ class ExpertPruner:
             pruning rate, current threshold, and warmup status.
         """
         with self._lock:
-            avg_pruned = (
-                self._total_pruned / self._decisions
-                if self._decisions > 0
-                else 0.0
-            )
-            prune_rate = (
-                self._total_pruned / self._total_experts
-                if self._total_experts > 0
-                else 0.0
-            )
+            avg_pruned = self._total_pruned / self._decisions if self._decisions > 0 else 0.0
+            prune_rate = self._total_pruned / self._total_experts if self._total_experts > 0 else 0.0
             return {
                 "decisions": self._decisions,
                 "tokens_seen": self._tokens_seen,
@@ -242,9 +232,7 @@ def prune_experts(
         b, s, e = orig_shape
         gate_weights = gate_weights.reshape(b * s, e)
     elif len(orig_shape) != 2:
-        raise ValueError(
-            f"gate_weights must be 2D or 3D, got shape {orig_shape}"
-        )
+        raise ValueError(f"gate_weights must be 2D or 3D, got shape {orig_shape}")
 
     # Top-1 weight per sample: [batch, 1]
     top1 = mx.max(gate_weights, axis=-1, keepdims=True)
@@ -344,9 +332,7 @@ def install_expert_pruning(
                 k = getattr(self, "top_k", top_k_val)
 
                 # Select top-k experts
-                inds = mx.stop_gradient(
-                    mx.argpartition(-gates, kth=k - 1, axis=-1)[..., :k]
-                )
+                inds = mx.stop_gradient(mx.argpartition(-gates, kth=k - 1, axis=-1)[..., :k])
                 scores = mx.take_along_axis(gates, inds, axis=-1)
 
                 # --- Pruning logic ---
@@ -393,12 +379,11 @@ def install_expert_pruning(
                     y = y + shared
 
                 return y
+
             return patched_call
 
         pruner._original_calls.append(original_call)
         pruner._patched_mlps.append(mlp)
-        mlp.__call__ = types.MethodType(
-            make_patched(original_call, pruner, top_k), mlp
-        )
+        mlp.__call__ = types.MethodType(make_patched(original_call, pruner, top_k), mlp)
 
     return pruner

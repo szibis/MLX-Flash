@@ -34,6 +34,7 @@ import mlx.nn as nn
 @dataclass
 class LayerSkipConfig:
     """Configuration for LayerSkip self-speculative decoding."""
+
     exit_layer: int = -1  # draft exit layer (-1 = auto: num_layers // 2)
     num_speculative_tokens: int = 5  # tokens to draft per cycle
     temperature: float = 0.0  # greedy by default
@@ -104,8 +105,7 @@ class LayerSkipDrafter:
         """Return the layer index for early exit."""
         return self.config.exit_layer
 
-    def _forward_partial(self, input_ids: mx.array, num_layers: int,
-                         cache=None) -> mx.array:
+    def _forward_partial(self, input_ids: mx.array, num_layers: int, cache=None) -> mx.array:
         """Forward pass through first num_layers layers only.
 
         Args:
@@ -166,9 +166,7 @@ class LayerSkipDrafter:
                 next_token = mx.argmax(last_logits, axis=-1)  # [B, 1]
             else:
                 probs = mx.softmax(last_logits / self.config.temperature, axis=-1)
-                next_token = mx.random.categorical(
-                    mx.log(probs + 1e-10).squeeze(1)
-                ).reshape(-1, 1)
+                next_token = mx.random.categorical(mx.log(probs + 1e-10).squeeze(1)).reshape(-1, 1)
 
             draft_ids.append(next_token)
 
@@ -235,8 +233,7 @@ class LayerSkipEngine:
 
         return draft_ids, draft_logits
 
-    def _verify_step(self, input_ids: mx.array,
-                     draft_tokens: mx.array) -> tuple[mx.array, int]:
+    def _verify_step(self, input_ids: mx.array, draft_tokens: mx.array) -> tuple[mx.array, int]:
         """Verify drafts with full forward pass.
 
         Runs the full target model on [context + draft_tokens] and compares
@@ -262,7 +259,7 @@ class LayerSkipEngine:
         # So logits[:, ctx_len-1 : ctx_len-1+n_draft] predict
         # the tokens at positions ctx_len .. ctx_len+n_draft-1,
         # which are exactly our draft tokens.
-        verify_logits = logits[:, ctx_len - 1: ctx_len - 1 + n_draft, :]
+        verify_logits = logits[:, ctx_len - 1 : ctx_len - 1 + n_draft, :]
         target_ids = mx.argmax(verify_logits, axis=-1)
         mx.eval(target_ids)
 
@@ -293,8 +290,7 @@ class LayerSkipEngine:
         accepted_arr = mx.array(accepted, dtype=mx.int32)
         return accepted_arr, len(accepted)
 
-    def generate(self, prompt_tokens: mx.array, max_tokens: int = 100,
-                 callback=None) -> mx.array:
+    def generate(self, prompt_tokens: mx.array, max_tokens: int = 100, callback=None) -> mx.array:
         """Generate tokens using self-speculative decoding.
 
         Loop:
@@ -374,6 +370,7 @@ class LayerSkipEngine:
         speedup = tokens_per_step / effective_passes if effective_passes > 0 else 1.0
 
         import numpy as np
+
         return {
             "exit_layer": exit_layer,
             "total_layers": total_layers,
@@ -383,13 +380,16 @@ class LayerSkipEngine:
             "acceptance_rate": round(acceptance_rate, 3),
             "tokens_per_step": round(tokens_per_step, 1),
             "speedup_factor": round(speedup, 2),
-            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1) if self.stats["draft_times_ms"] else 0,
-            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1) if self.stats["verify_times_ms"] else 0,
+            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1)
+            if self.stats["draft_times_ms"]
+            else 0,
+            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1)
+            if self.stats["verify_times_ms"]
+            else 0,
         }
 
 
-def apply_layerskip(model, tokenizer,
-                    config: LayerSkipConfig = None) -> LayerSkipEngine:
+def apply_layerskip(model, tokenizer, config: LayerSkipConfig = None) -> LayerSkipEngine:
     """One-line setup for self-speculative decoding.
 
     Args:

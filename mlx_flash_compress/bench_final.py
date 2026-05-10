@@ -13,16 +13,17 @@ Usage:
   python -m mlx_flash_compress.bench_final
 """
 
-import time
 import sys
-import numpy as np
-from pathlib import Path
+import time
 from collections import defaultdict
+from pathlib import Path
 
-from mlx_flash_compress.lcp_cache import LCPCache, PipelineStats
-from mlx_flash_compress.cache import ExpertCacheManager
-from mlx_flash_compress.smart_eviction import LeastStalePolicy
+import numpy as np
+
 from mlx_flash_compress.bench import create_synthetic_experts, purge_os_cache_for_dir
+from mlx_flash_compress.cache import ExpertCacheManager
+from mlx_flash_compress.lcp_cache import LCPCache, PipelineStats
+from mlx_flash_compress.smart_eviction import LeastStalePolicy
 
 
 def print_sep(title):
@@ -77,9 +78,18 @@ def bench_no_cache(expert_dir, routings, num_layers, ssd_latency):
     return {"tok/s": tps, "time": elapsed, "reads": total_reads, "hit_rate": 0.0, "source": "all_cold"}
 
 
-def bench_lcp_cache(expert_dir, routings, num_layers, num_experts, ssd_latency,
-                    cache_mb=256, enable_prefetch=False, enable_dendritic=False,
-                    enable_skip=False, label="LCP"):
+def bench_lcp_cache(
+    expert_dir,
+    routings,
+    num_layers,
+    num_experts,
+    ssd_latency,
+    cache_mb=256,
+    enable_prefetch=False,
+    enable_dendritic=False,
+    enable_skip=False,
+    label="LCP",
+):
     """Benchmark LCP cache with optional prefetch/dendritic/skip."""
     cache = LCPCache(
         expert_dir=str(expert_dir),
@@ -139,7 +149,7 @@ def main():
     expert_kb = 512
 
     expert_dir = create_synthetic_experts(
-        work_dir='/tmp/mlx_final_bench',
+        work_dir="/tmp/mlx_final_bench",
         num_layers=num_layers,
         num_experts=num_experts,
         expert_size_bytes=expert_kb * 1024,
@@ -166,19 +176,54 @@ def main():
 
         configs = [
             ("No cache (SSD)", lambda: bench_no_cache(expert_dir, routings, num_layers, latency)),
-            ("LCP basic", lambda: bench_lcp_cache(
-                expert_dir, routings, num_layers, num_experts, latency,
-                cache_mb=256, label="LCP")),
-            ("LCP + prefetch", lambda: bench_lcp_cache(
-                expert_dir, routings, num_layers, num_experts, latency,
-                cache_mb=256, enable_prefetch=True, label="LCP+prefetch")),
-            ("LCP + prefetch + dendritic", lambda: bench_lcp_cache(
-                expert_dir, routings, num_layers, num_experts, latency,
-                cache_mb=256, enable_prefetch=True, enable_dendritic=True, label="LCP+pf+dend")),
-            ("FULL STACK (LCP+pf+dend+skip)", lambda: bench_lcp_cache(
-                expert_dir, routings, num_layers, num_experts, latency,
-                cache_mb=256, enable_prefetch=True, enable_dendritic=True,
-                enable_skip=True, label="FULL")),
+            (
+                "LCP basic",
+                lambda: bench_lcp_cache(
+                    expert_dir, routings, num_layers, num_experts, latency, cache_mb=256, label="LCP"
+                ),
+            ),
+            (
+                "LCP + prefetch",
+                lambda: bench_lcp_cache(
+                    expert_dir,
+                    routings,
+                    num_layers,
+                    num_experts,
+                    latency,
+                    cache_mb=256,
+                    enable_prefetch=True,
+                    label="LCP+prefetch",
+                ),
+            ),
+            (
+                "LCP + prefetch + dendritic",
+                lambda: bench_lcp_cache(
+                    expert_dir,
+                    routings,
+                    num_layers,
+                    num_experts,
+                    latency,
+                    cache_mb=256,
+                    enable_prefetch=True,
+                    enable_dendritic=True,
+                    label="LCP+pf+dend",
+                ),
+            ),
+            (
+                "FULL STACK (LCP+pf+dend+skip)",
+                lambda: bench_lcp_cache(
+                    expert_dir,
+                    routings,
+                    num_layers,
+                    num_experts,
+                    latency,
+                    cache_mb=256,
+                    enable_prefetch=True,
+                    enable_dendritic=True,
+                    enable_skip=True,
+                    label="FULL",
+                ),
+            ),
         ]
 
         all_results = []
@@ -193,16 +238,18 @@ def main():
         rows = []
         for name, r in all_results:
             sp = r["tok/s"] / base_tps if base_tps > 0 else 0
-            rows.append([
-                name[:30],
-                f"{r['tok/s']:.1f}",
-                f"{sp:.2f}x",
-                f"{r.get('hit_rate', 0):.1%}",
-                str(r.get("cache_hits", 0)),
-                str(r.get("prefetch_hits", 0)),
-                str(r.get("cold_loads", r.get("reads", 0))),
-                str(r.get("skips", 0)),
-            ])
+            rows.append(
+                [
+                    name[:30],
+                    f"{r['tok/s']:.1f}",
+                    f"{sp:.2f}x",
+                    f"{r.get('hit_rate', 0):.1%}",
+                    str(r.get("cache_hits", 0)),
+                    str(r.get("prefetch_hits", 0)),
+                    str(r.get("cold_loads", r.get("reads", 0))),
+                    str(r.get("skips", 0)),
+                ]
+            )
         print()
         print_table(headers, rows)
 
@@ -237,7 +284,7 @@ def main():
     final_tps = 1000 / (60 * final_layer)
     base_tps_fm = 4.36
 
-    print(f"  Flash-MoE baseline:              4.36 tok/s  (4.27ms/layer)")
+    print("  Flash-MoE baseline:              4.36 tok/s  (4.27ms/layer)")
     print(f"  Measured cache hit rate:          {hit_rate:.1%}")
     print(f"  Measured skip fallback rate:      {skip_rate:.1%}")
     print(f"  Measured dendritic skip rate:     {dendritic_rate:.1%}")
@@ -245,7 +292,7 @@ def main():
     print()
     print(f"  Effective I/O per layer:          {final_io:.2f}ms (was {base_ssd_ms}ms)")
     print(f"  Final layer time:                 {final_layer:.2f}ms (was 4.27ms)")
-    print(f"  PROJECTED: {final_tps:.1f} tok/s ({final_tps/base_tps_fm:.2f}x speedup)")
+    print(f"  PROJECTED: {final_tps:.1f} tok/s ({final_tps / base_tps_fm:.2f}x speedup)")
     print()
 
     for label, tps in [("Flash-MoE baseline", base_tps_fm), ("+ Full stack", final_tps)]:

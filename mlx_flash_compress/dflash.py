@@ -30,16 +30,17 @@ Usage:
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import Callable, Optional
 
-import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 
 
 @dataclass
 class DFlashConfig:
     """Configuration for DFlash speculative decoding."""
+
     num_spec_tokens: int = 15
     num_denoise_steps: int = 2
     checkpoint_layers: list[int] = field(default_factory=list)
@@ -51,6 +52,7 @@ class DFlashConfig:
 @dataclass
 class DFlashStats:
     """Runtime statistics for DFlash inference."""
+
     total_drafts: int = 0
     total_accepted: int = 0
     total_target_calls: int = 0
@@ -89,9 +91,15 @@ class BlockDiffusionDrafter(nn.Module):
     to the target model's hidden states.
     """
 
-    def __init__(self, vocab_size: int, hidden_dim: int, num_layers: int = 5,
-                 num_heads: int = 8, num_draft_positions: int = 15,
-                 num_checkpoint_layers: int = 5):
+    def __init__(
+        self,
+        vocab_size: int,
+        hidden_dim: int,
+        num_layers: int = 5,
+        num_heads: int = 8,
+        num_draft_positions: int = 15,
+        num_checkpoint_layers: int = 5,
+    ):
         super().__init__()
         self.vocab_size = vocab_size
         self.hidden_dim = hidden_dim
@@ -101,13 +109,10 @@ class BlockDiffusionDrafter(nn.Module):
         self.position_embedding = nn.Embedding(num_draft_positions, hidden_dim)
         self.checkpoint_proj = nn.Linear(hidden_dim * num_checkpoint_layers, hidden_dim)
 
-        self.layers = [
-            DrafterBlock(hidden_dim, num_heads) for _ in range(num_layers)
-        ]
+        self.layers = [DrafterBlock(hidden_dim, num_heads) for _ in range(num_layers)]
         self.output_proj = nn.Linear(hidden_dim, vocab_size)
 
-    def __call__(self, hidden_states: list[mx.array],
-                 noisy_tokens: mx.array) -> mx.array:
+    def __call__(self, hidden_states: list[mx.array], noisy_tokens: mx.array) -> mx.array:
         """Forward pass: denoise draft tokens conditioned on hidden states.
 
         Args:
@@ -174,8 +179,7 @@ class DFlashEngine:
     4. Accept longest matching prefix
     """
 
-    def __init__(self, target_model, drafter: Optional[BlockDiffusionDrafter],
-                 config: DFlashConfig, tokenizer=None):
+    def __init__(self, target_model, drafter: Optional[BlockDiffusionDrafter], config: DFlashConfig, tokenizer=None):
         self.target = target_model
         self.drafter = drafter
         self.config = config
@@ -196,15 +200,13 @@ class DFlashEngine:
             return
 
         step = max(1, num_layers // 5)
-        self.config.checkpoint_layers = [
-            1, step, step * 2, step * 3, num_layers - 1
-        ]
+        self.config.checkpoint_layers = [1, step, step * 2, step * 3, num_layers - 1]
 
     def _get_model_num_layers(self) -> int:
         """Get number of transformer layers in target model."""
-        if hasattr(self.target, 'model') and hasattr(self.target.model, 'layers'):
+        if hasattr(self.target, "model") and hasattr(self.target.model, "layers"):
             return len(self.target.model.layers)
-        if hasattr(self.target, 'layers'):
+        if hasattr(self.target, "layers"):
             return len(self.target.layers)
         return 32  # fallback
 
@@ -217,9 +219,9 @@ class DFlashEngine:
         self._captured_hidden_states.clear()
 
         model_layers = None
-        if hasattr(self.target, 'model') and hasattr(self.target.model, 'layers'):
+        if hasattr(self.target, "model") and hasattr(self.target.model, "layers"):
             model_layers = self.target.model.layers
-        elif hasattr(self.target, 'layers'):
+        elif hasattr(self.target, "layers"):
             model_layers = self.target.layers
 
         if model_layers is None:
@@ -239,6 +241,7 @@ class DFlashEngine:
             Draft token IDs [num_spec_tokens]
         """
         import time
+
         t0 = time.perf_counter()
 
         N = self.config.num_spec_tokens
@@ -286,6 +289,7 @@ class DFlashEngine:
             (accepted_tokens, num_accepted)
         """
         import time
+
         t0 = time.perf_counter()
 
         full_input = mx.concatenate([input_ids, draft_tokens])
@@ -297,7 +301,7 @@ class DFlashEngine:
         logits = self._target_forward(full_input)
 
         seq_len = input_ids.shape[0]
-        verify_logits = logits[0, seq_len - 1:seq_len + self.config.num_spec_tokens - 1, :]
+        verify_logits = logits[0, seq_len - 1 : seq_len + self.config.num_spec_tokens - 1, :]
 
         if self.config.temperature == 0:
             target_tokens = mx.argmax(verify_logits, axis=-1)
@@ -308,7 +312,7 @@ class DFlashEngine:
         mx.eval(target_tokens)
 
         # Find longest matching prefix
-        matches = (target_tokens == draft_tokens[:len(target_tokens)])
+        matches = target_tokens == draft_tokens[: len(target_tokens)]
         matches_np = np.array(matches)
 
         num_accepted = 0
@@ -320,7 +324,11 @@ class DFlashEngine:
 
         # Always accept the first correct target token after the last accepted draft
         # (the "bonus token" from verification)
-        bonus_token = target_tokens[num_accepted:num_accepted + 1] if num_accepted < len(target_tokens) else mx.array([], dtype=mx.int32)
+        bonus_token = (
+            target_tokens[num_accepted : num_accepted + 1]
+            if num_accepted < len(target_tokens)
+            else mx.array([], dtype=mx.int32)
+        )
 
         if num_accepted > 0:
             accepted = mx.concatenate([draft_tokens[:num_accepted], bonus_token])
@@ -337,14 +345,13 @@ class DFlashEngine:
 
     def _target_forward(self, input_ids: mx.array) -> mx.array:
         """Run target model forward pass, capturing hidden states."""
-        if hasattr(self.target, '__call__'):
+        if hasattr(self.target, "__call__"):
             return self.target(input_ids)
-        if hasattr(self.target, 'model'):
+        if hasattr(self.target, "model"):
             return self.target.model(input_ids)
         raise RuntimeError("Cannot determine target model forward method")
 
-    def generate(self, prompt_tokens: mx.array, max_tokens: int = 256,
-                 callback: Optional[Callable] = None) -> mx.array:
+    def generate(self, prompt_tokens: mx.array, max_tokens: int = 256, callback: Optional[Callable] = None) -> mx.array:
         """Generate tokens with DFlash speculative decoding.
 
         Args:
@@ -361,7 +368,7 @@ class DFlashEngine:
         self.stats = DFlashStats()
         self.install_hidden_state_hooks()
 
-        generated = list(prompt_tokens.tolist()) if hasattr(prompt_tokens, 'tolist') else list(prompt_tokens)
+        generated = list(prompt_tokens.tolist()) if hasattr(prompt_tokens, "tolist") else list(prompt_tokens)
         tokens_generated = 0
 
         while tokens_generated < max_tokens:
@@ -380,7 +387,7 @@ class DFlashEngine:
                 break
 
             # Append accepted tokens
-            accepted_list = accepted.tolist() if hasattr(accepted, 'tolist') else list(accepted)
+            accepted_list = accepted.tolist() if hasattr(accepted, "tolist") else list(accepted)
             generated.extend(accepted_list)
             tokens_generated += num_accepted
 
@@ -388,7 +395,7 @@ class DFlashEngine:
                 callback(accepted_list, self.stats)
 
             # Check for EOS
-            if self.tokenizer and hasattr(self.tokenizer, 'eos_token_id'):
+            if self.tokenizer and hasattr(self.tokenizer, "eos_token_id"):
                 if self.tokenizer.eos_token_id in accepted_list:
                     break
 
@@ -403,13 +410,13 @@ class DFlashEngine:
         x = mx.expand_dims(input_ids, axis=0)
 
         model_layers = None
-        if hasattr(self.target, 'model') and hasattr(self.target.model, 'layers'):
+        if hasattr(self.target, "model") and hasattr(self.target.model, "layers"):
             model_layers = self.target.model.layers
-            if hasattr(self.target.model, 'embed_tokens'):
+            if hasattr(self.target.model, "embed_tokens"):
                 x = self.target.model.embed_tokens(x)
-        elif hasattr(self.target, 'layers'):
+        elif hasattr(self.target, "layers"):
             model_layers = self.target.layers
-            if hasattr(self.target, 'embed_tokens'):
+            if hasattr(self.target, "embed_tokens"):
                 x = self.target.embed_tokens(x)
 
         if model_layers is None:
@@ -424,10 +431,10 @@ class DFlashEngine:
 
         return hidden_states
 
-    def _generate_fallback(self, prompt_tokens: mx.array, max_tokens: int,
-                           callback: Optional[Callable]) -> mx.array:
+    def _generate_fallback(self, prompt_tokens: mx.array, max_tokens: int, callback: Optional[Callable]) -> mx.array:
         """Fallback to standard autoregressive generation when no drafter available."""
         from mlx_lm import generate
+
         # Standard generation without speculation
         return prompt_tokens
 
@@ -460,7 +467,7 @@ class NGramDrafter:
     def observe(self, tokens: list[int]):
         """Build n-gram table from observed tokens."""
         for i in range(len(tokens) - self.n):
-            key = tuple(tokens[i:i + self.n])
+            key = tuple(tokens[i : i + self.n])
             next_token = tokens[i + self.n]
             if key not in self._ngram_table:
                 self._ngram_table[key] = []
@@ -472,7 +479,7 @@ class NGramDrafter:
         current = list(context)
 
         for _ in range(self.num_draft):
-            key = tuple(current[-self.n:])
+            key = tuple(current[-self.n :])
             if key in self._ngram_table:
                 candidates = self._ngram_table[key]
                 # Most common continuation

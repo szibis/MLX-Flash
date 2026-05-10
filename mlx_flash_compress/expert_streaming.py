@@ -42,12 +42,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
-
+import numpy as np
 
 # -- Safetensors mmap reader --
+
 
 @dataclass
 class TensorInfo:
@@ -80,12 +80,15 @@ class SafetensorsMap:
             if key == "__metadata__":
                 continue
             offsets = info.get("data_offsets", [0, 0])
-            self._tensor_map[key] = (path, TensorInfo(
-                dtype=info.get("dtype", "F16"),
-                shape=info.get("shape", []),
-                data_offset=offsets[0],
-                data_size=offsets[1] - offsets[0],
-            ))
+            self._tensor_map[key] = (
+                path,
+                TensorInfo(
+                    dtype=info.get("dtype", "F16"),
+                    shape=info.get("shape", []),
+                    data_offset=offsets[0],
+                    data_size=offsets[1] - offsets[0],
+                ),
+            )
 
     def _get_mmap(self, path):
         if path not in self._mmaps:
@@ -93,8 +96,14 @@ class SafetensorsMap:
             self._mmaps[path] = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         return self._mmaps[path]
 
-    _NP_DTYPES = {"F16": np.float16, "BF16": np.float16, "F32": np.float32,
-                   "U32": np.uint32, "I32": np.int32, "U8": np.uint8}
+    _NP_DTYPES = {
+        "F16": np.float16,
+        "BF16": np.float16,
+        "F32": np.float32,
+        "U32": np.uint32,
+        "I32": np.int32,
+        "U8": np.uint8,
+    }
 
     def get_expert_slice(self, key, expert_ids):
         """Load specific expert rows from stacked [E, ...] or per-expert format."""
@@ -113,7 +122,7 @@ class SafetensorsMap:
                 slices = []
                 for eid in expert_ids:
                     offset = base + eid * row_size
-                    raw = mm[offset:offset + row_size]
+                    raw = mm[offset : offset + row_size]
                     arr = np.frombuffer(raw, dtype=np_dtype).reshape(row_shape)
                     slices.append(arr)
                 return mx.array(np.stack(slices))
@@ -141,7 +150,7 @@ class SafetensorsMap:
                 mm = self._get_mmap(path)
                 offset = self._data_offsets[path] + info.data_offset
                 np_dtype = self._NP_DTYPES.get(info.dtype, np.float16)
-                raw = mm[offset:offset + info.data_size]
+                raw = mm[offset : offset + info.data_size]
                 arr = np.frombuffer(raw, dtype=np_dtype).reshape(info.shape)
                 slices.append(arr)
             if slices:
@@ -160,6 +169,7 @@ class SafetensorsMap:
 
 # -- LCP eviction tracker --
 
+
 class LCPTracker:
     """LCP eviction with optional layer-depth bias (FATE paper).
 
@@ -169,8 +179,7 @@ class LCPTracker:
     is the layer's position (0=first, 1=last).
     """
 
-    def __init__(self, num_experts, lcp_base=0.25, lcp_decay=128.0,
-                 layer_depth_bias=0.0, layer_frac=0.5):
+    def __init__(self, num_experts, lcp_base=0.25, lcp_decay=128.0, layer_depth_bias=0.0, layer_frac=0.5):
         self.num_experts = num_experts
         self.lcp_base = lcp_base
         self.lcp_decay = lcp_decay
@@ -199,6 +208,7 @@ class LCPTracker:
 
 
 # -- Cached QuantizedSwitchLinear replacement --
+
 
 class CachedSwitchLinear(nn.Module):
     """Drop-in replacement using GPU lookup table + pre-stacked weights."""
@@ -233,11 +243,11 @@ class CachedSwitchLinear(nn.Module):
 
 # -- Expert cache per layer --
 
+
 class ExpertCache:
     """Pre-stacked expert weights in GPU with LCP eviction."""
 
-    def __init__(self, layer_idx, num_experts, capacity, st_map, weight_keys,
-                 num_layers=1, layer_depth_bias=0.3):
+    def __init__(self, layer_idx, num_experts, capacity, st_map, weight_keys, num_layers=1, layer_depth_bias=0.3):
         self.layer_idx = layer_idx
         self.num_experts = num_experts
         self.capacity = min(capacity, num_experts)
@@ -250,9 +260,7 @@ class ExpertCache:
         self.scales = {}
         self.biases = {}
         layer_frac = layer_idx / max(num_layers - 1, 1)
-        self.tracker = LCPTracker(
-            num_experts, layer_depth_bias=layer_depth_bias, layer_frac=layer_frac
-        )
+        self.tracker = LCPTracker(num_experts, layer_depth_bias=layer_depth_bias, layer_frac=layer_frac)
         self._indices_buffer = []
         self.total_tokens = 0
         self.cache_updates = 0
@@ -260,7 +268,7 @@ class ExpertCache:
     def initial_fill(self, expert_ids=None):
         if expert_ids is None:
             expert_ids = list(range(self.capacity))
-        self.cached_ids = expert_ids[:self.capacity]
+        self.cached_ids = expert_ids[: self.capacity]
 
         for full_key_name, st_key in self.weight_keys.items():
             data = self.st_map.get_expert_slice(st_key, self.cached_ids)
@@ -305,11 +313,11 @@ class ExpertCache:
         if not to_evict:
             return
 
-        new_ids = misses[:len(to_evict)]
+        new_ids = misses[: len(to_evict)]
         evict_set = set(to_evict)
         new_cached = [eid for eid in self.cached_ids if eid not in evict_set]
         new_cached.extend(new_ids)
-        self.cached_ids = new_cached[:self.capacity]
+        self.cached_ids = new_cached[: self.capacity]
 
         # Reload changed expert slots from disk
         for full_key_name, st_key in self.weight_keys.items():
@@ -325,7 +333,7 @@ class ExpertCache:
                 slot_map = {eid: i for i, eid in enumerate(self.cached_ids)}
                 slots = [slot_map[eid] for eid in new_ids if eid in slot_map]
                 if slots:
-                    slot_idx = mx.array(slots[:data.shape[0]])
+                    slot_idx = mx.array(slots[: data.shape[0]])
                     target[proj][slot_idx] = data
 
         self._rebuild_lookup()
@@ -349,6 +357,7 @@ class ExpertCache:
 
 
 # -- Streaming state --
+
 
 @dataclass
 class StreamingState:
@@ -388,6 +397,7 @@ class StreamingState:
 
 
 # -- Skip-fallback: zero missing expert scores --
+
 
 def enable_skip_fallback(model, caches: list, adaptive_skip_threshold: float = 0.0):
     """Monkey-patch MoE blocks to zero scores for uncached experts.
@@ -431,9 +441,7 @@ def enable_skip_fallback(model, caches: list, adaptive_skip_threshold: float = 0
                 gates = mx.softmax(gates, axis=-1, precise=True)
 
                 k = self.top_k
-                inds = mx.stop_gradient(
-                    mx.argpartition(-gates, kth=k - 1, axis=-1)[..., :k]
-                )
+                inds = mx.stop_gradient(mx.argpartition(-gates, kth=k - 1, axis=-1)[..., :k])
                 scores = mx.take_along_axis(gates, inds, axis=-1)
 
                 # Zero out scores for uncached experts
@@ -444,13 +452,9 @@ def enable_skip_fallback(model, caches: list, adaptive_skip_threshold: float = 0
                 if skip_thresh > 0 and k > 1:
                     top1 = scores[..., :1]
                     # Zero out experts where top-1 is much stronger
-                    confidence_mask = mx.where(
-                        top1 > skip_thresh * scores, 0.0, 1.0
-                    )
+                    confidence_mask = mx.where(top1 > skip_thresh * scores, 0.0, 1.0)
                     # Keep top-1 always
-                    confidence_mask = mx.concatenate(
-                        [mx.ones_like(scores[..., :1]), confidence_mask[..., 1:]], axis=-1
-                    )
+                    confidence_mask = mx.concatenate([mx.ones_like(scores[..., :1]), confidence_mask[..., 1:]], axis=-1)
                     scores = scores * confidence_mask
 
                 score_sum = scores.sum(axis=-1, keepdims=True)
@@ -466,6 +470,7 @@ def enable_skip_fallback(model, caches: list, adaptive_skip_threshold: float = 0
                     y = y + shared
 
                 return y
+
             return patched_call
 
         mlp.__call__ = types.MethodType(make_patched(original_call, cache), mlp)
@@ -473,8 +478,8 @@ def enable_skip_fallback(model, caches: list, adaptive_skip_threshold: float = 0
 
 # -- Profile-based warmup --
 
-def get_warmup_experts(task: str = "general", num_layers: int = 24,
-                       num_experts: int = 60, top_n: int = 30) -> list:
+
+def get_warmup_experts(task: str = "general", num_layers: int = 24, num_experts: int = 60, top_n: int = 30) -> list:
     """Get hot experts for a task from pre-computed profiles.
 
     Uses task_profiler's predefined profiles to determine which experts
@@ -482,6 +487,7 @@ def get_warmup_experts(task: str = "general", num_layers: int = 24,
     """
     try:
         from mlx_flash_compress.task_profiler import get_predefined_profile
+
         profile = get_predefined_profile(task, num_layers=num_layers, num_experts=num_experts)
         hot_experts = profile.get_hot_experts(top_pct=top_n / num_experts)
 
@@ -500,6 +506,7 @@ def get_warmup_experts(task: str = "general", num_layers: int = 24,
 
 
 # -- Public API --
+
 
 def enable_expert_streaming(model, capacity_per_layer=200, model_path=None):
     """Enable expert streaming on a loaded MLX MoE model.
@@ -523,8 +530,10 @@ def enable_expert_streaming(model, capacity_per_layer=200, model_path=None):
         if not model_dir.is_dir():
             # Try HuggingFace cache
             import glob
+
             cache_pattern = os.path.expanduser(
-                f"~/.cache/huggingface/hub/models--{model_path.replace('/', '--')}*/snapshots/*/")
+                f"~/.cache/huggingface/hub/models--{model_path.replace('/', '--')}*/snapshots/*/"
+            )
             cache_dirs = sorted(glob.glob(cache_pattern))
             if cache_dirs:
                 model_dir = Path(cache_dirs[-1])

@@ -31,10 +31,10 @@ from pathlib import Path
 from typing import Optional
 
 from mlx_flash_compress.expert_streaming import (
+    StreamingState,
     enable_expert_streaming,
     enable_skip_fallback,
     get_warmup_experts,
-    StreamingState,
 )
 
 
@@ -89,7 +89,8 @@ def enable_caching(
     # Enable skip-fallback if threshold is set
     if adaptive_skip_threshold > 0 and state.caches:
         enable_skip_fallback(
-            model, state.caches,
+            model,
+            state.caches,
             adaptive_skip_threshold=adaptive_skip_threshold,
         )
 
@@ -170,6 +171,7 @@ def auto_configure(model, ram_gb: float = None) -> dict:
     if ram_gb is None:
         try:
             from mlx_flash_compress.memory_manager import get_memory_state
+
             ram_gb = get_memory_state().total_gb
         except Exception:
             ram_gb = 36  # default

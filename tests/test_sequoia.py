@@ -1,14 +1,20 @@
 """Tests for Sequoia speculative decoding with SSD offloading."""
+
 import numpy as np
 import pytest
 
 try:
     import mlx.core as mx
     import mlx.nn as nn
+
     from mlx_flash_compress.sequoia import (
-        SequoiaConfig, SpeculationTree, LayerOffloader, SequoiaEngine,
+        LayerOffloader,
+        SequoiaConfig,
+        SequoiaEngine,
+        SpeculationTree,
         apply_sequoia,
     )
+
     HAS_MLX = True
 except (ImportError, ModuleNotFoundError):
     HAS_MLX = False
@@ -17,6 +23,7 @@ pytestmark = pytest.mark.skipif(not HAS_MLX, reason="requires mlx")
 
 
 # ── Mock models ──────────────────────────────────────────────────
+
 
 class MockDraftModel(nn.Module):
     """Tiny draft model for testing. Returns deterministic logits."""
@@ -37,13 +44,10 @@ class MockDraftModel(nn.Module):
 class MockTargetModel(nn.Module):
     """Tiny target model that mirrors draft model outputs for testing."""
 
-    def __init__(self, vocab_size: int = 32, hidden_dim: int = 32,
-                 num_layers: int = 4):
+    def __init__(self, vocab_size: int = 32, hidden_dim: int = 32, num_layers: int = 4):
         super().__init__()
         self.embed_tokens = nn.Embedding(vocab_size, hidden_dim)
-        self.layers = [
-            MockTransformerLayer(hidden_dim) for _ in range(num_layers)
-        ]
+        self.layers = [MockTransformerLayer(hidden_dim) for _ in range(num_layers)]
         self.norm = nn.RMSNorm(hidden_dim)
         self.lm_head = nn.Linear(hidden_dim, vocab_size)
 
@@ -79,6 +83,7 @@ class MockTokenizer:
 
 
 # ── SpeculationTree tests ────────────────────────────────────────
+
 
 class TestSpeculationTree:
     def test_optimal_depth_high_acceptance(self):
@@ -161,7 +166,7 @@ class TestSpeculationTree:
         depth = 4
 
         # Expected tokens: geometric series
-        expected = sum(alpha ** i for i in range(depth + 1))
+        expected = sum(alpha**i for i in range(depth + 1))
         wall_time = depth * 5.0 + 50.0
 
         throughput = expected / wall_time
@@ -178,6 +183,7 @@ class TestSpeculationTree:
 
         # Simple draft function: always returns token 5
         call_count = [0]
+
         def mock_draft(ids):
             call_count[0] += 1
             logits = mx.zeros(32)
@@ -214,13 +220,26 @@ class TestSpeculationTree:
         tree = SpeculationTree(config)
 
         # Build a simple linear tree: [5, 6, 7]
-        root = {"token": None, "children": [
-            {"token": 5, "children": [
-                {"token": 6, "children": [
-                    {"token": 7, "children": [], "logits": None, "depth": 3}
-                ], "logits": None, "depth": 2}
-            ], "logits": None, "depth": 1}
-        ], "logits": None, "depth": 0}
+        root = {
+            "token": None,
+            "children": [
+                {
+                    "token": 5,
+                    "children": [
+                        {
+                            "token": 6,
+                            "children": [{"token": 7, "children": [], "logits": None, "depth": 3}],
+                            "logits": None,
+                            "depth": 2,
+                        }
+                    ],
+                    "logits": None,
+                    "depth": 1,
+                }
+            ],
+            "logits": None,
+            "depth": 0,
+        }
 
         # Verified tokens match all drafts, plus a bonus token 8
         verified = mx.array([5, 6, 7, 8])
@@ -235,13 +254,26 @@ class TestSpeculationTree:
         config = SequoiaConfig(tree_width=1)
         tree = SpeculationTree(config)
 
-        root = {"token": None, "children": [
-            {"token": 5, "children": [
-                {"token": 6, "children": [
-                    {"token": 7, "children": [], "logits": None, "depth": 3}
-                ], "logits": None, "depth": 2}
-            ], "logits": None, "depth": 1}
-        ], "logits": None, "depth": 0}
+        root = {
+            "token": None,
+            "children": [
+                {
+                    "token": 5,
+                    "children": [
+                        {
+                            "token": 6,
+                            "children": [{"token": 7, "children": [], "logits": None, "depth": 3}],
+                            "logits": None,
+                            "depth": 2,
+                        }
+                    ],
+                    "logits": None,
+                    "depth": 1,
+                }
+            ],
+            "logits": None,
+            "depth": 0,
+        }
 
         # Second token doesn't match (6 vs 9)
         verified = mx.array([5, 9, 7, 8])
@@ -256,9 +288,12 @@ class TestSpeculationTree:
         config = SequoiaConfig(tree_width=1)
         tree = SpeculationTree(config)
 
-        root = {"token": None, "children": [
-            {"token": 5, "children": [], "logits": None, "depth": 1}
-        ], "logits": None, "depth": 0}
+        root = {
+            "token": None,
+            "children": [{"token": 5, "children": [], "logits": None, "depth": 1}],
+            "logits": None,
+            "depth": 0,
+        }
 
         verified = mx.array([9, 8, 7])
         accepted = tree.select_accepted(root, verified)
@@ -290,6 +325,7 @@ class TestSpeculationTree:
 
 
 # ── LayerOffloader tests ─────────────────────────────────────────
+
 
 class TestLayerOffloader:
     def test_init_nonexistent_path(self):
@@ -336,6 +372,7 @@ class TestLayerOffloader:
         offloader.prefetch_layer(0)
         # Should not crash, thread may start but find nothing
         import time
+
         time.sleep(0.05)
         assert offloader._prefetch_hits == 0
 
@@ -382,6 +419,7 @@ class TestLayerOffloader:
 
 
 # ── SequoiaEngine tests ──────────────────────────────────────────
+
 
 class TestSequoiaEngine:
     def test_init_default_config(self):
@@ -461,6 +499,7 @@ class TestSequoiaEngine:
         engine = SequoiaEngine(draft, target, MockTokenizer(), config=config)
 
         callbacks = []
+
         def on_tokens(tokens, stats):
             callbacks.append((tokens, stats))
 
@@ -523,6 +562,7 @@ class TestSequoiaEngine:
 
 
 # ── Config tests ─────────────────────────────────────────────────
+
 
 class TestSequoiaConfig:
     def test_defaults(self):

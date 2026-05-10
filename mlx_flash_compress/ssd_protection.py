@@ -34,6 +34,7 @@ from typing import Optional
 @dataclass
 class SSDHealth:
     """SSD health status from SMART data."""
+
     available: bool = False
     percentage_used: float = 0.0  # 0-100%
     data_read_tb: float = 0.0
@@ -50,7 +51,9 @@ def check_ssd_health() -> SSDHealth:
     try:
         result = subprocess.run(
             ["smartctl", "-a", "/dev/disk0"],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if result.returncode == 0:
             health.available = True
@@ -70,7 +73,9 @@ def check_ssd_health() -> SSDHealth:
         try:
             result = subprocess.run(
                 ["diskutil", "info", "disk0"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True,
+                text=True,
+                timeout=5,
             )
             health.available = True
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -82,6 +87,7 @@ def check_ssd_health() -> SSDHealth:
 @dataclass
 class ReadPolicy:
     """SSD-friendly read policy parameters."""
+
     max_read_rate_gbs: float = 15.0  # stay below max to prevent thermal throttle
     sequential_preference: bool = True  # prefer sequential over random reads
     cooldown_after_burst_s: float = 0.01  # brief pause after large burst reads
@@ -137,6 +143,7 @@ class SSDProtectedReader:
             if self.policy.sequential_preference:
                 try:
                     import fcntl
+
                     # F_RDAHEAD = 45 on macOS (enable read-ahead)
                     fcntl.fcntl(fd, 45, 1)
                 except (ImportError, OSError):
@@ -153,7 +160,9 @@ class SSDProtectedReader:
         if health.available and health.temperature_c > 0:
             self._throttled = health.temperature_c > self.policy.thermal_throttle_temp_c
             if self._throttled:
-                print(f"  WARNING: SSD temperature {health.temperature_c}°C > {self.policy.thermal_throttle_temp_c}°C — throttling reads")
+                print(
+                    f"  WARNING: SSD temperature {health.temperature_c}°C > {self.policy.thermal_throttle_temp_c}°C — throttling reads"
+                )
 
 
 def estimate_ssd_impact(

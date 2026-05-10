@@ -1,11 +1,11 @@
 """Tests for multi-precision expert quantization tiers."""
 
-import pytest
 import numpy as np
+import pytest
 
 from mlx_flash_compress.mixed_precision import (
-    ExpertHotness,
     PRECISION_TIERS,
+    ExpertHotness,
     estimate_tier_savings,
 )
 

@@ -12,16 +12,19 @@ import os
 import platform
 import re
 import subprocess
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Optional
+
+import numpy as np
 
 
 @dataclass
 class MacHardware:
     """Detected Mac hardware profile."""
+
     chip: str = "Unknown"
     chip_family: str = "Unknown"  # M1, M2, M3, M4
-    chip_tier: str = "Unknown"    # base, Pro, Max, Ultra
+    chip_tier: str = "Unknown"  # base, Pro, Max, Ultra
     cpu_cores: int = 0
     p_cores: int = 0
     e_cores: int = 0
@@ -57,25 +60,25 @@ class MacHardware:
 
 CHIP_SPECS = {
     # (memory_bw_gbs, gpu_cores, ane_tops, amx_tflops, ssd_gbs, tb_version, tb_ports)
-    "M1":          (68.25,  8,  11.0, 2.0,  2.8, 4, 2),
-    "M1 Pro":      (200.0,  16, 11.0, 4.0,  5.0, 4, 3),
-    "M1 Max":      (400.0,  32, 11.0, 8.0,  7.4, 4, 4),
-    "M1 Ultra":    (800.0,  64, 22.0, 16.0, 7.4, 4, 6),
-    "M2":          (100.0,  10, 15.8, 3.0,  3.5, 4, 2),
-    "M2 Pro":      (200.0,  19, 15.8, 6.0,  5.0, 4, 3),
-    "M2 Max":      (400.0,  38, 15.8, 12.0, 7.4, 4, 4),
-    "M2 Ultra":    (800.0,  76, 31.6, 24.0, 7.4, 4, 6),
-    "M3":          (100.0,  10, 18.0, 3.5,  3.5, 4, 2),
-    "M3 Pro":      (150.0,  18, 18.0, 6.0,  5.0, 4, 3),
-    "M3 Max":      (400.0,  40, 18.0, 12.0, 7.4, 4, 4),
-    "M3 Ultra":    (800.0,  80, 36.0, 24.0, 7.4, 4, 6),
-    "M4":          (120.0,  10, 38.0, 4.0,  4.0, 5, 2),
-    "M4 Pro":      (273.0,  20, 38.0, 8.0,  5.0, 5, 3),
-    "M4 Max":      (546.0,  40, 38.0, 16.0, 7.4, 5, 4),
+    "M1": (68.25, 8, 11.0, 2.0, 2.8, 4, 2),
+    "M1 Pro": (200.0, 16, 11.0, 4.0, 5.0, 4, 3),
+    "M1 Max": (400.0, 32, 11.0, 8.0, 7.4, 4, 4),
+    "M1 Ultra": (800.0, 64, 22.0, 16.0, 7.4, 4, 6),
+    "M2": (100.0, 10, 15.8, 3.0, 3.5, 4, 2),
+    "M2 Pro": (200.0, 19, 15.8, 6.0, 5.0, 4, 3),
+    "M2 Max": (400.0, 38, 15.8, 12.0, 7.4, 4, 4),
+    "M2 Ultra": (800.0, 76, 31.6, 24.0, 7.4, 4, 6),
+    "M3": (100.0, 10, 18.0, 3.5, 3.5, 4, 2),
+    "M3 Pro": (150.0, 18, 18.0, 6.0, 5.0, 4, 3),
+    "M3 Max": (400.0, 40, 18.0, 12.0, 7.4, 4, 4),
+    "M3 Ultra": (800.0, 80, 36.0, 24.0, 7.4, 4, 6),
+    "M4": (120.0, 10, 38.0, 4.0, 4.0, 5, 2),
+    "M4 Pro": (273.0, 20, 38.0, 8.0, 5.0, 5, 3),
+    "M4 Max": (546.0, 40, 38.0, 16.0, 7.4, 5, 4),
     # M5 family (Oct 2025 base, Mar 2026 Pro/Max)
-    "M5":          (153.6,  10, 38.0, 5.0,  4.0, 5, 2),
-    "M5 Pro":      (307.0,  20, 38.0, 10.0, 5.0, 5, 3),
-    "M5 Max":      (614.0,  40, 38.0, 18.0, 7.4, 5, 4),
+    "M5": (153.6, 10, 38.0, 5.0, 4.0, 5, 2),
+    "M5 Pro": (307.0, 20, 38.0, 10.0, 5.0, 5, 3),
+    "M5 Max": (614.0, 40, 38.0, 18.0, 7.4, 5, 4),
 }
 
 
@@ -90,7 +93,9 @@ def detect_hardware() -> MacHardware:
     try:
         result = subprocess.run(
             ["system_profiler", "SPHardwareDataType", "-json"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         data = json.loads(result.stdout)
         hw_info = data.get("SPHardwareDataType", [{}])[0]
@@ -141,7 +146,9 @@ def detect_hardware() -> MacHardware:
     try:
         result = subprocess.run(
             ["diskutil", "info", "disk0"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True,
+            text=True,
+            timeout=10,
         )
         for line in result.stdout.split("\n"):
             if "Disk Size" in line:
@@ -161,6 +168,7 @@ def detect_hardware() -> MacHardware:
 @dataclass
 class PerformanceEstimate:
     """Estimated performance for a specific model on detected hardware."""
+
     model_name: str
     model_gb: float
     fits_in_ram: bool
@@ -195,10 +203,14 @@ def estimate_performance(
         layer_ms = gpu_layer_ms
         tps = 1000 / (num_layers * layer_ms)
         return PerformanceEstimate(
-            model_name=model_name, model_gb=model_gb,
-            fits_in_ram=True, ram_cache_gb=model_gb,
-            estimated_hit_rate=1.0, estimated_tok_per_s=tps,
-            estimated_layer_ms=layer_ms, bottleneck="compute",
+            model_name=model_name,
+            model_gb=model_gb,
+            fits_in_ram=True,
+            ram_cache_gb=model_gb,
+            estimated_hit_rate=1.0,
+            estimated_tok_per_s=tps,
+            estimated_layer_ms=layer_ms,
+            bottleneck="compute",
         )
 
     # Model exceeds RAM — SSD streaming
@@ -226,15 +238,15 @@ def estimate_performance(
     bottleneck = "ssd_bandwidth" if io_ms > gpu_layer_ms else "compute"
 
     return PerformanceEstimate(
-        model_name=model_name, model_gb=model_gb,
-        fits_in_ram=fits, ram_cache_gb=min(ram_for_cache, model_gb),
-        estimated_hit_rate=hit_rate, estimated_tok_per_s=tps,
-        estimated_layer_ms=layer_ms, bottleneck=bottleneck,
+        model_name=model_name,
+        model_gb=model_gb,
+        fits_in_ram=fits,
+        ram_cache_gb=min(ram_for_cache, model_gb),
+        estimated_hit_rate=hit_rate,
+        estimated_tok_per_s=tps,
+        estimated_layer_ms=layer_ms,
+        bottleneck=bottleneck,
     )
-
-
-# Need numpy for Zipf calculation
-import numpy as np
 
 
 def print_performance_matrix(hw: MacHardware):
@@ -254,26 +266,44 @@ def print_performance_matrix(hw: MacHardware):
 
     for name, gb, layers, experts, k, expert_mb, gpu_ms in models:
         est = estimate_performance(
-            hw, gb, name, layers, experts, k, expert_mb, gpu_ms,
+            hw,
+            gb,
+            name,
+            layers,
+            experts,
+            k,
+            expert_mb,
+            gpu_ms,
         )
         fits = "Yes" if est.fits_in_ram else "No"
-        print(f"  {name:<30s} {gb:>5.0f}G {fits:>5s} {est.estimated_hit_rate:>4.0%} {est.estimated_tok_per_s:>6.1f} {est.bottleneck:>12s}")
+        print(
+            f"  {name:<30s} {gb:>5.0f}G {fits:>5s} {est.estimated_hit_rate:>4.0%} {est.estimated_tok_per_s:>6.1f} {est.bottleneck:>12s}"
+        )
 
     # Show with compression
-    print(f"\n  With 2-bit mixed precision (1.8x compression on cold experts):")
+    print("\n  With 2-bit mixed precision (1.8x compression on cold experts):")
     print(f"  {'-' * 65}")
     for name, gb, layers, experts, k, expert_mb, gpu_ms in models:
         est = estimate_performance(
-            hw, gb, name, layers, experts, k, expert_mb, gpu_ms,
+            hw,
+            gb,
+            name,
+            layers,
+            experts,
+            k,
+            expert_mb,
+            gpu_ms,
             compression=1.8,
         )
         fits = "Yes" if est.fits_in_ram else "No"
-        print(f"  {name:<30s} {gb:>5.0f}G {fits:>5s} {est.estimated_hit_rate:>4.0%} {est.estimated_tok_per_s:>6.1f} {est.bottleneck:>12s}")
+        print(
+            f"  {name:<30s} {gb:>5.0f}G {fits:>5s} {est.estimated_hit_rate:>4.0%} {est.estimated_tok_per_s:>6.1f} {est.bottleneck:>12s}"
+        )
 
 
 def print_live_calculator(hw: MacHardware):
     """Interactive display of how RAM allocation affects performance."""
-    print(f"\n  LIVE CALCULATOR: Adjust RAM budget for expert caching")
+    print("\n  LIVE CALCULATOR: Adjust RAM budget for expert caching")
     print(f"  Hardware: {hw.chip}, {hw.total_ram_gb:.0f}GB RAM, {hw.ssd_size_gb:.0f}GB SSD")
     print(f"  Available for cache: {hw.available_ram_gb:.1f}GB")
     print()
@@ -292,17 +322,19 @@ def print_live_calculator(hw: MacHardware):
             base_tps = est.estimated_tok_per_s
         speedup = est.estimated_tok_per_s / base_tps if base_tps > 0 else 0
         bar = "#" * int(est.estimated_tok_per_s * 3)
-        print(f"  {ram:>10.1f} GB  {est.estimated_hit_rate:>8.1%} {est.estimated_tok_per_s:>6.1f}  {speedup:>6.2f}x  {bar}")
+        print(
+            f"  {ram:>10.1f} GB  {est.estimated_hit_rate:>8.1%} {est.estimated_tok_per_s:>6.1f}  {speedup:>6.2f}x  {bar}"
+        )
 
 
 def main():
     hw = detect_hardware()
 
     print(f"\n{'=' * 70}")
-    print(f"  MLX-Flash: Hardware Detection & Performance Calculator")
+    print("  MLX-Flash: Hardware Detection & Performance Calculator")
     print(f"{'=' * 70}\n")
 
-    print(f"  Detected Hardware:")
+    print("  Detected Hardware:")
     print(f"    Chip:            {hw.chip}")
     print(f"    CPU Cores:       {hw.p_cores}P + {hw.e_cores}E = {hw.cpu_cores} total")
     print(f"    GPU Cores:       {hw.gpu_cores}")

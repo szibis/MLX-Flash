@@ -46,6 +46,7 @@ class StreamingLLMConfig:
         eviction_batch: Number of tokens to evict at once. Batching evictions
             reduces the overhead of cache reorganization.
     """
+
     num_sink_tokens: int = 4
     window_size: int = 1024
     eviction_batch: int = 256
@@ -61,8 +62,7 @@ class StreamingLLMCache:
     in batches to amortize the cost of cache compaction.
     """
 
-    def __init__(self, config: StreamingLLMConfig, num_layers: int,
-                 num_heads: int, head_dim: int):
+    def __init__(self, config: StreamingLLMConfig, num_layers: int, num_heads: int, head_dim: int):
         self.config = config
         self.num_layers = num_layers
         self.num_heads = num_heads
@@ -84,8 +84,7 @@ class StreamingLLMCache:
         self._eviction_count: int = 0
         self._total_evicted_tokens: int = 0
 
-    def update(self, layer_idx: int, new_keys: mx.array,
-               new_values: mx.array) -> tuple[mx.array, mx.array]:
+    def update(self, layer_idx: int, new_keys: mx.array, new_values: mx.array) -> tuple[mx.array, mx.array]:
         """Add new KV entries, evict middle tokens if over capacity.
 
         Args:
@@ -111,18 +110,12 @@ class StreamingLLMCache:
             self._positions[layer_idx] = mx.arange(new_len)
         else:
             # Append new KV entries
-            self._keys[layer_idx] = mx.concatenate(
-                [self._keys[layer_idx], new_keys], axis=1
-            )
-            self._values[layer_idx] = mx.concatenate(
-                [self._values[layer_idx], new_values], axis=1
-            )
+            self._keys[layer_idx] = mx.concatenate([self._keys[layer_idx], new_keys], axis=1)
+            self._values[layer_idx] = mx.concatenate([self._values[layer_idx], new_values], axis=1)
             # Extend positions
             cur_max = int(mx.max(self._positions[layer_idx]).item()) + 1
             new_positions = mx.arange(cur_max, cur_max + new_len)
-            self._positions[layer_idx] = mx.concatenate(
-                [self._positions[layer_idx], new_positions]
-            )
+            self._positions[layer_idx] = mx.concatenate([self._positions[layer_idx], new_positions])
 
         # Check if eviction is needed
         cur_len = self._keys[layer_idx].shape[1]
@@ -159,15 +152,9 @@ class StreamingLLMCache:
         window_positions = self._positions[layer_idx][-window:]
 
         # Concatenate sink + window
-        self._keys[layer_idx] = mx.concatenate(
-            [sink_keys, window_keys], axis=1
-        )
-        self._values[layer_idx] = mx.concatenate(
-            [sink_values, window_values], axis=1
-        )
-        self._positions[layer_idx] = mx.concatenate(
-            [sink_positions, window_positions]
-        )
+        self._keys[layer_idx] = mx.concatenate([sink_keys, window_keys], axis=1)
+        self._values[layer_idx] = mx.concatenate([sink_values, window_values], axis=1)
+        self._positions[layer_idx] = mx.concatenate([sink_positions, window_positions])
 
         self._eviction_count += 1
         self._total_evicted_tokens += num_to_evict
@@ -262,27 +249,17 @@ def apply_streaming_llm(model, config: StreamingLLMConfig = None) -> StreamingLL
 
     # Find attention module (handles common naming conventions)
     first_layer = model.layers[0]
-    attn = getattr(first_layer, "self_attn", None) or getattr(
-        first_layer, "attention", None
-    )
+    attn = getattr(first_layer, "self_attn", None) or getattr(first_layer, "attention", None)
     if attn is None:
-        raise ValueError(
-            "Cannot find attention module on model layer. "
-            "Expected .self_attn or .attention attribute."
-        )
+        raise ValueError("Cannot find attention module on model layer. Expected .self_attn or .attention attribute.")
 
     # Extract head configuration
-    num_heads = getattr(attn, "num_heads", None) or getattr(
-        attn, "n_heads", None
-    )
-    head_dim = getattr(attn, "head_dim", None) or getattr(
-        attn, "d_head", None
-    )
+    num_heads = getattr(attn, "num_heads", None) or getattr(attn, "n_heads", None)
+    head_dim = getattr(attn, "head_dim", None) or getattr(attn, "d_head", None)
 
     if num_heads is None or head_dim is None:
         raise ValueError(
-            "Cannot determine num_heads/head_dim from attention module. "
-            f"Available attributes: {dir(attn)}"
+            f"Cannot determine num_heads/head_dim from attention module. Available attributes: {dir(attn)}"
         )
 
     return StreamingLLMCache(config, num_layers, num_heads, head_dim)

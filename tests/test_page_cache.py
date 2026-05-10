@@ -8,13 +8,13 @@ import tempfile
 import pytest
 
 from mlx_flash_compress.page_cache import (
+    _MADV_DONTNEED,
+    _MADV_FREE,
+    _MADV_SEQUENTIAL,
+    _MADV_WILLNEED,
+    EvictionStrategy,
     PageCacheAdvisor,
     PageCacheStats,
-    EvictionStrategy,
-    _MADV_FREE,
-    _MADV_WILLNEED,
-    _MADV_DONTNEED,
-    _MADV_SEQUENTIAL,
     _mmap_base_address,
 )
 

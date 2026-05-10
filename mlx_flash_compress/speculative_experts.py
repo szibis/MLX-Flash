@@ -18,11 +18,12 @@ Three advanced techniques from recent MoE inference papers (2025-2026):
    on unified memory (no PCIe penalty for speculative loads).
 """
 
-import numpy as np
 from dataclasses import dataclass, field
 
+import numpy as np
 
 # -- Residual-stream predictor --
+
 
 class ResidualPredictor:
     """Predict next-layer experts from the residual stream via linear projection.
@@ -36,8 +37,9 @@ class ResidualPredictor:
     computed as part of normal inference.
     """
 
-    def __init__(self, num_layers: int, num_experts: int, hidden_dim: int = 256,
-                 top_k: int = 4, lr: float = 0.005, seed: int = 0):
+    def __init__(
+        self, num_layers: int, num_experts: int, hidden_dim: int = 256, top_k: int = 4, lr: float = 0.005, seed: int = 0
+    ):
         self.num_layers = num_layers
         self.num_experts = num_experts
         self.hidden_dim = hidden_dim
@@ -59,21 +61,19 @@ class ResidualPredictor:
         self._training_steps = 0
         self._total_loss = 0.0
 
-    def observe(self, layer_idx: int, expert_ids: list[int],
-                hidden_state: np.ndarray = None):
+    def observe(self, layer_idx: int, expert_ids: list[int], hidden_state: np.ndarray = None):
         """Record routing decision and optionally train from hidden state.
 
         If hidden_state is provided, trains the predictor online.
         If not, falls back to recording expert IDs only.
         """
-        if (hidden_state is not None and layer_idx > 0
-                and (layer_idx - 1) in self._prev_hidden):
+        if hidden_state is not None and layer_idx > 0 and (layer_idx - 1) in self._prev_hidden:
             pair_idx = layer_idx - 1
             if pair_idx < max(self.num_layers - 1, 1):
                 x = self._prev_hidden[pair_idx]
                 # Truncate/pad to hidden_dim
                 if len(x) > self.hidden_dim:
-                    x = x[:self.hidden_dim]
+                    x = x[: self.hidden_dim]
                 elif len(x) < self.hidden_dim:
                     x = np.pad(x, (0, self.hidden_dim - len(x)))
 
@@ -104,7 +104,7 @@ class ResidualPredictor:
                 self._training_steps += 1
 
         if hidden_state is not None:
-            self._prev_hidden[layer_idx] = hidden_state.flatten()[:self.hidden_dim].copy()
+            self._prev_hidden[layer_idx] = hidden_state.flatten()[: self.hidden_dim].copy()
 
     def predict(self, layer_idx: int, hidden_state: np.ndarray = None) -> list[int]:
         """Predict next layer's experts from hidden state."""
@@ -113,12 +113,12 @@ class ResidualPredictor:
         if hidden_state is None:
             return list(range(min(self.top_k, self.num_experts)))
 
-        x = hidden_state.flatten()[:self.hidden_dim]
+        x = hidden_state.flatten()[: self.hidden_dim]
         if len(x) < self.hidden_dim:
             x = np.pad(x, (0, self.hidden_dim - len(x)))
 
         logits = x @ self._W[layer_idx] + self._b[layer_idx]
-        top_indices = np.argsort(logits)[-self.top_k:][::-1]
+        top_indices = np.argsort(logits)[-self.top_k :][::-1]
         return top_indices.tolist()
 
     def accuracy(self, predicted: list[int], actual: list[int]) -> float:
@@ -138,6 +138,7 @@ class ResidualPredictor:
 
 # -- Forward-looking eviction (Belady-optimal approximation) --
 
+
 class ForwardLookingEvictor:
     """Belady-optimal eviction: don't evict what you'll need soon.
 
@@ -149,8 +150,7 @@ class ForwardLookingEvictor:
     where future_bonus = protection_weight / (predicted_distance + 1)
     """
 
-    def __init__(self, num_experts: int, lookahead_steps: int = 3,
-                 protection_weight: float = 10.0):
+    def __init__(self, num_experts: int, lookahead_steps: int = 3, protection_weight: float = 10.0):
         self.num_experts = num_experts
         self.lookahead_steps = lookahead_steps
         self.protection_weight = protection_weight
@@ -184,9 +184,7 @@ class ForwardLookingEvictor:
             bonus = self.protection_weight / (dist + 1)
         return lcp_priority + bonus
 
-    def select_eviction(self, candidates: list[int],
-                        lcp_priorities: dict[int, float],
-                        n: int) -> list[int]:
+    def select_eviction(self, candidates: list[int], lcp_priorities: dict[int, float], n: int) -> list[int]:
         """Select n experts to evict, protecting predicted-needed ones."""
         scored = []
         for eid in candidates:
@@ -199,9 +197,11 @@ class ForwardLookingEvictor:
 
 # -- Speculative expert execution --
 
+
 @dataclass
 class SpeculativeResult:
     """Result of speculative expert execution."""
+
     predicted_experts: list = field(default_factory=list)
     actual_experts: list = field(default_factory=list)
     hits: int = 0
@@ -234,8 +234,7 @@ class SpeculativeExecutor:
         self._total_misses = 0
         self._total_saved_ms = 0.0
 
-    def evaluate_speculation(self, predicted: list[int],
-                             actual: list[int]) -> SpeculativeResult:
+    def evaluate_speculation(self, predicted: list[int], actual: list[int]) -> SpeculativeResult:
         """Evaluate how well speculation matched reality."""
         pred_set = set(predicted)
         actual_set = set(actual)
@@ -272,17 +271,17 @@ class SpeculativeExecutor:
 
 # -- Simulation --
 
-def simulate_speculative_pipeline(num_layers: int = 24, num_experts: int = 60,
-                                   num_tokens: int = 100, top_k: int = 4,
-                                   seed: int = 42) -> dict:
+
+def simulate_speculative_pipeline(
+    num_layers: int = 24, num_experts: int = 60, num_tokens: int = 100, top_k: int = 4, seed: int = 42
+) -> dict:
     """Simulate the full speculative pipeline with all three techniques."""
     rng = np.random.default_rng(seed)
 
     expert_probs = np.array([(1.0 / (i + 1)) ** 0.8 for i in range(num_experts)])
     expert_probs /= expert_probs.sum()
 
-    predictor = ResidualPredictor(num_layers, num_experts, hidden_dim=64,
-                                   top_k=top_k, seed=seed)
+    predictor = ResidualPredictor(num_layers, num_experts, hidden_dim=64, top_k=top_k, seed=seed)
     evictor = ForwardLookingEvictor(num_experts)
     executor = SpeculativeExecutor()
 
@@ -291,8 +290,7 @@ def simulate_speculative_pipeline(num_layers: int = 24, num_experts: int = 60,
     for token in range(num_tokens):
         prev_experts = None
         for layer in range(num_layers):
-            actual = rng.choice(num_experts, size=top_k, replace=False,
-                               p=expert_probs).tolist()
+            actual = rng.choice(num_experts, size=top_k, replace=False, p=expert_probs).tolist()
             hidden = rng.standard_normal(64).astype(np.float32)
 
             if token >= warmup and prev_experts is not None:

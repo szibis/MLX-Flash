@@ -33,6 +33,7 @@ from typing import Optional
 
 try:
     import mlx.core as mx
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
@@ -40,10 +41,10 @@ except ImportError:
 
 # Known config keys for shared experts across model architectures
 _SHARED_EXPERT_CONFIG_KEYS = [
-    "num_shared_experts",       # DeepSeek-V2/V3
-    "n_shared_experts",         # Some DeepSeek variants
-    "shared_expert_num",        # Alternative naming
-    "num_shared_expert",        # Singular variant
+    "num_shared_experts",  # DeepSeek-V2/V3
+    "n_shared_experts",  # Some DeepSeek variants
+    "shared_expert_num",  # Alternative naming
+    "num_shared_expert",  # Singular variant
 ]
 
 # Keys that indicate shared expert gate presence (DeepSeek pattern:
@@ -63,6 +64,7 @@ _SHARED_ID_CONFIG_KEYS = [
 @dataclass
 class SharedExpertInfo:
     """Metadata about detected shared experts."""
+
     layer_idx: int
     expert_ids: list[int]
     detection_method: str  # "config" or "observation"
@@ -184,9 +186,7 @@ class SharedExpertDetector:
             return {}
 
         # Count activations per (layer, expert)
-        activation_counts: dict[int, dict[int, int]] = defaultdict(
-            lambda: defaultdict(int)
-        )
+        activation_counts: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
         token_counts_per_layer: dict[int, int] = defaultdict(int)
 
         # Group by token to count unique tokens per layer
@@ -311,9 +311,7 @@ class SharedExpertPinner:
             Filtered list with pinned experts removed.
         """
         return [
-            (layer_idx, expert_id)
-            for layer_idx, expert_id in candidates
-            if self.should_evict(layer_idx, expert_id)
+            (layer_idx, expert_id) for layer_idx, expert_id in candidates if self.should_evict(layer_idx, expert_id)
         ]
 
     def get_pinned_count(self) -> int:
@@ -339,21 +337,14 @@ class SharedExpertPinner:
             Dictionary with pinning metrics including pinned count,
             eviction checks, and block rate.
         """
-        block_rate = (
-            self._eviction_blocks / self._eviction_checks
-            if self._eviction_checks > 0
-            else 0.0
-        )
+        block_rate = self._eviction_blocks / self._eviction_checks if self._eviction_checks > 0 else 0.0
         return {
             "pinned_count": self.get_pinned_count(),
             "pinned_layers": len(self._shared_experts),
             "eviction_checks": self._eviction_checks,
             "eviction_blocks": self._eviction_blocks,
             "block_rate": round(block_rate, 4),
-            "pinned_experts": {
-                str(layer_idx): expert_ids
-                for layer_idx, expert_ids in self._shared_experts.items()
-            },
+            "pinned_experts": {str(layer_idx): expert_ids for layer_idx, expert_ids in self._shared_experts.items()},
         }
 
 

@@ -7,16 +7,18 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mlx_flash_compress.cache import ExpertCacheManager, CacheTier
+from mlx_flash_compress.cache import CacheTier, ExpertCacheManager
 
 try:
     import lz4.frame
+
     HAS_LZ4 = True
 except ImportError:
     HAS_LZ4 = False
 
 try:
     import zstandard
+
     HAS_ZSTD = True
 except ImportError:
     HAS_ZSTD = False

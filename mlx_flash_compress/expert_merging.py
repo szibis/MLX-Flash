@@ -15,13 +15,15 @@ Usage:
     merged_weights = apply_merges(weight_dict, plan)
 """
 
-import numpy as np
 from dataclasses import dataclass, field
+
+import numpy as np
 
 
 @dataclass
 class MergePlan:
     """Plan for merging similar experts."""
+
     # Mapping: merged_id -> list of original expert IDs
     clusters: dict = field(default_factory=dict)
     # Mapping: original_id -> merged_id
@@ -60,8 +62,7 @@ def cosine_similarity_matrix(weights: list[np.ndarray]) -> np.ndarray:
     return sim
 
 
-def plan_expert_merges(expert_weights: list[np.ndarray],
-                       threshold: float = 0.95) -> MergePlan:
+def plan_expert_merges(expert_weights: list[np.ndarray], threshold: float = 0.95) -> MergePlan:
     """Plan which experts to merge based on weight similarity.
 
     Args:
@@ -113,8 +114,7 @@ def plan_expert_merges(expert_weights: list[np.ndarray],
     )
 
 
-def apply_merges(expert_weights: list[np.ndarray],
-                 plan: MergePlan) -> list[np.ndarray]:
+def apply_merges(expert_weights: list[np.ndarray], plan: MergePlan) -> list[np.ndarray]:
     """Apply merge plan: average weights within each cluster.
 
     Returns a list of merged weight matrices (one per cluster).
@@ -130,8 +130,7 @@ def apply_merges(expert_weights: list[np.ndarray],
     return merged
 
 
-def estimate_merge_savings(num_experts: int, threshold: float = 0.95,
-                           seed: int = 42) -> dict:
+def estimate_merge_savings(num_experts: int, threshold: float = 0.95, seed: int = 42) -> dict:
     """Estimate merge savings using synthetic experts with controlled similarity.
 
     Creates fake expert weights where some are near-duplicates to simulate
@@ -143,8 +142,7 @@ def estimate_merge_savings(num_experts: int, threshold: float = 0.95,
     base_dim = 64
     weights = []
     num_unique = int(num_experts * 0.7)  # 70% unique
-    bases = [rng.standard_normal((base_dim, base_dim)).astype(np.float32)
-             for _ in range(num_unique)]
+    bases = [rng.standard_normal((base_dim, base_dim)).astype(np.float32) for _ in range(num_unique)]
 
     for i in range(num_experts):
         if i < num_unique:

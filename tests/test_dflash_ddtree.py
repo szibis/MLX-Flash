@@ -5,20 +5,28 @@ import pytest
 
 try:
     import mlx.core as mx
+
     MLX_AVAILABLE = True
 except ImportError:
     MLX_AVAILABLE = False
 
-from mlx_flash_compress.dflash import (
-    DFlashConfig, DFlashEngine, DFlashStats, BlockDiffusionDrafter,
-    DrafterBlock, NGramDrafter,
-)
 from mlx_flash_compress.ddtree import (
-    DDTreeConfig, DDTreeBuilder, DraftTree, TreeNode,
+    DDTreeBuilder,
+    DDTreeConfig,
+    DraftTree,
+    TreeNode,
 )
-
+from mlx_flash_compress.dflash import (
+    BlockDiffusionDrafter,
+    DFlashConfig,
+    DFlashEngine,
+    DFlashStats,
+    DrafterBlock,
+    NGramDrafter,
+)
 
 # -- DFlash Config Tests --
+
 
 class TestDFlashConfig:
     def test_default_config(self):
@@ -36,6 +44,7 @@ class TestDFlashConfig:
 
 
 # -- DFlash Stats Tests --
+
 
 class TestDFlashStats:
     def test_empty_stats(self):
@@ -56,6 +65,7 @@ class TestDFlashStats:
 
 
 # -- NGram Drafter Tests --
+
 
 class TestNGramDrafter:
     def test_observe_and_draft(self):
@@ -85,6 +95,7 @@ class TestNGramDrafter:
 
 # -- DDTree Config Tests --
 
+
 class TestDDTreeConfig:
     def test_default_config(self):
         config = DDTreeConfig()
@@ -100,6 +111,7 @@ class TestDDTreeConfig:
 
 
 # -- DDTree Builder Tests --
+
 
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestDDTreeBuilder:
@@ -168,6 +180,7 @@ class TestDDTreeBuilder:
 
 # -- DFlash Drafter Model Tests --
 
+
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestBlockDiffusionDrafter:
     def test_drafter_forward(self):
@@ -201,6 +214,7 @@ class TestBlockDiffusionDrafter:
 
 # -- DFlash Engine Tests --
 
+
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestDFlashEngine:
     def test_engine_init_no_drafter(self):
@@ -209,6 +223,7 @@ class TestDFlashEngine:
         class FakeModel:
             class model:
                 layers = [None] * 32
+
                 @staticmethod
                 def embed_tokens(x):
                     return mx.zeros((1, x.shape[1], 128))
@@ -248,6 +263,7 @@ class TestDFlashEngine:
 
 
 # -- Integration: DFlash + DDTree --
+
 
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestDFlashDDTreeIntegration:

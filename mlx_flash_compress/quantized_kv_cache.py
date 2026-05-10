@@ -39,15 +39,14 @@ import mlx.nn as nn
 @dataclass
 class QuantizedKVConfig:
     """Configuration for quantized KV cache."""
-    key_bits: int = 4        # quantization bits for keys (2, 4, 8)
-    value_bits: int = 4      # quantization bits for values
-    group_size: int = 64     # quantization group size
+
+    key_bits: int = 4  # quantization bits for keys (2, 4, 8)
+    value_bits: int = 4  # quantization bits for values
+    group_size: int = 64  # quantization group size
     calibration_tokens: int = 32  # tokens before switching to quantized mode
 
 
-def quantize_tensor(
-    x: mx.array, bits: int, group_size: int = 64
-) -> tuple[mx.array, mx.array, mx.array]:
+def quantize_tensor(x: mx.array, bits: int, group_size: int = 64) -> tuple[mx.array, mx.array, mx.array]:
     """Quantize a tensor to N bits per element using per-group absmax.
 
     Args:
@@ -111,9 +110,7 @@ def quantize_tensor(
         # Pack pairs: high nibble | low nibble
         total = x_flat.shape[-1]
         if total % 2 != 0:
-            x_flat = mx.concatenate(
-                [x_flat, mx.zeros((*leading, 1), dtype=mx.uint8)], axis=-1
-            )
+            x_flat = mx.concatenate([x_flat, mx.zeros((*leading, 1), dtype=mx.uint8)], axis=-1)
         high = x_flat[..., 0::2]
         low = x_flat[..., 1::2]
         packed = (high << 4) | (low & 0x0F)
@@ -123,9 +120,7 @@ def quantize_tensor(
         remainder = total % 4
         if remainder != 0:
             pad = 4 - remainder
-            x_flat = mx.concatenate(
-                [x_flat, mx.zeros((*leading, pad), dtype=mx.uint8)], axis=-1
-            )
+            x_flat = mx.concatenate([x_flat, mx.zeros((*leading, pad), dtype=mx.uint8)], axis=-1)
         v0 = x_flat[..., 0::4]
         v1 = x_flat[..., 1::4]
         v2 = x_flat[..., 2::4]
@@ -232,13 +227,9 @@ class QuantizedKVEntry:
         self._length = 0
         self._calibration_done = False
 
-    def _quantize_chunk(
-        self, data: mx.array, bits: int
-    ) -> tuple[mx.array, mx.array, mx.array, tuple]:
+    def _quantize_chunk(self, data: mx.array, bits: int) -> tuple[mx.array, mx.array, mx.array, tuple]:
         """Quantize a chunk and return (packed, scales, zeros, orig_shape)."""
-        packed, scales, zeros = quantize_tensor(
-            data, bits=bits, group_size=self.config.group_size
-        )
+        packed, scales, zeros = quantize_tensor(data, bits=bits, group_size=self.config.group_size)
         return packed, scales, zeros, data.shape
 
     def _finalize_calibration(self):
@@ -247,12 +238,8 @@ class QuantizedKVEntry:
             self._calibration_done = True
             return
 
-        self._q_keys.append(
-            self._quantize_chunk(self._fp_keys, self.config.key_bits)
-        )
-        self._q_values.append(
-            self._quantize_chunk(self._fp_values, self.config.value_bits)
-        )
+        self._q_keys.append(self._quantize_chunk(self._fp_keys, self.config.key_bits))
+        self._q_values.append(self._quantize_chunk(self._fp_values, self.config.value_bits))
         self._fp_keys = None
         self._fp_values = None
         self._calibration_done = True
@@ -281,12 +268,8 @@ class QuantizedKVEntry:
                 self._finalize_calibration()
         else:
             # Post-calibration: quantize immediately
-            self._q_keys.append(
-                self._quantize_chunk(keys, self.config.key_bits)
-            )
-            self._q_values.append(
-                self._quantize_chunk(values, self.config.value_bits)
-            )
+            self._q_keys.append(self._quantize_chunk(keys, self.config.key_bits))
+            self._q_values.append(self._quantize_chunk(values, self.config.value_bits))
 
     def get_keys_values(self) -> tuple[mx.array, mx.array]:
         """Return full KV (dequantized if needed) for attention.
@@ -313,16 +296,22 @@ class QuantizedKVEntry:
         for packed, scales, zeros, shape in self._q_keys:
             dk_list.append(
                 dequantize_tensor(
-                    packed, scales, zeros,
-                    self.config.key_bits, shape,
+                    packed,
+                    scales,
+                    zeros,
+                    self.config.key_bits,
+                    shape,
                     group_size=self.config.group_size,
                 )
             )
         for packed, scales, zeros, shape in self._q_values:
             dv_list.append(
                 dequantize_tensor(
-                    packed, scales, zeros,
-                    self.config.value_bits, shape,
+                    packed,
+                    scales,
+                    zeros,
+                    self.config.value_bits,
+                    shape,
                     group_size=self.config.group_size,
                 )
             )
@@ -346,9 +335,9 @@ class QuantizedKVEntry:
             total += self._fp_values.size * 2
         # Quantized chunks
         for packed, scales, zeros, _ in self._q_keys:
-            total += packed.size       # uint8 packed data
-            total += scales.size * 4   # float32 scales
-            total += zeros.size * 4    # float32 zeros
+            total += packed.size  # uint8 packed data
+            total += scales.size * 4  # float32 scales
+            total += zeros.size * 4  # float32 zeros
         for packed, scales, zeros, _ in self._q_values:
             total += packed.size
             total += scales.size * 4
@@ -377,8 +366,7 @@ class QuantizedKVCacheManager:
         self.num_kv_heads = num_kv_heads
         self.head_dim = head_dim
         self.entries: list[QuantizedKVEntry] = [
-            QuantizedKVEntry(num_kv_heads, head_dim, config)
-            for _ in range(num_layers)
+            QuantizedKVEntry(num_kv_heads, head_dim, config) for _ in range(num_layers)
         ]
 
     def update(self, layer_idx: int, keys: mx.array, values: mx.array):
@@ -390,9 +378,7 @@ class QuantizedKVCacheManager:
             values: same shape as keys
         """
         if layer_idx < 0 or layer_idx >= self.num_layers:
-            raise IndexError(
-                f"layer_idx {layer_idx} out of range [0, {self.num_layers})"
-            )
+            raise IndexError(f"layer_idx {layer_idx} out of range [0, {self.num_layers})")
         self.entries[layer_idx].append(keys, values)
 
     def get_kv(self, layer_idx: int) -> tuple[mx.array, mx.array]:
@@ -405,9 +391,7 @@ class QuantizedKVCacheManager:
             (keys, values) as float32 tensors.
         """
         if layer_idx < 0 or layer_idx >= self.num_layers:
-            raise IndexError(
-                f"layer_idx {layer_idx} out of range [0, {self.num_layers})"
-            )
+            raise IndexError(f"layer_idx {layer_idx} out of range [0, {self.num_layers})")
         return self.entries[layer_idx].get_keys_values()
 
     def get_compression_ratio(self) -> float:
@@ -433,14 +417,16 @@ class QuantizedKVCacheManager:
         for i, entry in enumerate(self.entries):
             fp = entry.full_precision_bytes
             actual = entry.memory_bytes
-            per_layer.append({
-                "layer": i,
-                "tokens": entry.length,
-                "memory_bytes": actual,
-                "full_precision_bytes": fp,
-                "compression_ratio": actual / fp if fp > 0 else 1.0,
-                "calibration_done": entry._calibration_done,
-            })
+            per_layer.append(
+                {
+                    "layer": i,
+                    "tokens": entry.length,
+                    "memory_bytes": actual,
+                    "full_precision_bytes": fp,
+                    "compression_ratio": actual / fp if fp > 0 else 1.0,
+                    "calibration_done": entry._calibration_done,
+                }
+            )
 
         return {
             "config": {
@@ -454,23 +440,16 @@ class QuantizedKVCacheManager:
             "total_memory_bytes": total_actual,
             "total_full_precision_bytes": total_fp,
             "compression_ratio": total_actual / total_fp if total_fp > 0 else 1.0,
-            "memory_savings_pct": round(
-                (1.0 - total_actual / total_fp) * 100, 1
-            ) if total_fp > 0 else 0.0,
+            "memory_savings_pct": round((1.0 - total_actual / total_fp) * 100, 1) if total_fp > 0 else 0.0,
             "per_layer": per_layer,
         }
 
     def reset(self):
         """Clear all caches."""
-        self.entries = [
-            QuantizedKVEntry(self.num_kv_heads, self.head_dim, self.config)
-            for _ in range(self.num_layers)
-        ]
+        self.entries = [QuantizedKVEntry(self.num_kv_heads, self.head_dim, self.config) for _ in range(self.num_layers)]
 
 
-def apply_quantized_kv_cache(
-    model: nn.Module, config: Optional[QuantizedKVConfig] = None
-) -> QuantizedKVCacheManager:
+def apply_quantized_kv_cache(model: nn.Module, config: Optional[QuantizedKVConfig] = None) -> QuantizedKVCacheManager:
     """Wrap a model's attention layers to use quantized KV cache.
 
     Inspects the model to detect num_layers, num_kv_heads, and head_dim,
@@ -524,10 +503,7 @@ def apply_quantized_kv_cache(
         num_layers = model.n_layers
 
     if num_layers == 0:
-        raise ValueError(
-            "Could not detect model architecture. "
-            "Model must have a 'layers' attribute."
-        )
+        raise ValueError("Could not detect model architecture. Model must have a 'layers' attribute.")
     if num_kv_heads == 0 or head_dim == 0:
         raise ValueError(
             "Could not detect num_kv_heads or head_dim from model. "

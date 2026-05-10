@@ -33,22 +33,23 @@ Usage:
     engine.stop()
 """
 
-from dataclasses import dataclass, field
-from collections import deque
-from enum import Enum, auto
 import threading
 import time
+from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Optional
 
 import mlx.core as mx
-
 
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 
+
 class RequestStatus(Enum):
     """Lifecycle status of an inference request."""
+
     QUEUED = auto()
     PREFILLING = auto()
     GENERATING = auto()
@@ -59,6 +60,7 @@ class RequestStatus(Enum):
 @dataclass
 class InferenceRequest:
     """Single inference request tracked through the batching pipeline."""
+
     request_id: str
     prompt_tokens: list[int]
     max_tokens: int = 256
@@ -97,6 +99,7 @@ class InferenceRequest:
 @dataclass
 class BatchSchedulerConfig:
     """Tuning knobs for the continuous batching scheduler."""
+
     max_batch_size: int = 8
     max_sequence_length: int = 4096
     prefill_chunk_size: int = 512
@@ -107,6 +110,7 @@ class BatchSchedulerConfig:
 # ---------------------------------------------------------------------------
 # KV Cache Pool
 # ---------------------------------------------------------------------------
+
 
 class KVCachePool:
     """Pre-allocated KV cache pool shared across concurrent requests.
@@ -133,12 +137,8 @@ class KVCachePool:
         # Per-slot, per-layer K and V arrays.  Lazily grown on update.
         # _keys[slot][layer] = mx.array of shape (seq_len, num_kv_heads, head_dim)
         # _values mirrors keys.
-        self._keys: list[list[Optional[mx.array]]] = [
-            [None] * num_layers for _ in range(max_batch_size)
-        ]
-        self._values: list[list[Optional[mx.array]]] = [
-            [None] * num_layers for _ in range(max_batch_size)
-        ]
+        self._keys: list[list[Optional[mx.array]]] = [[None] * num_layers for _ in range(max_batch_size)]
+        self._values: list[list[Optional[mx.array]]] = [[None] * num_layers for _ in range(max_batch_size)]
         # Track current sequence length per slot
         self._seq_lens: list[int] = [0] * max_batch_size
 
@@ -192,9 +192,7 @@ class KVCachePool:
         existing_k = self._keys[slot][layer]
         if existing_k is not None:
             self._keys[slot][layer] = mx.concatenate([existing_k, keys], axis=0)
-            self._values[slot][layer] = mx.concatenate(
-                [self._values[slot][layer], values], axis=0
-            )
+            self._values[slot][layer] = mx.concatenate([self._values[slot][layer], values], axis=0)
         else:
             self._keys[slot][layer] = keys
             self._values[slot][layer] = values
@@ -225,6 +223,7 @@ class KVCachePool:
 # Batch Scheduler
 # ---------------------------------------------------------------------------
 
+
 class BatchScheduler:
     """Selects which requests to include in the next batch step.
 
@@ -248,9 +247,7 @@ class BatchScheduler:
         """Cancel a pending or in-progress request."""
         with self._lock:
             # Remove from queue if still waiting
-            self._queue = deque(
-                r for r in self._queue if r.request_id != request_id
-            )
+            self._queue = deque(r for r in self._queue if r.request_id != request_id)
             # Mark active request as cancelled
             if request_id in self._active:
                 req = self._active.pop(request_id)
@@ -290,9 +287,7 @@ class BatchScheduler:
                     selected_ids.add(req.request_id)
 
                 # Rebuild queue without selected requests
-                self._queue = deque(
-                    r for r in self._queue if r.request_id not in selected_ids
-                )
+                self._queue = deque(r for r in self._queue if r.request_id not in selected_ids)
 
             return batch
 
@@ -327,7 +322,8 @@ class BatchScheduler:
                 "active_requests": len(self._active),
                 "completed_requests": len(self._completed),
                 "batch_utilization": len(self._active) / self.config.max_batch_size
-                    if self.config.max_batch_size > 0 else 0.0,
+                if self.config.max_batch_size > 0
+                else 0.0,
                 "avg_ttft_ms": sum(ttfts) / len(ttfts) if ttfts else 0.0,
                 "avg_tokens_per_second": sum(tps_vals) / len(tps_vals) if tps_vals else 0.0,
             }
@@ -336,6 +332,7 @@ class BatchScheduler:
 # ---------------------------------------------------------------------------
 # Continuous Batching Engine
 # ---------------------------------------------------------------------------
+
 
 class ContinuousBatchingEngine:
     """Main engine that runs the continuous batching loop.
@@ -509,9 +506,7 @@ class ContinuousBatchingEngine:
             "engine_uptime_s": round(elapsed, 2),
             "kv_pool_utilization": self.kv_pool.utilization,
             "kv_pool_free_slots": self.kv_pool.num_free_slots,
-            "overall_tokens_per_second": (
-                self._total_tokens_generated / elapsed if elapsed > 0 else 0.0
-            ),
+            "overall_tokens_per_second": (self._total_tokens_generated / elapsed if elapsed > 0 else 0.0),
         }
 
     # -- background loop -----------------------------------------------------
@@ -575,7 +570,7 @@ class ContinuousBatchingEngine:
         for i in range(chunk_len):
             pos_in_seq = start + i
             # Can attend to positions 0..pos_in_seq
-            mask[0, 0, i, pos_in_seq + 1:] = float("-inf")
+            mask[0, 0, i, pos_in_seq + 1 :] = float("-inf")
 
         logits = self._padded_forward(token_ids, mask, [req._cache_slot])
         mx.eval(logits)  # force computation
@@ -670,6 +665,7 @@ class ContinuousBatchingEngine:
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
 
 def create_batching_server(
     model,

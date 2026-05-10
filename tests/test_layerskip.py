@@ -6,6 +6,7 @@ import pytest
 try:
     import mlx.core as mx
     import mlx.nn as nn
+
     MLX_AVAILABLE = True
 except ImportError:
     MLX_AVAILABLE = False
@@ -17,8 +18,8 @@ from mlx_flash_compress.layerskip import (
     apply_layerskip,
 )
 
-
 # -- Mock Model Components --
+
 
 class MockLayer(nn.Module):
     """Simple linear layer that mimics a transformer layer."""
@@ -34,8 +35,7 @@ class MockLayer(nn.Module):
 class MockInnerModel(nn.Module):
     """Mimics model.model with embed_tokens, layers, and norm."""
 
-    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32,
-                 num_layers: int = 8):
+    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 8):
         super().__init__()
         self.embed_tokens = nn.Embedding(vocab_size, hidden_dim)
         self.layers = [MockLayer(hidden_dim) for _ in range(num_layers)]
@@ -49,8 +49,7 @@ class MockModel(nn.Module):
     model.lm_head
     """
 
-    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32,
-                 num_layers: int = 8):
+    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 8):
         super().__init__()
         self.model = MockInnerModel(vocab_size, hidden_dim, num_layers)
         self.lm_head = nn.Linear(hidden_dim, vocab_size)
@@ -65,6 +64,7 @@ class MockModel(nn.Module):
 
 class MockTokenizer:
     """Minimal tokenizer for testing."""
+
     eos_token_id = 99
 
     def encode(self, text: str) -> list[int]:
@@ -75,6 +75,7 @@ class MockTokenizer:
 
 
 # -- Config Tests --
+
 
 class TestLayerSkipConfig:
     def test_default_config(self):
@@ -97,6 +98,7 @@ class TestLayerSkipConfig:
 
 
 # -- Drafter Tests --
+
 
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestLayerSkipDrafter:
@@ -162,8 +164,7 @@ class TestLayerSkipDrafter:
             assert logits.shape == (1, 1, 100)  # vocab_size=100
 
     def test_draft_deterministic_greedy(self):
-        config = LayerSkipConfig(exit_layer=4, num_speculative_tokens=3,
-                                 temperature=0.0)
+        config = LayerSkipConfig(exit_layer=4, num_speculative_tokens=3, temperature=0.0)
         drafter = LayerSkipDrafter(self.model, config)
 
         input_ids = mx.array([[1, 2, 3]])
@@ -175,6 +176,7 @@ class TestLayerSkipDrafter:
 
 
 # -- Engine Tests --
+
 
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestLayerSkipEngine:
@@ -324,6 +326,7 @@ class TestLayerSkipEngine:
 
 # -- apply_layerskip convenience function --
 
+
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestApplyLayerSkip:
     def test_apply_returns_engine(self):
@@ -348,6 +351,7 @@ class TestApplyLayerSkip:
 
 
 # -- Edge Cases --
+
 
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestLayerSkipEdgeCases:

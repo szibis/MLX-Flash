@@ -21,17 +21,18 @@ With 8.7% per-position acceptance and tree_width=5:
   P(>=1 match) = 1-(1-0.087)^5 = 37% → tau ~3-4 tokens/step
 """
 
+import heapq
 from dataclasses import dataclass, field
 from typing import Optional
-import heapq
 
-import numpy as np
 import mlx.core as mx
+import numpy as np
 
 
 @dataclass
 class DDTreeConfig:
     """Configuration for DDTree draft tree construction."""
+
     tree_width: int = 5
     max_tree_size: int = 60
     temperature: float = 0.0
@@ -41,6 +42,7 @@ class DDTreeConfig:
 @dataclass
 class TreeNode:
     """A node in the draft tree."""
+
     token_id: int
     depth: int
     prob: float
@@ -52,6 +54,7 @@ class TreeNode:
 @dataclass
 class DraftTree:
     """Complete draft tree structure ready for verification."""
+
     nodes: list[TreeNode]
     token_ids: mx.array
     attention_mask: mx.array
@@ -117,13 +120,15 @@ class DDTreeBuilder:
             cum = -neg_cum
 
             node_idx = len(nodes)
-            nodes.append(TreeNode(
-                token_id=token_id,
-                depth=depth,
-                prob=prob,
-                cumulative_prob=cum,
-                parent_idx=parent_idx,
-            ))
+            nodes.append(
+                TreeNode(
+                    token_id=token_id,
+                    depth=depth,
+                    prob=prob,
+                    cumulative_prob=cum,
+                    parent_idx=parent_idx,
+                )
+            )
             if parent_idx >= 0:
                 nodes[parent_idx].children_idx.append(node_idx)
 
@@ -148,7 +153,8 @@ class DDTreeBuilder:
         size = len(nodes)
         if size == 0:
             return DraftTree(
-                nodes=[], token_ids=mx.array([], dtype=mx.int32),
+                nodes=[],
+                token_ids=mx.array([], dtype=mx.int32),
                 attention_mask=mx.zeros((0, 0), dtype=mx.bool_),
                 depth_ids=mx.array([], dtype=mx.int32),
             )
@@ -164,11 +170,9 @@ class DDTreeBuilder:
                 j = nodes[j].parent_idx
 
         attention_mask = mx.array(mask)
-        return DraftTree(nodes=nodes, token_ids=token_ids,
-                         attention_mask=attention_mask, depth_ids=depth_ids)
+        return DraftTree(nodes=nodes, token_ids=token_ids, attention_mask=attention_mask, depth_ids=depth_ids)
 
-    def verify_tree(self, tree: DraftTree, verify_logits: mx.array,
-                    ctx_len: int) -> tuple[list[int], int]:
+    def verify_tree(self, tree: DraftTree, verify_logits: mx.array, ctx_len: int) -> tuple[list[int], int]:
         """Verify draft tree against target model logits.
 
         The target model has already been run on [context, tree_tokens].
@@ -259,8 +263,9 @@ class DDTreeBuilder:
         }
 
 
-def sequoia_optimal_tree(budget: int, acceptance_probs: list[float],
-                         max_depth: int | None = None) -> list[tuple[int, int]]:
+def sequoia_optimal_tree(
+    budget: int, acceptance_probs: list[float], max_depth: int | None = None
+) -> list[tuple[int, int]]:
     """Compute Sequoia-optimal tree topology via DP.
 
     Given a token budget and per-position acceptance probabilities,

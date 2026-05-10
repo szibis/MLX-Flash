@@ -32,11 +32,12 @@ else:
 
 class Algorithm(IntEnum):
     """Apple compression algorithm constants."""
-    LZ4 = 0x100       # COMPRESSION_LZ4
-    ZLIB = 0x205       # COMPRESSION_ZLIB
-    LZMA = 0x306       # COMPRESSION_LZMA
-    LZ4_RAW = 0x101    # COMPRESSION_LZ4_RAW
-    LZFSE = 0x801      # COMPRESSION_LZFSE (Apple-proprietary, fast on Apple Silicon)
+
+    LZ4 = 0x100  # COMPRESSION_LZ4
+    ZLIB = 0x205  # COMPRESSION_ZLIB
+    LZMA = 0x306  # COMPRESSION_LZMA
+    LZ4_RAW = 0x101  # COMPRESSION_LZ4_RAW
+    LZFSE = 0x801  # COMPRESSION_LZFSE (Apple-proprietary, fast on Apple Silicon)
 
 
 # Check if ZSTD is available (macOS 15+)
@@ -50,6 +51,7 @@ except Exception:
 @dataclass
 class NativeCompressedBuffer:
     """Result of native compression."""
+
     data: bytes
     original_size: int
     compressed_size: int
@@ -81,7 +83,7 @@ class NativeCompressor:
         if not is_available():
             raise RuntimeError("Apple libcompression not available")
         self._algo = algo
-        self._algo_name = algo.name if hasattr(algo, 'name') else str(algo)
+        self._algo_name = algo.name if hasattr(algo, "name") else str(algo)
 
         # Set up function signatures
         # size_t compression_encode_buffer(
@@ -206,20 +208,24 @@ def benchmark_native_algorithms(data: bytes, iterations: int = 5) -> list[dict]:
             avg_decompress = sum(decompress_times) / len(decompress_times)
             data_mb = len(data) / 1e6
 
-            results.append({
-                "algo": name,
-                "ratio": f"{buf.ratio:.2f}x",
-                "compress_mbs": f"{data_mb / avg_compress:.0f}" if avg_compress > 0 else "N/A",
-                "decompress_mbs": f"{data_mb / avg_decompress:.0f}" if avg_decompress > 0 else "N/A",
-                "compress_ms": f"{avg_compress * 1000:.2f}",
-                "decompress_ms": f"{avg_decompress * 1000:.2f}",
-                "compressed_bytes": buf.compressed_size,
-                "original_bytes": buf.original_size,
-            })
+            results.append(
+                {
+                    "algo": name,
+                    "ratio": f"{buf.ratio:.2f}x",
+                    "compress_mbs": f"{data_mb / avg_compress:.0f}" if avg_compress > 0 else "N/A",
+                    "decompress_mbs": f"{data_mb / avg_decompress:.0f}" if avg_decompress > 0 else "N/A",
+                    "compress_ms": f"{avg_compress * 1000:.2f}",
+                    "decompress_ms": f"{avg_decompress * 1000:.2f}",
+                    "compressed_bytes": buf.compressed_size,
+                    "original_bytes": buf.original_size,
+                }
+            )
         except (RuntimeError, OSError) as e:
-            results.append({
-                "algo": name,
-                "error": str(e),
-            })
+            results.append(
+                {
+                    "algo": name,
+                    "error": str(e),
+                }
+            )
 
     return results

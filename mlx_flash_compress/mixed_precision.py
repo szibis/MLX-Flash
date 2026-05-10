@@ -25,8 +25,8 @@ References:
 """
 
 import time
-from dataclasses import dataclass, field
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -35,6 +35,7 @@ import numpy as np
 @dataclass
 class ExpertHotness:
     """Track expert activation frequency for mixed-precision decisions."""
+
     activation_counts: dict = field(default_factory=lambda: defaultdict(int))
     total_tokens: int = 0
     window_size: int = 1000  # rolling window for frequency estimation
@@ -77,12 +78,12 @@ class ExpertHotness:
 
 PRECISION_TIERS = {
     "fp16": {"bits": 16, "bytes_per_param": 2.0, "quality": "lossless"},
-    "q8":   {"bits": 8,  "bytes_per_param": 1.0, "quality": "near-perfect"},
-    "q6":   {"bits": 6,  "bytes_per_param": 0.75, "quality": "very good"},
-    "q5":   {"bits": 5,  "bytes_per_param": 0.625, "quality": "good"},
-    "q4":   {"bits": 4,  "bytes_per_param": 0.5, "quality": "standard"},
-    "q3":   {"bits": 3,  "bytes_per_param": 0.375, "quality": "acceptable"},
-    "q2":   {"bits": 2,  "bytes_per_param": 0.25, "quality": "lossy"},
+    "q8": {"bits": 8, "bytes_per_param": 1.0, "quality": "near-perfect"},
+    "q6": {"bits": 6, "bytes_per_param": 0.75, "quality": "very good"},
+    "q5": {"bits": 5, "bytes_per_param": 0.625, "quality": "good"},
+    "q4": {"bits": 4, "bytes_per_param": 0.5, "quality": "standard"},
+    "q3": {"bits": 3, "bytes_per_param": 0.375, "quality": "acceptable"},
+    "q2": {"bits": 2, "bytes_per_param": 0.25, "quality": "lossy"},
 }
 
 
@@ -113,8 +114,7 @@ def estimate_tier_savings(
     # Calculate total bytes
     baseline_bytes = num_experts * expert_params * 0.5  # Q4 baseline
     tiered_bytes = sum(
-        tier_counts[tier] * expert_params * PRECISION_TIERS[tier]["bytes_per_param"]
-        for tier in tier_counts
+        tier_counts[tier] * expert_params * PRECISION_TIERS[tier]["bytes_per_param"] for tier in tier_counts
     )
 
     return {
@@ -165,8 +165,8 @@ def requantize_4bit_to_2bit(
     weights_per_group = nibbles.shape[1] // n_groups
 
     # Expand scales/biases to match nibble positions
-    s_expanded = np.repeat(s, weights_per_group, axis=1)[:, :nibbles.shape[1]]
-    b_expanded = np.repeat(b, weights_per_group, axis=1)[:, :nibbles.shape[1]]
+    s_expanded = np.repeat(s, weights_per_group, axis=1)[:, : nibbles.shape[1]]
+    b_expanded = np.repeat(b, weights_per_group, axis=1)[:, : nibbles.shape[1]]
     float_values = nibbles * s_expanded + b_expanded
 
     # Requantize to 2-bit (4 levels: 0, 1, 2, 3)
@@ -257,6 +257,7 @@ def dequantize_2bit(
 @dataclass
 class MixedPrecisionResult:
     """Result of mixed-precision requantization benchmark."""
+
     expert_id: int
     original_bytes: int
     q4_bytes: int
@@ -275,9 +276,7 @@ def benchmark_mixed_precision(
 ) -> MixedPrecisionResult:
     """Benchmark 4-bit to 2-bit requantization on a single expert."""
     t0 = time.monotonic()
-    packed_2bit, new_scales, new_biases, meta = requantize_4bit_to_2bit(
-        weight, scales, biases
-    )
+    packed_2bit, new_scales, new_biases, meta = requantize_4bit_to_2bit(weight, scales, biases)
     requant_time = (time.monotonic() - t0) * 1000
 
     # Measure quality: dequantize both and compare
@@ -293,8 +292,8 @@ def benchmark_mixed_precision(
     b4 = np.array(biases, dtype=np.float32)
     n_groups = s4.shape[1]
     wpg = nibbles.shape[1] // n_groups
-    s4_exp = np.repeat(s4, wpg, axis=1)[:, :nibbles.shape[1]]
-    b4_exp = np.repeat(b4, wpg, axis=1)[:, :nibbles.shape[1]]
+    s4_exp = np.repeat(s4, wpg, axis=1)[:, : nibbles.shape[1]]
+    b4_exp = np.repeat(b4, wpg, axis=1)[:, : nibbles.shape[1]]
     values_4bit = nibbles * s4_exp + b4_exp
 
     # 2-bit dequantized values
@@ -302,7 +301,7 @@ def benchmark_mixed_precision(
 
     # Error metrics
     diff = values_4bit - values_2bit
-    mse = float(np.mean(diff ** 2))
+    mse = float(np.mean(diff**2))
     max_err = float(np.max(np.abs(diff)))
 
     return MixedPrecisionResult(

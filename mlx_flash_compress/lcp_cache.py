@@ -28,10 +28,10 @@ remaining projections (W2, W3) — saving ~66% of I/O for low-impact experts.
 
 import math
 import os
-import time
 import threading
+import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -42,6 +42,7 @@ import numpy as np
 @dataclass
 class LCPEntry:
     """Cache entry with LCP priority tracking."""
+
     data: bytes
     layer_idx: int
     expert_id: int
@@ -56,6 +57,7 @@ class LCPEntry:
 @dataclass
 class PrefetchRequest:
     """A pending prefetch of expert data."""
+
     layer_idx: int
     expert_id: int
     future: Optional[Future] = None
@@ -64,6 +66,7 @@ class PrefetchRequest:
 @dataclass
 class PipelineStats:
     """Statistics for the async prefetch pipeline."""
+
     cache_hits: int = 0
     prefetch_hits: int = 0
     cold_loads: int = 0
@@ -180,7 +183,7 @@ class LCPCache:
         path = self._expert_path(layer_idx, expert_id)
         file_size = path.stat().st_size
         partial_size = file_size // 3  # gate_proj is ~1/3 of total
-        with open(path, 'rb') as f:
+        with open(path, "rb") as f:
             data = f.read(partial_size)
         if self._ssd_latency_ms > 0:
             scale = len(data) / (2 * 1024 * 1024)
@@ -192,7 +195,7 @@ class LCPCache:
         while self._current_bytes + needed_bytes > self.capacity and self._cache:
             # Find lowest priority entry
             min_key = None
-            min_priority = float('inf')
+            min_priority = float("inf")
             for key, entry in self._cache.items():
                 p = self._priority(entry)
                 if p < min_priority:
@@ -249,7 +252,7 @@ class LCPCache:
                 entry.frequency += 1
                 entry.last_step = self._step
                 self.stats.cache_hits += 1
-                results.append((entry.data, 'cache'))
+                results.append((entry.data, "cache"))
                 continue
 
             # 2. Prefetch hit (background read completed)
@@ -260,7 +263,7 @@ class LCPCache:
                         data = future.result(timeout=0)
                         self._insert(layer_idx, eid, data)
                         self.stats.prefetch_hits += 1
-                        results.append((data, 'prefetch'))
+                        results.append((data, "prefetch"))
                         continue
                     except Exception:
                         pass
@@ -270,7 +273,7 @@ class LCPCache:
                         data = future.result(timeout=0.001)  # 1ms max wait
                         self._insert(layer_idx, eid, data)
                         self.stats.prefetch_hits += 1
-                        results.append((data, 'prefetch'))
+                        results.append((data, "prefetch"))
                         continue
                     except Exception:
                         pass
@@ -279,26 +282,25 @@ class LCPCache:
             if self.enable_dendritic:
                 partial = self._read_expert_partial(layer_idx, eid)
                 # Estimate gate magnitude from partial data
-                gate_mag = np.frombuffer(partial[:min(1024, len(partial))],
-                                         dtype=np.uint8).astype(np.float32).std()
+                gate_mag = np.frombuffer(partial[: min(1024, len(partial))], dtype=np.uint8).astype(np.float32).std()
                 if gate_mag < self.dendritic_threshold:
                     # Expert would contribute negligibly — skip W2/W3
                     self._insert(layer_idx, eid, partial, is_partial=True)
                     self.stats.dendritic_skips += 1
-                    results.append((partial, 'dendritic_skip'))
+                    results.append((partial, "dendritic_skip"))
                     continue
 
             # 4. Skip fallback (zero routing score, renormalize)
             if self.enable_skip and allow_skip:
                 self.stats.skip_fallbacks += 1
-                results.append((b'', 'skip'))
+                results.append((b"", "skip"))
                 continue
 
             # 5. Cold load (synchronous — last resort)
             data = self._read_expert(layer_idx, eid)
             self._insert(layer_idx, eid, data)
             self.stats.cold_loads += 1
-            results.append((data, 'cold'))
+            results.append((data, "cold"))
 
             # Update co-occurrence
             self._update_cooccurrence(layer_idx, expert_ids)

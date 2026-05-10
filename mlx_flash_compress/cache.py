@@ -12,11 +12,11 @@ Thread model: Decompression dispatched to concurrent.futures ThreadPool
               (simulating GCD parallel dispatch on idle CPU P-cores).
 """
 
-import os
-import time
 import mmap
+import os
 import struct
 import threading
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -33,15 +33,19 @@ from mlx_flash_compress.compression import (
     ZSTDCompressor,
 )
 from mlx_flash_compress.compression_native import (
-    is_available as native_available,
-    NativeCompressor,
-    NativeCompressedBuffer,
     Algorithm as NativeAlgorithm,
+)
+from mlx_flash_compress.compression_native import (
+    NativeCompressedBuffer,
+    NativeCompressor,
+)
+from mlx_flash_compress.compression_native import (
+    is_available as native_available,
 )
 
 
 class CacheTier(Enum):
-    HOT = auto()   # LZ4 compressed in RAM
+    HOT = auto()  # LZ4 compressed in RAM
     WARM = auto()  # ZSTD compressed in RAM
     COLD = auto()  # On SSD (mmap or pread)
 
@@ -49,6 +53,7 @@ class CacheTier(Enum):
 @dataclass
 class CacheStats:
     """Runtime statistics for the expert cache."""
+
     hot_hits: int = 0
     warm_hits: int = 0
     cold_hits: int = 0
@@ -87,6 +92,7 @@ class CacheStats:
 @dataclass
 class _CacheEntry:
     """Internal cache entry."""
+
     buf: CompressedBuffer
     tier: CacheTier
     access_count: int = 0
@@ -175,6 +181,7 @@ class ExpertCacheManager:
 
         if self._bypass_os_cache:
             import fcntl
+
             fd = os.open(str(path), os.O_RDONLY)
             try:
                 fcntl.fcntl(fd, 48, 1)  # F_NOCACHE = 48 on macOS
@@ -434,6 +441,7 @@ class ExpertCacheManager:
         This simulates that by reading + compressing all experts upfront.
         """
         import sys
+
         total = num_layers * num_experts
         done = 0
         for layer_idx in range(num_layers):
@@ -451,8 +459,7 @@ class ExpertCacheManager:
                             self._insert_warm(key, raw)
                 done += 1
                 if done % 100 == 0:
-                    print(f"    Pre-warming: {done}/{total} experts cached...",
-                          file=sys.stderr, flush=True)
+                    print(f"    Pre-warming: {done}/{total} experts cached...", file=sys.stderr, flush=True)
         return done
 
     def get_stats(self) -> CacheStats:

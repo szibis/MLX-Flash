@@ -28,30 +28,31 @@ Usage:
   print(engine.get_stats())
 """
 
-from dataclasses import dataclass, field
-from typing import Optional, Callable
 import json
 import math
 import struct
 import threading
 import time
+from dataclasses import dataclass, field
+from typing import Callable, Optional
 
-import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 
 
 @dataclass
 class SequoiaConfig:
     """Configuration for Sequoia speculative decoding with SSD offloading."""
-    max_draft_tokens: int = 8       # max speculation depth
-    tree_width: int = 3             # branching factor for speculation tree
-    ssd_bandwidth_gbps: float = 5.0 # Apple NVMe bandwidth (GB/s)
-    draft_latency_ms: float = 5.0   # measured draft model latency per token
-    verify_latency_ms: float = 50.0 # measured verify (load from SSD) latency
-    offload_layers: bool = True     # stream target layers from SSD
-    prefetch_layers: int = 2        # prefetch next N layers while computing current
-    temperature: float = 0.0        # sampling temperature (0 = greedy)
+
+    max_draft_tokens: int = 8  # max speculation depth
+    tree_width: int = 3  # branching factor for speculation tree
+    ssd_bandwidth_gbps: float = 5.0  # Apple NVMe bandwidth (GB/s)
+    draft_latency_ms: float = 5.0  # measured draft model latency per token
+    verify_latency_ms: float = 50.0  # measured verify (load from SSD) latency
+    offload_layers: bool = True  # stream target layers from SSD
+    prefetch_layers: int = 2  # prefetch next N layers while computing current
+    temperature: float = 0.0  # sampling temperature (0 = greedy)
 
 
 class SpeculationTree:
@@ -104,8 +105,7 @@ class SpeculationTree:
 
         return best_depth
 
-    def build_tree(self, draft_fn: Callable, input_ids: mx.array,
-                   depth: int = None) -> dict:
+    def build_tree(self, draft_fn: Callable, input_ids: mx.array, depth: int = None) -> dict:
         """Build speculation tree of draft tokens.
 
         Calls draft_fn(input_ids) -> (token_id, logits) repeatedly to build
@@ -128,8 +128,7 @@ class SpeculationTree:
         self._expand_node(root, draft_fn, input_ids, depth, 0)
         return root
 
-    def _expand_node(self, node: dict, draft_fn: Callable,
-                     context: mx.array, max_depth: int, current_depth: int):
+    def _expand_node(self, node: dict, draft_fn: Callable, context: mx.array, max_depth: int, current_depth: int):
         """Recursively expand a tree node with draft predictions."""
         if current_depth >= max_depth:
             return
@@ -258,7 +257,7 @@ class SpeculationTree:
         if not self._acceptance_history:
             return 0.5  # optimistic default
         # Weighted average: recent values matter more
-        weights = np.array([0.95 ** i for i in range(len(self._acceptance_history) - 1, -1, -1)])
+        weights = np.array([0.95**i for i in range(len(self._acceptance_history) - 1, -1, -1)])
         rates = np.array(self._acceptance_history)
         return float(np.average(rates, weights=weights))
 
@@ -314,6 +313,7 @@ class LayerOffloader:
                         continue
                     # Extract layer index from key like "model.layers.5.mlp.weight"
                     import re
+
                     m = re.search(r"\.layers\.(\d+)\.", key)
                     if m:
                         layer_idx = int(m.group(1))
@@ -381,10 +381,10 @@ class LayerOffloader:
                 data_start = 8 + header_size
 
             header = json.loads(header_bytes)
-            _NP_DTYPES = {"F16": np.float16, "BF16": np.float16,
-                          "F32": np.float32, "I32": np.int32, "U8": np.uint8}
+            _NP_DTYPES = {"F16": np.float16, "BF16": np.float16, "F32": np.float32, "I32": np.int32, "U8": np.uint8}
 
             import mmap
+
             with open(shard_path, "rb") as f:
                 mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
 
@@ -397,7 +397,7 @@ class LayerOffloader:
 
                     offset = data_start + offsets[0]
                     size = offsets[1] - offsets[0]
-                    raw = mm[offset:offset + size]
+                    raw = mm[offset : offset + size]
                     arr = np.frombuffer(raw, dtype=np_dtype).reshape(shape)
                     result[key] = mx.array(arr)
 
@@ -446,8 +446,7 @@ class LayerOffloader:
             self._prefetch_threads[layer_idx] = thread
         thread.start()
 
-    def forward_with_offloading(self, input_ids: mx.array, model,
-                                cache=None) -> mx.array:
+    def forward_with_offloading(self, input_ids: mx.array, model, cache=None) -> mx.array:
         """Forward pass that loads/evicts layers on the fly.
 
         Pipeline: prefetch layer N+K while computing layer N, then evict
@@ -471,16 +470,16 @@ class LayerOffloader:
         head_fn = None
         norm_fn = None
 
-        if hasattr(model, 'model') and hasattr(model.model, 'layers'):
+        if hasattr(model, "model") and hasattr(model.model, "layers"):
             model_layers = model.model.layers
-            embed_fn = getattr(model.model, 'embed_tokens', None)
-            norm_fn = getattr(model.model, 'norm', None)
-            head_fn = getattr(model, 'lm_head', None)
-        elif hasattr(model, 'layers'):
+            embed_fn = getattr(model.model, "embed_tokens", None)
+            norm_fn = getattr(model.model, "norm", None)
+            head_fn = getattr(model, "lm_head", None)
+        elif hasattr(model, "layers"):
             model_layers = model.layers
-            embed_fn = getattr(model, 'embed_tokens', None)
-            norm_fn = getattr(model, 'norm', None)
-            head_fn = getattr(model, 'lm_head', None)
+            embed_fn = getattr(model, "embed_tokens", None)
+            norm_fn = getattr(model, "norm", None)
+            head_fn = getattr(model, "lm_head", None)
 
         if model_layers is None:
             return model(input_ids)
@@ -532,11 +531,9 @@ class LayerOffloader:
 
     def get_stats(self) -> dict:
         """Return offloading performance statistics."""
-        avg_load_ms = (self._total_load_time_ms / self._load_count
-                       if self._load_count > 0 else 0.0)
-        total_gb = self._total_bytes_loaded / (1024 ** 3)
-        effective_bw = (total_gb / (self._total_load_time_ms / 1000)
-                        if self._total_load_time_ms > 0 else 0.0)
+        avg_load_ms = self._total_load_time_ms / self._load_count if self._load_count > 0 else 0.0
+        total_gb = self._total_bytes_loaded / (1024**3)
+        effective_bw = total_gb / (self._total_load_time_ms / 1000) if self._total_load_time_ms > 0 else 0.0
 
         return {
             "layers_loaded": self._load_count,
@@ -560,9 +557,9 @@ class SequoiaEngine:
     hardware latency.
     """
 
-    def __init__(self, draft_model, target_model, tokenizer,
-                 config: SequoiaConfig = None,
-                 target_model_path: str = None):
+    def __init__(
+        self, draft_model, target_model, tokenizer, config: SequoiaConfig = None, target_model_path: str = None
+    ):
         self.draft_model = draft_model
         self.target_model = target_model
         self.tokenizer = tokenizer
@@ -609,8 +606,7 @@ class SequoiaEngine:
 
         return token_id, last_logits
 
-    def generate(self, prompt_tokens: mx.array, max_tokens: int = 100,
-                 callback: Optional[Callable] = None) -> mx.array:
+    def generate(self, prompt_tokens: mx.array, max_tokens: int = 100, callback: Optional[Callable] = None) -> mx.array:
         """Generate with Sequoia speculative decoding.
 
         Loop:
@@ -685,14 +681,13 @@ class SequoiaEngine:
                 callback(accepted_list, self.get_stats())
 
             # Check for EOS
-            if self.tokenizer and hasattr(self.tokenizer, 'eos_token_id'):
+            if self.tokenizer and hasattr(self.tokenizer, "eos_token_id"):
                 if self.tokenizer.eos_token_id in accepted_list:
                     break
 
         return mx.array(generated)
 
-    def _verify_candidates(self, context: mx.array,
-                           candidates: mx.array) -> mx.array:
+    def _verify_candidates(self, context: mx.array, candidates: mx.array) -> mx.array:
         """Run target model to verify candidate sequences.
 
         If offloading is enabled, streams layers from SSD.
@@ -718,8 +713,7 @@ class SequoiaEngine:
 
         # Forward pass through target model
         if self.offloader and self.config.offload_layers:
-            logits = self.offloader.forward_with_offloading(
-                full_input, self.target_model)
+            logits = self.offloader.forward_with_offloading(full_input, self.target_model)
         else:
             logits = self.target_model(full_input)
 
@@ -728,9 +722,9 @@ class SequoiaEngine:
         num_draft = int(draft_tokens.shape[0])
 
         if len(logits.shape) == 3:
-            verify_logits = logits[0, seq_len - 1:seq_len + num_draft - 1, :]
+            verify_logits = logits[0, seq_len - 1 : seq_len + num_draft - 1, :]
         else:
-            verify_logits = logits[seq_len - 1:seq_len + num_draft - 1, :]
+            verify_logits = logits[seq_len - 1 : seq_len + num_draft - 1, :]
 
         # Greedy or sampled verification
         if self.config.temperature == 0:
@@ -753,7 +747,7 @@ class SequoiaEngine:
         for optimal depth computation.
         """
         # Encode sample text if tokenizer available
-        if self.tokenizer and hasattr(self.tokenizer, 'encode'):
+        if self.tokenizer and hasattr(self.tokenizer, "encode"):
             tokens = mx.array(self.tokenizer.encode(sample_text))
         else:
             tokens = mx.array([1, 2, 3, 4, 5])  # dummy tokens
@@ -789,15 +783,12 @@ class SequoiaEngine:
 
     def get_stats(self) -> dict:
         """Return comprehensive performance statistics."""
-        elapsed_s = (time.perf_counter() - self._start_time
-                     if self._start_time else 0.0)
+        elapsed_s = time.perf_counter() - self._start_time if self._start_time else 0.0
 
-        acceptance_rate = (self._total_accepted / max(self._total_drafted, 1))
-        tokens_per_second = (self._total_generated / max(elapsed_s, 0.001))
-        avg_draft_ms = (float(np.mean(self._draft_times_ms))
-                        if self._draft_times_ms else 0.0)
-        avg_verify_ms = (float(np.mean(self._verify_times_ms))
-                         if self._verify_times_ms else 0.0)
+        acceptance_rate = self._total_accepted / max(self._total_drafted, 1)
+        tokens_per_second = self._total_generated / max(elapsed_s, 0.001)
+        avg_draft_ms = float(np.mean(self._draft_times_ms)) if self._draft_times_ms else 0.0
+        avg_verify_ms = float(np.mean(self._verify_times_ms)) if self._verify_times_ms else 0.0
 
         # Compute current optimal depth
         optimal_depth = self.tree.compute_optimal_depth(acceptance_rate)
@@ -831,9 +822,9 @@ class SequoiaEngine:
         return stats
 
 
-def apply_sequoia(draft_model, target_model, tokenizer,
-                  target_model_path: str = None,
-                  config: SequoiaConfig = None) -> SequoiaEngine:
+def apply_sequoia(
+    draft_model, target_model, tokenizer, target_model_path: str = None, config: SequoiaConfig = None
+) -> SequoiaEngine:
     """One-line setup for Sequoia offloading.
 
     Args:

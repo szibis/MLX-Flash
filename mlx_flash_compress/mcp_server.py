@@ -24,10 +24,9 @@ import json
 import sys
 from typing import Optional
 
-from mlx_flash_compress.mcp_tools import MCP_TOOLS, get_mcp_manifest
 from mlx_flash_compress.hardware import detect_hardware
+from mlx_flash_compress.mcp_tools import MCP_TOOLS, get_mcp_manifest
 from mlx_flash_compress.memory_manager import get_memory_state
-
 
 SERVER_INFO = {
     "name": "mlx-flash",
@@ -50,6 +49,7 @@ def _ensure_model(model_name: Optional[str] = None):
 
     try:
         from mlx_lm import load
+
         from mlx_flash_compress.chat import auto_select_model
 
         if model_name is None:
@@ -68,6 +68,7 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
     if name == "generate":
         _ensure_model()
         from mlx_lm import generate as mlx_generate
+
         prompt = arguments.get("prompt", "")
         max_tokens = arguments.get("max_tokens", 256)
         system = arguments.get("system", "You are a helpful assistant.")
@@ -78,9 +79,7 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
                 {"role": "user", "content": prompt},
             ]
             try:
-                formatted = _tokenizer.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
+                formatted = _tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             except Exception:
                 formatted = prompt
         else:
@@ -94,13 +93,16 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
         mem = get_memory_state()
         return {
             "type": "text",
-            "text": json.dumps({
-                "chip": hw.chip,
-                "total_ram_gb": hw.total_ram_gb,
-                "available_gb": mem.available_gb,
-                "pressure": mem.pressure_level,
-                "model_loaded": _model_name or "none",
-            }, indent=2)
+            "text": json.dumps(
+                {
+                    "chip": hw.chip,
+                    "total_ram_gb": hw.total_ram_gb,
+                    "available_gb": mem.available_gb,
+                    "pressure": mem.pressure_level,
+                    "model_loaded": _model_name or "none",
+                },
+                indent=2,
+            ),
         }
 
     elif name == "switch_model":
@@ -119,16 +121,19 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
             _model_name = None
             try:
                 import mlx.core as mx
+
                 mx.clear_cache()
             except (ImportError, AttributeError):
                 pass
             import gc
+
             gc.collect()
             return {"type": "text", "text": "Released all model memory"}
         return {"type": "text", "text": f"Partial release ({fraction}) not yet implemented"}
 
     elif name == "list_models":
         from mlx_flash_compress.chat import MODELS
+
         lines = []
         for name_m, total, active, size, mtype, desc in MODELS:
             lines.append(f"{name_m} — {total} params, {size}GB, {mtype}: {desc}")
@@ -138,16 +143,20 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
         hw = detect_hardware()
         mem = get_memory_state()
         from mlx_flash_compress.kernels.ops import get_kernel_status
+
         return {
             "type": "text",
-            "text": json.dumps({
-                "model": _model_name or "none",
-                "hardware": hw.chip,
-                "ram_gb": hw.total_ram_gb,
-                "available_gb": mem.available_gb,
-                "pressure": mem.pressure_level,
-                "kernels": get_kernel_status(),
-            }, indent=2)
+            "text": json.dumps(
+                {
+                    "model": _model_name or "none",
+                    "hardware": hw.chip,
+                    "ram_gb": hw.total_ram_gb,
+                    "available_gb": mem.available_gb,
+                    "pressure": mem.pressure_level,
+                    "kernels": get_kernel_status(),
+                },
+                indent=2,
+            ),
         }
 
     else:
@@ -170,7 +179,7 @@ def handle_jsonrpc(request: dict) -> dict:
                 "capabilities": {
                     "tools": {"listChanged": False},
                 },
-            }
+            },
         }
 
     elif method == "notifications/initialized":
@@ -179,27 +188,21 @@ def handle_jsonrpc(request: dict) -> dict:
     elif method == "tools/list":
         tools = []
         for tool in MCP_TOOLS:
-            tools.append({
-                "name": tool["name"],
-                "description": tool["description"],
-                "inputSchema": tool["inputSchema"],
-            })
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {"tools": tools}
-        }
+            tools.append(
+                {
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "inputSchema": tool["inputSchema"],
+                }
+            )
+        return {"jsonrpc": "2.0", "id": req_id, "result": {"tools": tools}}
 
     elif method == "tools/call":
         tool_name = params.get("name", "")
         arguments = params.get("arguments", {})
         try:
             content = handle_tool_call(tool_name, arguments)
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"content": [content]}
-            }
+            return {"jsonrpc": "2.0", "id": req_id, "result": {"content": [content]}}
         except Exception as e:
             return {
                 "jsonrpc": "2.0",
@@ -207,15 +210,11 @@ def handle_jsonrpc(request: dict) -> dict:
                 "result": {
                     "content": [{"type": "text", "text": f"Error: {e}"}],
                     "isError": True,
-                }
+                },
             }
 
     else:
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "error": {"code": -32601, "message": f"Method not found: {method}"}
-        }
+        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
 
 
 def main():

@@ -1,11 +1,17 @@
 """Tests for cached inference router hooks and cache simulation."""
-import pytest
+
 from collections import defaultdict
+
+import pytest
 
 try:
     from mlx_flash_compress.cached_inference import (
-        ExpertRouter, RoutingEvent, CacheSimState, RustCacheState,
+        CacheSimState,
+        ExpertRouter,
+        RoutingEvent,
+        RustCacheState,
     )
+
     HAS_MODULE = True
 except (ImportError, ModuleNotFoundError):
     HAS_MODULE = False
@@ -48,15 +54,9 @@ class TestCacheSimState:
     def test_lcp_eviction_prefers_cold(self):
         cache = CacheSimState(capacity_experts=2)
         for i in range(5):
-            cache.process_token([
-                RoutingEvent(layer_idx=0, expert_indices=[1], token_idx=i, timestamp=0)
-            ])
-        cache.process_token([
-            RoutingEvent(layer_idx=0, expert_indices=[2], token_idx=5, timestamp=0)
-        ])
-        cache.process_token([
-            RoutingEvent(layer_idx=0, expert_indices=[3], token_idx=6, timestamp=0)
-        ])
+            cache.process_token([RoutingEvent(layer_idx=0, expert_indices=[1], token_idx=i, timestamp=0)])
+        cache.process_token([RoutingEvent(layer_idx=0, expert_indices=[2], token_idx=5, timestamp=0)])
+        cache.process_token([RoutingEvent(layer_idx=0, expert_indices=[3], token_idx=6, timestamp=0)])
         assert (0, 1) in cache.cached
         assert (0, 2) not in cache.cached
 

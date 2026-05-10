@@ -4,13 +4,14 @@ import pytest
 
 try:
     import mlx.core as mx
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
 
 from mlx_flash_compress.streaming_llm import (
-    StreamingLLMConfig,
     StreamingLLMCache,
+    StreamingLLMConfig,
 )
 
 pytestmark = pytest.mark.skipif(not HAS_MLX, reason="MLX required")
@@ -235,7 +236,7 @@ class TestStreamingLLMMultiLayer:
         out_k0, _ = cache.get_kv(0)
         out_k1, _ = cache.get_kv(1)
         assert out_k0.shape[1] == 20  # evicted
-        assert out_k1.shape[1] == 5   # untouched
+        assert out_k1.shape[1] == 5  # untouched
 
 
 class TestStreamingLLMReset:

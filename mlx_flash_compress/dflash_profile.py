@@ -3,30 +3,30 @@
 Detects model characteristics and selects optimal DFlash settings.
 """
 
-from dataclasses import dataclass, field
 import time
+from dataclasses import dataclass, field
 from typing import Literal
 
 import mlx.core as mx
 import mlx.utils
 
-
 ModelCategory = Literal[
-    "small_dense",      # <10B active, dense — AR is fast, DFlash unlikely to help
-    "small_moe",        # <10B active, MoE — AR is fast, DFlash unlikely to help
-    "medium_dense",     # 10-30B active, dense — DFlash may help
-    "medium_moe",       # 10-30B active, MoE — DFlash may help if AR < 30 tok/s
-    "large_dense",      # 30B+ active, dense — DFlash wins big
-    "large_moe",        # 30B+ active, MoE — DFlash wins big
-    "ssd_small",        # SSM+attention hybrid, <10B active
-    "ssd_medium",       # SSM+attention hybrid, 10-30B active
-    "ssd_large",        # SSM+attention hybrid, 30B+ active
+    "small_dense",  # <10B active, dense — AR is fast, DFlash unlikely to help
+    "small_moe",  # <10B active, MoE — AR is fast, DFlash unlikely to help
+    "medium_dense",  # 10-30B active, dense — DFlash may help
+    "medium_moe",  # 10-30B active, MoE — DFlash may help if AR < 30 tok/s
+    "large_dense",  # 30B+ active, dense — DFlash wins big
+    "large_moe",  # 30B+ active, MoE — DFlash wins big
+    "ssd_small",  # SSM+attention hybrid, <10B active
+    "ssd_medium",  # SSM+attention hybrid, 10-30B active
+    "ssd_large",  # SSM+attention hybrid, 30B+ active
 ]
 
 
 @dataclass
 class ModelProfile:
     """Detected model characteristics."""
+
     category: ModelCategory
     total_params_b: float
     active_params_b: float
@@ -58,6 +58,7 @@ Priority = Literal["auto", "quality", "speed", "balanced"]
 @dataclass
 class DFlashProfile:
     """Optimal DFlash configuration for a model."""
+
     name: str
     quantize_drafter: int | None
     inference_block_size: int | None
@@ -77,7 +78,7 @@ PROFILES = {
         compile_drafter=False,
         priority="quality",
         description="Quality-first for slow targets (AR < 15 tok/s). "
-                    "bf16 drafter preserves hidden state fidelity for maximum acceptance.",
+        "bf16 drafter preserves hidden state fidelity for maximum acceptance.",
     ),
     "quality_medium": DFlashProfile(
         name="quality_medium",
@@ -86,8 +87,7 @@ PROFILES = {
         use_cache=True,
         compile_drafter=False,
         priority="quality",
-        description="Quality-first for medium targets (AR 15-40 tok/s). "
-                    "bf16 drafter, full block. Accept rate > tok/s.",
+        description="Quality-first for medium targets (AR 15-40 tok/s). bf16 drafter, full block. Accept rate > tok/s.",
     ),
     "quality_ssd": DFlashProfile(
         name="quality_ssd",
@@ -97,9 +97,8 @@ PROFILES = {
         compile_drafter=False,
         priority="quality",
         description="Quality-first for SSM hybrids. bf16 drafter, full block. "
-                    "SSM replay cost is acceptable for better acceptance.",
+        "SSM replay cost is acceptable for better acceptance.",
     ),
-
     # --- Speed-first: quantized drafter, smaller blocks, maximum tok/s ---
     "speed_slow": DFlashProfile(
         name="speed_slow",
@@ -109,7 +108,7 @@ PROFILES = {
         compile_drafter=False,
         priority="speed",
         description="Speed-first for slow targets. 8-bit drafter cuts draft time 2.5x "
-                    "with zero acceptance loss on verification.",
+        "with zero acceptance loss on verification.",
     ),
     "speed_medium": DFlashProfile(
         name="speed_medium",
@@ -119,7 +118,7 @@ PROFILES = {
         compile_drafter=False,
         priority="speed",
         description="Speed-first for medium targets. 8-bit + bs=4 for fastest cycles. "
-                    "Higher per-token acceptance compensates for fewer draft tokens.",
+        "Higher per-token acceptance compensates for fewer draft tokens.",
     ),
     "speed_ssd": DFlashProfile(
         name="speed_ssd",
@@ -129,9 +128,8 @@ PROFILES = {
         compile_drafter=False,
         priority="speed",
         description="Speed-first for SSM hybrids. 8-bit + bs=4 minimizes replay cost "
-                    "(18ms → ~5ms). Best measured config for SSM models.",
+        "(18ms → ~5ms). Best measured config for SSM models.",
     ),
-
     # --- Balanced (default): best measured tradeoff ---
     "fast_target": DFlashProfile(
         name="fast_target",
@@ -140,7 +138,7 @@ PROFILES = {
         use_cache=True,
         compile_drafter=False,
         description="Target AR > 40 tok/s. 8-bit drafter to minimize overhead. "
-                    "DFlash unlikely to beat AR but provides multi-token drafting.",
+        "DFlash unlikely to beat AR but provides multi-token drafting.",
     ),
     "medium_target": DFlashProfile(
         name="medium_target",
@@ -148,8 +146,7 @@ PROFILES = {
         inference_block_size=None,
         use_cache=True,
         compile_drafter=False,
-        description="Target AR 15-40 tok/s. DFlash should match or beat AR. "
-                    "8-bit drafter for fast drafting.",
+        description="Target AR 15-40 tok/s. DFlash should match or beat AR. 8-bit drafter for fast drafting.",
     ),
     "slow_target": DFlashProfile(
         name="slow_target",
@@ -157,8 +154,7 @@ PROFILES = {
         inference_block_size=None,
         use_cache=True,
         compile_drafter=False,
-        description="Target AR < 15 tok/s. DFlash wins big. "
-                    "bf16 drafter for maximum acceptance rate.",
+        description="Target AR < 15 tok/s. DFlash wins big. bf16 drafter for maximum acceptance rate.",
     ),
     "ssd_fast": DFlashProfile(
         name="ssd_fast",
@@ -167,7 +163,7 @@ PROFILES = {
         use_cache=True,
         compile_drafter=False,
         description="SSM+attention hybrid, fast AR. Smaller block size reduces "
-                    "verify cost. SSM replay overhead limits gains.",
+        "verify cost. SSM replay overhead limits gains.",
     ),
     "ssd_slow": DFlashProfile(
         name="ssd_slow",
@@ -175,8 +171,7 @@ PROFILES = {
         inference_block_size=None,
         use_cache=True,
         compile_drafter=False,
-        description="SSM+attention hybrid, slow AR. DFlash amortizes well. "
-                    "Full block size for maximum tokens/step.",
+        description="SSM+attention hybrid, slow AR. DFlash amortizes well. Full block size for maximum tokens/step.",
     ),
 }
 
@@ -186,7 +181,7 @@ def detect_model(model, tokenizer=None) -> ModelProfile:
     layers = _find_layers(model)
     num_layers = len(layers)
 
-    num_ssm = sum(1 for l in layers if getattr(l, 'is_linear', False))
+    num_ssm = sum(1 for l in layers if getattr(l, "is_linear", False))
     num_attn = num_layers - num_ssm
     has_ssm = num_ssm > 0
     is_moe = any(_is_moe_layer(l) for l in layers)
@@ -197,8 +192,7 @@ def detect_model(model, tokenizer=None) -> ModelProfile:
     active_params_b = _estimate_active_params(model, layers, is_moe)
 
     is_quantized = any(
-        hasattr(mod, 'scales') or type(mod).__name__ == 'QuantizedLinear'
-        for _, mod in model.named_modules()
+        hasattr(mod, "scales") or type(mod).__name__ == "QuantizedLinear" for _, mod in model.named_modules()
     )
     quant_bits = _detect_quant_bits(model) if is_quantized else None
 
@@ -238,8 +232,7 @@ def detect_model(model, tokenizer=None) -> ModelProfile:
     )
 
 
-def measure_ar_baseline(model, tokenizer, prompt: str = "Hello",
-                        max_tokens: int = 32, warmup_tokens: int = 8) -> float:
+def measure_ar_baseline(model, tokenizer, prompt: str = "Hello", max_tokens: int = 32, warmup_tokens: int = 8) -> float:
     """Measure autoregressive baseline speed (tok/s)."""
     from mlx_lm import stream_generate
 
@@ -253,8 +246,7 @@ def measure_ar_baseline(model, tokenizer, prompt: str = "Hello",
     return last_resp.generation_tps if last_resp else 0
 
 
-def select_profile(model_profile: ModelProfile,
-                    priority: Priority = "auto") -> DFlashProfile:
+def select_profile(model_profile: ModelProfile, priority: Priority = "auto") -> DFlashProfile:
     """Select optimal DFlash profile based on model characteristics.
 
     Args:
@@ -314,13 +306,12 @@ def select_profile(model_profile: ModelProfile,
         return PROFILES["slow_target"]
 
 
-def profile_and_configure(model, tokenizer, prompt: str = "Hello",
-                          max_tokens: int = 32,
-                          priority: Priority = "auto") -> tuple[ModelProfile, DFlashProfile]:
+def profile_and_configure(
+    model, tokenizer, prompt: str = "Hello", max_tokens: int = 32, priority: Priority = "auto"
+) -> tuple[ModelProfile, DFlashProfile]:
     """Full profiling: detect model, measure AR speed, select profile."""
     model_info = detect_model(model, tokenizer)
-    model_info.ar_tok_s = round(measure_ar_baseline(
-        model, tokenizer, prompt, max_tokens), 1)
+    model_info.ar_tok_s = round(measure_ar_baseline(model, tokenizer, prompt, max_tokens), 1)
     profile = select_profile(model_info, priority)
     return model_info, profile
 
@@ -328,13 +319,13 @@ def profile_and_configure(model, tokenizer, prompt: str = "Hello",
 def _find_layers(model):
     """Find the transformer layers in a model."""
     candidates = []
-    if hasattr(model, 'language_model'):
+    if hasattr(model, "language_model"):
         lm = model.language_model
-        if hasattr(lm, 'model') and hasattr(lm.model, 'layers'):
+        if hasattr(lm, "model") and hasattr(lm.model, "layers"):
             return list(lm.model.layers)
-    if hasattr(model, 'model') and hasattr(model.model, 'layers'):
+    if hasattr(model, "model") and hasattr(model.model, "layers"):
         return list(model.model.layers)
-    if hasattr(model, 'layers'):
+    if hasattr(model, "layers"):
         return list(model.layers)
     return []
 
@@ -343,9 +334,9 @@ def _is_moe_layer(layer) -> bool:
     """Check if a layer has MoE components."""
     for name, child in layer.named_modules():
         child_type = type(child).__name__.lower()
-        if 'moe' in child_type or 'switch' in child_type or 'expert' in child_type:
+        if "moe" in child_type or "switch" in child_type or "expert" in child_type:
             return True
-        if hasattr(child, 'gate') and hasattr(child, 'switch_mlp'):
+        if hasattr(child, "gate") and hasattr(child, "switch_mlp"):
             return True
     return False
 
@@ -366,11 +357,9 @@ def _estimate_active_params(model, layers, is_moe: bool) -> float:
             child_type = type(child).__name__.lower()
             child_bytes = sum(p.nbytes for _, p in mlx.utils.tree_flatten(child.parameters()))
 
-            if 'switch' in child_type or 'moe' in child_type:
-                num_experts = getattr(child, 'num_experts',
-                              getattr(child, 'num_local_experts', 8))
-                top_k = getattr(child, 'top_k',
-                        getattr(child, 'num_experts_per_tok', 2))
+            if "switch" in child_type or "moe" in child_type:
+                num_experts = getattr(child, "num_experts", getattr(child, "num_local_experts", 8))
+                top_k = getattr(child, "top_k", getattr(child, "num_experts_per_tok", 2))
                 if num_experts > 0:
                     active_expert_bytes += child_bytes * top_k / num_experts
                     total_expert_bytes += child_bytes
@@ -386,8 +375,8 @@ def _estimate_active_params(model, layers, is_moe: bool) -> float:
 def _detect_quant_bits(model) -> int | None:
     """Detect quantization bits from model weights."""
     for name, module in model.named_modules():
-        if type(module).__name__ == 'QuantizedLinear':
-            bits = getattr(module, 'bits', None)
+        if type(module).__name__ == "QuantizedLinear":
+            bits = getattr(module, "bits", None)
             if bits:
                 return bits
     return None

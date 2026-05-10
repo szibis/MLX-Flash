@@ -1,14 +1,19 @@
 """Tests for MatFormer elastic inference via nested FFN extraction."""
+
 import numpy as np
 import pytest
 
 try:
     import mlx.core as mx
     import mlx.nn as nn
+
     from mlx_flash_compress.matformer import (
-        MatFormerConfig, MatFormerExtractor, AdaptiveMatFormer,
+        AdaptiveMatFormer,
+        MatFormerConfig,
+        MatFormerExtractor,
         apply_matformer,
     )
+
     HAS_MLX = True
 except (ImportError, ModuleNotFoundError):
     HAS_MLX = False
@@ -17,6 +22,7 @@ pytestmark = pytest.mark.skipif(not HAS_MLX, reason="requires mlx")
 
 
 # ── Mock model ───────────────────────────────────────────────────
+
 
 class MockMLP(nn.Module):
     """Mock FFN block with gate/up/down projections."""
@@ -46,14 +52,10 @@ class MockTransformerLayer(nn.Module):
 class MockModel(nn.Module):
     """Minimal transformer model for testing MatFormer extraction."""
 
-    def __init__(self, vocab_size: int = 32, hidden_dim: int = 64,
-                 intermediate_dim: int = 128, num_layers: int = 4):
+    def __init__(self, vocab_size: int = 32, hidden_dim: int = 64, intermediate_dim: int = 128, num_layers: int = 4):
         super().__init__()
         self.embed_tokens = nn.Embedding(vocab_size, hidden_dim)
-        self.layers = [
-            MockTransformerLayer(hidden_dim, intermediate_dim)
-            for _ in range(num_layers)
-        ]
+        self.layers = [MockTransformerLayer(hidden_dim, intermediate_dim) for _ in range(num_layers)]
         self.norm = nn.RMSNorm(hidden_dim)
         self.lm_head = nn.Linear(hidden_dim, vocab_size)
 
@@ -76,6 +78,7 @@ def make_model():
 
 # ── MatFormerConfig tests ────────────────────────────────────────
 
+
 class TestMatFormerConfig:
     def test_defaults(self):
         config = MatFormerConfig()
@@ -95,6 +98,7 @@ class TestMatFormerConfig:
 
 
 # ── MatFormerExtractor tests ─────────────────────────────────────
+
 
 class TestMatFormerExtractor:
     def test_discover_ffn_layers(self):
@@ -275,6 +279,7 @@ class TestMatFormerExtractor:
             def __init__(self):
                 super().__init__()
                 self.layers = []
+
             def __call__(self, x):
                 return x
 
@@ -287,6 +292,7 @@ class TestMatFormerExtractor:
 
 
 # ── AdaptiveMatFormer tests ──────────────────────────────────────
+
 
 class TestAdaptiveMatFormer:
     def test_init(self):

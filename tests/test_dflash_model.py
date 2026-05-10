@@ -10,20 +10,21 @@ import pytest
 try:
     import mlx.core as mx
     import mlx.nn as nn
+
     MLX_AVAILABLE = True
 except ImportError:
     MLX_AVAILABLE = False
 
 from mlx_flash_compress.dflash_model import (
-    DFlashModelConfig,
-    DFlashDraftModel,
     DFlashAttention,
     DFlashDecoderLayer,
+    DFlashDraftModel,
     DFlashMLP,
+    DFlashModelConfig,
     DFlashRunner,
-    _rotate_half,
     _apply_rotary_emb,
     _compute_rope_freqs,
+    _rotate_half,
 )
 
 
@@ -127,8 +128,7 @@ class TestRoPE:
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestDFlashAttention:
     def test_forward_shape(self):
-        config = DFlashModelConfig(hidden_size=64, num_attention_heads=4,
-                                   num_key_value_heads=2, head_dim=16)
+        config = DFlashModelConfig(hidden_size=64, num_attention_heads=4, num_key_value_heads=2, head_dim=16)
         attn = DFlashAttention(config, layer_idx=0)
 
         B, q_len, ctx_len = 1, 8, 4
@@ -140,15 +140,13 @@ class TestDFlashAttention:
         assert out.shape == (B, q_len, 64)
 
     def test_gqa_groups(self):
-        config = DFlashModelConfig(hidden_size=128, num_attention_heads=8,
-                                   num_key_value_heads=2, head_dim=16)
+        config = DFlashModelConfig(hidden_size=128, num_attention_heads=8, num_key_value_heads=2, head_dim=16)
         attn = DFlashAttention(config, layer_idx=0)
         assert attn.num_kv_groups == 4
 
     def test_bidirectional(self):
         """Verify attention is bidirectional (all positions attend to all)."""
-        config = DFlashModelConfig(hidden_size=32, num_attention_heads=2,
-                                   num_key_value_heads=2, head_dim=16)
+        config = DFlashModelConfig(hidden_size=32, num_attention_heads=2, num_key_value_heads=2, head_dim=16)
         attn = DFlashAttention(config, layer_idx=0)
 
         hidden = mx.random.normal((1, 4, 32))
@@ -172,9 +170,9 @@ class TestDFlashMLP:
 @pytest.mark.skipif(not MLX_AVAILABLE, reason="MLX not available")
 class TestDFlashDecoderLayer:
     def test_forward_shape(self):
-        config = DFlashModelConfig(hidden_size=64, intermediate_size=128,
-                                   num_attention_heads=4, num_key_value_heads=2,
-                                   head_dim=16)
+        config = DFlashModelConfig(
+            hidden_size=64, intermediate_size=128, num_attention_heads=4, num_key_value_heads=2, head_dim=16
+        )
         layer = DFlashDecoderLayer(config, layer_idx=0)
 
         hidden = mx.random.normal((1, 8, 64))
@@ -185,9 +183,9 @@ class TestDFlashDecoderLayer:
 
     def test_residual_connection(self):
         """Output should differ from input (residual + attention + MLP)."""
-        config = DFlashModelConfig(hidden_size=32, intermediate_size=64,
-                                   num_attention_heads=2, num_key_value_heads=2,
-                                   head_dim=16)
+        config = DFlashModelConfig(
+            hidden_size=32, intermediate_size=64, num_attention_heads=2, num_key_value_heads=2, head_dim=16
+        )
         layer = DFlashDecoderLayer(config, layer_idx=0)
 
         hidden = mx.random.normal((1, 4, 32))
@@ -257,6 +255,7 @@ class TestDFlashDraftModel:
             (Path(tmpdir) / "config.json").write_text(json.dumps(config_data))
 
             from mlx.utils import tree_flatten
+
             flat = dict(tree_flatten(model.trainable_parameters()))
             mx.save_safetensors(str(Path(tmpdir) / "model.safetensors"), flat)
 
@@ -276,6 +275,7 @@ class TestDFlashRunner:
             def __init__(self, dim):
                 super().__init__()
                 self.linear = nn.Linear(dim, dim, bias=False)
+
             def __call__(self, x, **kwargs):
                 return self.linear(x)
 
@@ -304,10 +304,13 @@ class TestDFlashRunner:
     def _make_fake_tokenizer(self, vocab_size=100):
         class FakeTokenizer:
             eos_token_id = 2
+
             def encode(self, text):
                 return [1] + [ord(c) % vocab_size for c in text[:20]]
+
             def decode(self, ids):
                 return "".join(chr(max(32, i % 128)) for i in ids)
+
         return FakeTokenizer()
 
     def test_runner_init(self):
@@ -315,10 +318,14 @@ class TestDFlashRunner:
         tokenizer = self._make_fake_tokenizer()
 
         config = DFlashModelConfig(
-            hidden_size=64, intermediate_size=128,
-            num_hidden_layers=2, num_attention_heads=4,
-            num_key_value_heads=2, head_dim=16,
-            block_size=4, vocab_size=100,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            block_size=4,
+            vocab_size=100,
             target_layer_ids=[1, 4, 7],
         )
         drafter = DFlashDraftModel(config)
@@ -333,10 +340,14 @@ class TestDFlashRunner:
         tokenizer = self._make_fake_tokenizer()
 
         config = DFlashModelConfig(
-            hidden_size=64, intermediate_size=128,
-            num_hidden_layers=2, num_attention_heads=4,
-            num_key_value_heads=2, head_dim=16,
-            block_size=4, vocab_size=100,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            block_size=4,
+            vocab_size=100,
             target_layer_ids=[1, 4, 7],
         )
         drafter = DFlashDraftModel(config)
@@ -353,10 +364,14 @@ class TestDFlashRunner:
         tokenizer = self._make_fake_tokenizer()
 
         config = DFlashModelConfig(
-            hidden_size=64, intermediate_size=128,
-            num_hidden_layers=2, num_attention_heads=4,
-            num_key_value_heads=2, head_dim=16,
-            block_size=4, vocab_size=100,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            block_size=4,
+            vocab_size=100,
             target_layer_ids=[1, 4, 7],
             mask_token_id=0,
         )
@@ -375,10 +390,14 @@ class TestDFlashRunner:
         tokenizer = self._make_fake_tokenizer()
 
         config = DFlashModelConfig(
-            hidden_size=64, intermediate_size=128,
-            num_hidden_layers=2, num_attention_heads=4,
-            num_key_value_heads=2, head_dim=16,
-            block_size=4, vocab_size=100,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            block_size=4,
+            vocab_size=100,
             target_layer_ids=[1, 4, 7],
             mask_token_id=0,
         )
@@ -397,10 +416,14 @@ class TestDFlashRunner:
         tokenizer = self._make_fake_tokenizer()
 
         config = DFlashModelConfig(
-            hidden_size=64, intermediate_size=128,
-            num_hidden_layers=2, num_attention_heads=4,
-            num_key_value_heads=2, head_dim=16,
-            block_size=4, vocab_size=100,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            block_size=4,
+            vocab_size=100,
             target_layer_ids=[1, 4, 7],
             mask_token_id=0,
         )
@@ -416,10 +439,14 @@ class TestDFlashRunner:
         tokenizer = self._make_fake_tokenizer()
 
         config = DFlashModelConfig(
-            hidden_size=64, intermediate_size=128,
-            num_hidden_layers=2, num_attention_heads=4,
-            num_key_value_heads=2, head_dim=16,
-            block_size=4, vocab_size=100,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            block_size=4,
+            vocab_size=100,
             target_layer_ids=[1, 4, 7],
             mask_token_id=0,
         )
@@ -427,7 +454,10 @@ class TestDFlashRunner:
         runner = DFlashRunner(target, tokenizer, drafter, config)
 
         text, stats = runner.generate_with_tree(
-            "hello world", max_tokens=8, tree_width=3, max_tree_size=15,
+            "hello world",
+            max_tokens=8,
+            tree_width=3,
+            max_tree_size=15,
             use_cache=False,
         )
         assert isinstance(text, str)
@@ -439,10 +469,14 @@ class TestDFlashRunner:
         tokenizer = self._make_fake_tokenizer()
 
         config = DFlashModelConfig(
-            hidden_size=64, intermediate_size=128,
-            num_hidden_layers=2, num_attention_heads=4,
-            num_key_value_heads=2, head_dim=16,
-            block_size=4, vocab_size=100,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            block_size=4,
+            vocab_size=100,
             target_layer_ids=[1, 4, 7],
             mask_token_id=0,
         )
@@ -450,7 +484,10 @@ class TestDFlashRunner:
         runner = DFlashRunner(target, tokenizer, drafter, config)
 
         text, stats = runner.generate_with_tree(
-            "hello world", max_tokens=8, tree_width=3, max_tree_size=15,
+            "hello world",
+            max_tokens=8,
+            tree_width=3,
+            max_tree_size=15,
             use_cache=True,
         )
         assert isinstance(text, str)

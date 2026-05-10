@@ -4,24 +4,26 @@ import numpy as np
 import pytest
 
 from mlx_flash_compress.compression import (
+    CompressionAlgo,
     LZ4Compressor,
     ZSTDCompressor,
-    CompressionAlgo,
 )
 from mlx_flash_compress.compression_native import (
-    is_available,
-    NativeCompressor,
     Algorithm,
+    NativeCompressor,
+    is_available,
 )
 
 try:
     import lz4.frame
+
     HAS_LZ4 = True
 except ImportError:
     HAS_LZ4 = False
 
 try:
     import zstandard
+
     HAS_ZSTD = True
 except ImportError:
     HAS_ZSTD = False

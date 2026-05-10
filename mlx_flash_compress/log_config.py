@@ -41,9 +41,21 @@ class JsonFormatter(logging.Formatter):
             entry["worker_port"] = self.worker_port
 
         # Merge extra fields (from logger.info("msg", extra={...}))
-        for key in ("model", "load_time_s", "tokens", "tok_per_s", "pressure",
-                     "memory_gb", "port", "action", "error", "session_id",
-                     "request_id", "latency_ms", "status_code"):
+        for key in (
+            "model",
+            "load_time_s",
+            "tokens",
+            "tok_per_s",
+            "pressure",
+            "memory_gb",
+            "port",
+            "action",
+            "error",
+            "session_id",
+            "request_id",
+            "latency_ms",
+            "status_code",
+        ):
             val = getattr(record, key, None)
             if val is not None:
                 entry[key] = val
@@ -70,8 +82,7 @@ class TextFormatter(logging.Formatter):
 
         # Append structured extras inline
         extras = []
-        for key in ("model", "load_time_s", "tokens", "tok_per_s", "pressure",
-                     "memory_gb", "port", "action", "error"):
+        for key in ("model", "load_time_s", "tokens", "tok_per_s", "pressure", "memory_gb", "port", "action", "error"):
             val = getattr(record, key, None)
             if val is not None:
                 extras.append(f"{key}={val}")

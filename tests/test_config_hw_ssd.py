@@ -7,10 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from mlx_flash_compress.config import FlashConfig, get_config, CacheConfig
-from mlx_flash_compress.hardware import detect_hardware, MacHardware, estimate_performance
+from mlx_flash_compress.config import CacheConfig, FlashConfig, get_config
+from mlx_flash_compress.hardware import MacHardware, detect_hardware, estimate_performance
 from mlx_flash_compress.ssd_protection import (
-    SSDProtectedReader, ReadPolicy, estimate_ssd_impact, check_ssd_health,
+    ReadPolicy,
+    SSDProtectedReader,
+    check_ssd_health,
+    estimate_ssd_impact,
 )
 
 
@@ -37,7 +40,7 @@ class TestFlashConfig:
             "cache": {"ram_mb": 1024, "eviction": "lfu"},
             "prefetch": {"enable": False},
         }
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(data, f)
             f.flush()
             cfg = FlashConfig.from_file(f.name)
@@ -72,7 +75,7 @@ class TestFlashConfig:
         assert "ON" in s or "OFF" in s
 
     def test_save_load(self):
-        with tempfile.NamedTemporaryFile(suffix='.json', delete=False) as f:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             path = f.name
 
         try:
@@ -143,8 +146,11 @@ class TestSSDProtection:
 
     def test_ssd_impact_estimate(self):
         impact = estimate_ssd_impact(
-            model_gb=209, tokens_per_day=10000,
-            cache_hit_rate=0.7, k=4, num_layers=60,
+            model_gb=209,
+            tokens_per_day=10000,
+            cache_hit_rate=0.7,
+            k=4,
+            num_layers=60,
         )
         assert impact["daily_read_gb"] > 0
         assert "NONE" in impact["ssd_write_impact"]

@@ -1,4 +1,5 @@
 """Tests for structured logging configuration."""
+
 import json
 import logging
 
@@ -13,8 +14,13 @@ class TestJsonFormatter:
     def test_formats_as_json(self):
         fmt = JsonFormatter(component="test-worker", worker_port=8081)
         record = logging.LogRecord(
-            name="mlx_flash", level=logging.INFO, pathname="", lineno=0,
-            msg="hello world", args=(), exc_info=None,
+            name="mlx_flash",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="hello world",
+            args=(),
+            exc_info=None,
         )
         line = fmt.format(record)
         data = json.loads(line)
@@ -27,8 +33,13 @@ class TestJsonFormatter:
     def test_includes_extra_fields(self):
         fmt = JsonFormatter(component="worker")
         record = logging.LogRecord(
-            name="mlx_flash", level=logging.INFO, pathname="", lineno=0,
-            msg="loaded", args=(), exc_info=None,
+            name="mlx_flash",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="loaded",
+            args=(),
+            exc_info=None,
         )
         record.model = "Qwen3-30B"
         record.load_time_s = 4.2
@@ -40,8 +51,13 @@ class TestJsonFormatter:
     def test_no_port_when_zero(self):
         fmt = JsonFormatter(component="test", worker_port=0)
         record = logging.LogRecord(
-            name="mlx_flash", level=logging.WARNING, pathname="", lineno=0,
-            msg="warn", args=(), exc_info=None,
+            name="mlx_flash",
+            level=logging.WARNING,
+            pathname="",
+            lineno=0,
+            msg="warn",
+            args=(),
+            exc_info=None,
         )
         line = fmt.format(record)
         data = json.loads(line)
@@ -52,8 +68,13 @@ class TestTextFormatter:
     def test_formats_as_text(self):
         fmt = TextFormatter(component="rust-proxy", worker_port=0)
         record = logging.LogRecord(
-            name="mlx_flash", level=logging.INFO, pathname="", lineno=0,
-            msg="listening", args=(), exc_info=None,
+            name="mlx_flash",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="listening",
+            args=(),
+            exc_info=None,
         )
         line = fmt.format(record)
         assert "INFO" in line
@@ -63,8 +84,13 @@ class TestTextFormatter:
     def test_includes_port(self):
         fmt = TextFormatter(component="worker", worker_port=8081)
         record = logging.LogRecord(
-            name="mlx_flash", level=logging.INFO, pathname="", lineno=0,
-            msg="ready", args=(), exc_info=None,
+            name="mlx_flash",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="ready",
+            args=(),
+            exc_info=None,
         )
         line = fmt.format(record)
         assert ":8081" in line
@@ -72,8 +98,13 @@ class TestTextFormatter:
     def test_appends_extras(self):
         fmt = TextFormatter(component="worker")
         record = logging.LogRecord(
-            name="mlx_flash", level=logging.INFO, pathname="", lineno=0,
-            msg="loaded", args=(), exc_info=None,
+            name="mlx_flash",
+            level=logging.INFO,
+            pathname="",
+            lineno=0,
+            msg="loaded",
+            args=(),
+            exc_info=None,
         )
         record.model = "test-model"
         line = fmt.format(record)
@@ -88,12 +119,8 @@ class TestSetupLogging:
 
     def test_json_format_handler(self):
         logger = setup_logging(component="test-json", json_format=True)
-        assert any(
-            isinstance(h.formatter, JsonFormatter) for h in logger.handlers
-        )
+        assert any(isinstance(h.formatter, JsonFormatter) for h in logger.handlers)
 
     def test_text_format_handler(self):
         logger = setup_logging(component="test-text", json_format=False)
-        assert any(
-            isinstance(h.formatter, TextFormatter) for h in logger.handlers
-        )
+        assert any(isinstance(h.formatter, TextFormatter) for h in logger.handlers)

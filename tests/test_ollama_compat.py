@@ -3,13 +3,13 @@
 import pytest
 
 from mlx_flash_compress.ollama_compat import (
-    ollama_generate_to_openai,
-    ollama_chat_to_openai,
-    openai_completion_to_ollama,
-    openai_chat_to_ollama,
-    ollama_tags_response,
-    ollama_show_response,
     is_ollama_request,
+    ollama_chat_to_openai,
+    ollama_generate_to_openai,
+    ollama_show_response,
+    ollama_tags_response,
+    openai_chat_to_ollama,
+    openai_completion_to_ollama,
 )
 
 
@@ -21,10 +21,7 @@ class TestOllamaToOpenAI:
         assert result["model"] == "test"
 
     def test_generate_with_options(self):
-        body = {
-            "prompt": "Hi",
-            "options": {"num_predict": 100, "temperature": 0.5, "top_p": 0.8}
-        }
+        body = {"prompt": "Hi", "options": {"num_predict": 100, "temperature": 0.5, "top_p": 0.8}}
         result = ollama_generate_to_openai(body)
         assert result["max_tokens"] == 100
         assert result["temperature"] == 0.5
@@ -43,10 +40,7 @@ class TestOllamaToOpenAI:
         assert result["stream"] is True
 
     def test_chat_basic(self):
-        body = {
-            "messages": [{"role": "user", "content": "Hello"}],
-            "model": "test"
-        }
+        body = {"messages": [{"role": "user", "content": "Hello"}], "model": "test"}
         result = ollama_chat_to_openai(body)
         assert result["messages"] == [{"role": "user", "content": "Hello"}]
         assert result["model"] == "test"
@@ -60,10 +54,7 @@ class TestOllamaToOpenAI:
 
 class TestOpenAIToOllama:
     def test_completion_to_ollama(self):
-        response = {
-            "choices": [{"text": "World"}],
-            "usage": {"prompt_tokens": 5, "completion_tokens": 1}
-        }
+        response = {"choices": [{"text": "World"}], "usage": {"prompt_tokens": 5, "completion_tokens": 1}}
         result = openai_completion_to_ollama(response, "test-model")
         assert result["response"] == "World"
         assert result["model"] == "test-model"
@@ -74,7 +65,7 @@ class TestOpenAIToOllama:
     def test_chat_to_ollama(self):
         response = {
             "choices": [{"message": {"role": "assistant", "content": "Hi!"}}],
-            "usage": {"prompt_tokens": 3, "completion_tokens": 2}
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2},
         }
         result = openai_chat_to_ollama(response, "test-model")
         assert result["message"]["content"] == "Hi!"

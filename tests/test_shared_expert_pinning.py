@@ -1,15 +1,18 @@
 """Tests for shared expert pinning."""
-import pytest
-from unittest.mock import MagicMock
+
 from dataclasses import dataclass
+from unittest.mock import MagicMock
+
+import pytest
 
 try:
     from mlx_flash_compress.shared_expert_pinning import (
         SharedExpertDetector,
         SharedExpertPinner,
-        detect_and_pin_shared_experts,
         _extract_model_config,
+        detect_and_pin_shared_experts,
     )
+
     HAS_MODULE = True
 except (ImportError, ModuleNotFoundError):
     HAS_MODULE = False
@@ -18,6 +21,7 @@ pytestmark = pytest.mark.skipif(not HAS_MODULE, reason="shared_expert_pinning no
 
 
 # -- Helper: fake RoutingEvent matching router_hook.py's dataclass --
+
 
 @dataclass
 class FakeRoutingEvent:
@@ -28,6 +32,7 @@ class FakeRoutingEvent:
 
 
 # -- SharedExpertDetector config-based detection --
+
 
 class TestDetectFromConfig:
     def test_deepseek_v2_config(self):
@@ -174,6 +179,7 @@ class TestDetectFromConfig:
 
 # -- SharedExpertDetector observation-based detection --
 
+
 class TestDetectFromObservation:
     def _make_routing_log(self, num_tokens, num_layers, always_on_experts, other_experts):
         """Create synthetic routing log where always_on_experts appear every token."""
@@ -185,19 +191,18 @@ class TestDetectFromObservation:
                 # Add some other experts sometimes
                 if token % 3 == 0 and other_experts:
                     expert_ids.extend(other_experts[:2])
-                log.append(FakeRoutingEvent(
-                    token_idx=token,
-                    layer_idx=layer,
-                    expert_ids=expert_ids,
-                    expert_weights=[1.0 / len(expert_ids)] * len(expert_ids),
-                ))
+                log.append(
+                    FakeRoutingEvent(
+                        token_idx=token,
+                        layer_idx=layer,
+                        expert_ids=expert_ids,
+                        expert_weights=[1.0 / len(expert_ids)] * len(expert_ids),
+                    )
+                )
         return log
 
     def test_detects_always_active_experts(self):
-        log = self._make_routing_log(
-            num_tokens=100, num_layers=2,
-            always_on_experts=[0, 1], other_experts=[5, 6, 7]
-        )
+        log = self._make_routing_log(num_tokens=100, num_layers=2, always_on_experts=[0, 1], other_experts=[5, 6, 7])
         detector = SharedExpertDetector()
         result = detector.detect_from_observation(log, threshold=0.95)
 
@@ -209,10 +214,7 @@ class TestDetectFromObservation:
             assert 5 not in result[layer_idx]
 
     def test_high_threshold_fewer_detections(self):
-        log = self._make_routing_log(
-            num_tokens=100, num_layers=1,
-            always_on_experts=[0], other_experts=[5, 6]
-        )
+        log = self._make_routing_log(num_tokens=100, num_layers=1, always_on_experts=[0], other_experts=[5, 6])
         detector = SharedExpertDetector()
 
         result_low = detector.detect_from_observation(log, threshold=0.5)
@@ -236,21 +238,21 @@ class TestDetectFromObservation:
         log = []
         for token in range(100):
             # Each token activates a different expert
-            log.append(FakeRoutingEvent(
-                token_idx=token,
-                layer_idx=0,
-                expert_ids=[token % 10],
-                expert_weights=[1.0],
-            ))
+            log.append(
+                FakeRoutingEvent(
+                    token_idx=token,
+                    layer_idx=0,
+                    expert_ids=[token % 10],
+                    expert_weights=[1.0],
+                )
+            )
         detector = SharedExpertDetector()
         result = detector.detect_from_observation(log, threshold=0.95)
         # Each expert appears only ~10% of the time
         assert 0 not in result
 
     def test_single_token(self):
-        log = [FakeRoutingEvent(
-            token_idx=0, layer_idx=0, expert_ids=[3, 7], expert_weights=[0.6, 0.4]
-        )]
+        log = [FakeRoutingEvent(token_idx=0, layer_idx=0, expert_ids=[3, 7], expert_weights=[0.6, 0.4])]
         detector = SharedExpertDetector()
         result = detector.detect_from_observation(log, threshold=0.95)
         # With 1 token, activation rate is 1.0 for both
@@ -259,6 +261,7 @@ class TestDetectFromObservation:
 
 
 # -- SharedExpertPinner tests --
+
 
 class TestSharedExpertPinner:
     def test_is_pinned_basic(self):
@@ -329,8 +332,12 @@ class TestSharedExpertPinner:
         pinner = SharedExpertPinner({})
         stats = pinner.get_stats()
         expected_keys = {
-            "pinned_count", "pinned_layers", "eviction_checks",
-            "eviction_blocks", "block_rate", "pinned_experts",
+            "pinned_count",
+            "pinned_layers",
+            "eviction_checks",
+            "eviction_blocks",
+            "block_rate",
+            "pinned_experts",
         }
         assert set(stats.keys()) == expected_keys
 
@@ -341,6 +348,7 @@ class TestSharedExpertPinner:
 
 
 # -- detect_and_pin_shared_experts convenience function --
+
 
 class TestDetectAndPin:
     def test_model_with_config_dict(self):
@@ -409,6 +417,7 @@ class TestDetectAndPin:
 
 # -- _extract_model_config helper tests --
 
+
 class TestExtractModelConfig:
     def test_dict_config(self):
         model = MagicMock()
@@ -452,6 +461,7 @@ class TestExtractModelConfig:
 
 # -- Integration: pinner with eviction policy --
 
+
 class TestPinnerEvictionIntegration:
     def test_eviction_policy_respects_pinning(self):
         """Simulate eviction policy checking pinner before evicting."""
@@ -473,11 +483,13 @@ class TestPinnerEvictionIntegration:
 
     def test_multi_layer_eviction(self):
         """Eviction across multiple layers."""
-        pinner = SharedExpertPinner({
-            0: [0],
-            1: [0, 1],
-            2: [0, 1, 2],
-        })
+        pinner = SharedExpertPinner(
+            {
+                0: [0],
+                1: [0, 1],
+                2: [0, 1, 2],
+            }
+        )
 
         # Layer 0: only expert 0 pinned
         candidates_l0 = [(0, eid) for eid in range(5)]

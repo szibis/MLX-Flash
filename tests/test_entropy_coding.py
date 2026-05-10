@@ -1,13 +1,15 @@
 """Tests for EntroLLM-inspired entropy coding."""
+
 import numpy as np
 import pytest
+
 from mlx_flash_compress.entropy_coding import (
     HuffmanCodebook,
     analyze_distribution,
-    encode_weights,
-    decode_weights,
     compress_tensor,
+    decode_weights,
     decompress_tensor,
+    encode_weights,
 )
 
 

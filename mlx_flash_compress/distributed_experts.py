@@ -36,6 +36,7 @@ import numpy as np
 @dataclass
 class ExpertShard:
     """Describes which experts this node owns."""
+
     rank: int = 0
     world_size: int = 1
     total_experts: int = 60
@@ -82,6 +83,7 @@ class ExpertShard:
 @dataclass
 class DistributedConfig:
     """Configuration for distributed expert parallelism."""
+
     world_size: int = 1
     rank: int = 0
     backend: str = "jaccl"  # jaccl (TB5 RDMA) or gloo (TCP fallback)
@@ -104,8 +106,7 @@ class DistributedConfig:
         return self.rank == 0
 
 
-def plan_expert_distribution(num_experts: int, num_layers: int,
-                              world_size: int, expert_size_mb: float = 50.0) -> dict:
+def plan_expert_distribution(num_experts: int, num_layers: int, world_size: int, expert_size_mb: float = 50.0) -> dict:
     """Plan how to distribute experts across nodes.
 
     Returns memory and bandwidth estimates for the distribution.
@@ -149,10 +150,9 @@ def plan_expert_distribution(num_experts: int, num_layers: int,
     }
 
 
-def estimate_distributed_speedup(num_experts: int, num_layers: int,
-                                   world_size: int,
-                                   expert_compute_ms: float = 0.5,
-                                   comm_overhead_ms: float = 0.1) -> dict:
+def estimate_distributed_speedup(
+    num_experts: int, num_layers: int, world_size: int, expert_compute_ms: float = 0.5, comm_overhead_ms: float = 0.1
+) -> dict:
     """Estimate speedup from distributed expert parallelism.
 
     In ideal case: each node computes 1/world_size of experts in parallel.

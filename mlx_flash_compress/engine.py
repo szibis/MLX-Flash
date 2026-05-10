@@ -12,10 +12,10 @@ Each mode uses the same model and produces identical outputs.
 The difference is how expert weights are loaded during the MoE forward pass.
 """
 
-import os
 import gc
-import time
+import os
 import shutil
+import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -26,11 +26,12 @@ import numpy as np
 try:
     import mlx.core as mx
     import mlx.nn as nn
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
 
-from mlx_flash_compress.cache import ExpertCacheManager, CacheStats, CacheTier
+from mlx_flash_compress.cache import CacheStats, CacheTier, ExpertCacheManager
 
 
 class InferenceMode(Enum):
@@ -45,6 +46,7 @@ class InferenceMode(Enum):
 @dataclass
 class InferenceResult:
     """Result of a single inference run."""
+
     tokens_generated: int
     total_time_s: float
     prompt_time_s: float
@@ -217,6 +219,7 @@ class MoEInferenceEngine:
             raise RuntimeError("MLX not available — requires Apple Silicon Mac")
 
         from mlx_lm import load
+
         self._model, self._tokenizer = load(self.model_name)
 
     def prepare_expert_eviction(self):
@@ -309,9 +312,7 @@ class MoEInferenceEngine:
 
         return result
 
-    def _run_pure_mlx(
-        self, prompt: str, max_tokens: int, verbose: bool
-    ) -> InferenceResult:
+    def _run_pure_mlx(self, prompt: str, max_tokens: int, verbose: bool) -> InferenceResult:
         """Standard mlx-lm generation — all weights in RAM."""
         from mlx_lm import generate
 
@@ -320,9 +321,7 @@ class MoEInferenceEngine:
         # Tokenize
         if hasattr(self._tokenizer, "apply_chat_template"):
             messages = [{"role": "user", "content": prompt}]
-            formatted = self._tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            formatted = self._tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         else:
             formatted = prompt
 
@@ -394,8 +393,7 @@ class MoEInferenceEngine:
 
         if num_layers == 0 or num_experts == 0:
             raise RuntimeError(
-                f"No experts found (layers={num_layers}, experts={num_experts}). "
-                "Ensure model has MoE expert layers."
+                f"No experts found (layers={num_layers}, experts={num_experts}). Ensure model has MoE expert layers."
             )
 
         # Generate power-law expert routing (simulates real MoE routing)
@@ -410,9 +408,7 @@ class MoEInferenceEngine:
         for token_idx in range(max_tokens):
             for layer_idx in range(num_layers):
                 # Sample K experts with power-law routing
-                expert_ids = rng.choice(
-                    num_experts, size=k, replace=False, p=expert_probs
-                ).tolist()
+                expert_ids = rng.choice(num_experts, size=k, replace=False, p=expert_probs).tolist()
 
                 # Fetch through cache (this is what we're benchmarking)
                 results = cache.fetch_experts(

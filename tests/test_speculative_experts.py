@@ -1,9 +1,11 @@
 """Tests for speculative expert techniques."""
+
 import numpy as np
 import pytest
+
 from mlx_flash_compress.speculative_experts import (
-    ResidualPredictor,
     ForwardLookingEvictor,
+    ResidualPredictor,
     SpeculativeExecutor,
     SpeculativeResult,
     simulate_speculative_pipeline,
@@ -28,8 +30,7 @@ class TestResidualPredictor:
         assert all(0 <= e < 8 for e in result)
 
     def test_learn_pattern(self):
-        pred = ResidualPredictor(num_layers=4, num_experts=8, top_k=4,
-                                  hidden_dim=8, lr=0.1, seed=42)
+        pred = ResidualPredictor(num_layers=4, num_experts=8, top_k=4, hidden_dim=8, lr=0.1, seed=42)
         # Train: specific hidden state pattern -> specific experts
         h0 = np.array([1, 0, 0, 0, 0, 0, 0, 0], dtype=np.float32)
         h1 = np.array([0, 0, 0, 0, 0, 1, 0, 0], dtype=np.float32)
@@ -126,9 +127,7 @@ class TestSpeculativeExecutor:
 
 class TestSimulateSpeculativePipeline:
     def test_runs(self):
-        result = simulate_speculative_pipeline(
-            num_layers=4, num_experts=10, num_tokens=50, top_k=2
-        )
+        result = simulate_speculative_pipeline(num_layers=4, num_experts=10, num_tokens=50, top_k=2)
         assert "predictor" in result
         assert "executor" in result
         assert result["executor"]["total_speculations"] > 0
@@ -139,8 +138,6 @@ class TestSimulateSpeculativePipeline:
         assert r1["executor"]["accuracy"] == r2["executor"]["accuracy"]
 
     def test_beats_random(self):
-        result = simulate_speculative_pipeline(
-            num_layers=8, num_experts=20, num_tokens=200, top_k=4
-        )
+        result = simulate_speculative_pipeline(num_layers=8, num_experts=20, num_tokens=200, top_k=4)
         random_accuracy = 4 / 20
         assert result["executor"]["accuracy"] >= random_accuracy

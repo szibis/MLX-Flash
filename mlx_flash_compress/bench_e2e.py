@@ -18,14 +18,15 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
-
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm import load, generate
+import numpy as np
+from mlx_lm import generate, load
 
 from mlx_flash_compress.mixed_precision import (
-    ExpertHotness, requantize_4bit_to_2bit, benchmark_mixed_precision,
+    ExpertHotness,
+    benchmark_mixed_precision,
+    requantize_4bit_to_2bit,
 )
 from mlx_flash_compress.smart_eviction import LeastStalePolicy, RoutingPredictor
 
@@ -51,13 +52,13 @@ def extract_router_weights(model):
     """Extract router gate weights from all MoE layers for routing analysis."""
     params = model.parameters()
     routers = {}
-    layers = params.get('model', params).get('layers', [])
+    layers = params.get("model", params).get("layers", [])
     for i, layer in enumerate(layers):
-        if isinstance(layer, dict) and 'mlp' in layer:
-            mlp = layer['mlp']
-            if 'gate' in mlp:
-                gate = mlp['gate']
-                if 'weight' in gate:
+        if isinstance(layer, dict) and "mlp" in layer:
+            mlp = layer["mlp"]
+            if "gate" in mlp:
+                gate = mlp["gate"]
+                if "weight" in gate:
                     routers[i] = {k: np.array(v) for k, v in gate.items()}
     return routers
 
@@ -72,7 +73,7 @@ def simulate_routing(hidden_dim, router_weights, num_tokens, top_k=4, seed=42):
     routings = {}  # layer_idx -> list of (token_idx, expert_ids)
 
     for layer_idx, gate in router_weights.items():
-        w = gate['weight']  # shape depends on quantization
+        w = gate["weight"]  # shape depends on quantization
         # For quantized gates, we can't easily dequantize without MLX
         # So we use the weight matrix shape to determine num_experts
         num_experts = w.shape[0]
@@ -86,9 +87,9 @@ def simulate_routing(hidden_dim, router_weights, num_tokens, top_k=4, seed=42):
             # We can't easily do the full routing without dequantizing,
             # so use a Zipf distribution weighted by gate weight norms
             # This is more realistic than pure Zipf
-            if 'scales' in gate:
+            if "scales" in gate:
                 # Quantized: use scale norms as proxy for expert importance
-                s = gate['scales']
+                s = gate["scales"]
                 expert_importance = np.linalg.norm(s.reshape(num_experts, -1).astype(np.float32), axis=1)
             else:
                 expert_importance = np.linalg.norm(w.reshape(num_experts, -1).astype(np.float32), axis=1)
@@ -115,7 +116,8 @@ def run_pure_mlx(model, tokenizer, prompt, max_tokens):
         try:
             formatted = tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
-                tokenize=False, add_generation_prompt=True,
+                tokenize=False,
+                add_generation_prompt=True,
             )
         except Exception:
             formatted = prompt
@@ -141,9 +143,16 @@ def run_pure_mlx(model, tokenizer, prompt, max_tokens):
 
 
 def run_with_techniques(
-    model, tokenizer, prompt, max_tokens,
-    routings, num_layers, num_experts,
-    enable_mixed=True, enable_eviction=True, enable_prefetch=True,
+    model,
+    tokenizer,
+    prompt,
+    max_tokens,
+    routings,
+    num_layers,
+    num_experts,
+    enable_mixed=True,
+    enable_eviction=True,
+    enable_prefetch=True,
     cache_pct=20,
 ):
     """Run MLX inference + simulate all advanced techniques in parallel."""
@@ -151,7 +160,8 @@ def run_with_techniques(
         try:
             formatted = tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
-                tokenize=False, add_generation_prompt=True,
+                tokenize=False,
+                add_generation_prompt=True,
             )
         except Exception:
             formatted = prompt
@@ -264,7 +274,9 @@ def run_with_techniques(
         "prefetch_attempts": prefetch_attempts,
         "hot_experts": len(hot_experts),
         "cold_experts": len(cold_experts),
-        "hot_pct": len(hot_experts) / (len(hot_experts) + len(cold_experts)) * 100 if (hot_experts or cold_experts) else 0,
+        "hot_pct": len(hot_experts) / (len(hot_experts) + len(cold_experts)) * 100
+        if (hot_experts or cold_experts)
+        else 0,
     }
 
 
@@ -272,10 +284,16 @@ def main():
     parser = argparse.ArgumentParser(description="E2E Real Model Benchmark")
     parser.add_argument("--tokens", type=int, default=100, help="Tokens to generate")
     parser.add_argument("--cache-pct", type=int, default=20, help="Cache size as %% of total experts")
-    parser.add_argument("--prompt", default="Explain mixture of experts architecture in neural networks, including routing mechanisms, load balancing, and why MoE models are efficient for scaling.")
+    parser.add_argument(
+        "--prompt",
+        default="Explain mixture of experts architecture in neural networks, including routing mechanisms, load balancing, and why MoE models are efficient for scaling.",
+    )
     args = parser.parse_args()
 
-    model_path = str(Path.home() / ".cache/huggingface/hub/models--mlx-community--Qwen1.5-MoE-A2.7B-Chat-4bit/snapshots/cf116003d120c4216cf008eba169f98b95bdf3ee")
+    model_path = str(
+        Path.home()
+        / ".cache/huggingface/hub/models--mlx-community--Qwen1.5-MoE-A2.7B-Chat-4bit/snapshots/cf116003d120c4216cf008eba169f98b95bdf3ee"
+    )
 
     print_sep("E2E Real Model Benchmark: Qwen1.5-MoE-A2.7B-Chat-4bit")
 
@@ -316,8 +334,13 @@ def main():
     for name, evict, prefetch, mixed in configs:
         print_sep(f"2. {name}")
         r = run_with_techniques(
-            model, tokenizer, args.prompt, args.tokens,
-            routings, num_layers, num_experts,
+            model,
+            tokenizer,
+            args.prompt,
+            args.tokens,
+            routings,
+            num_layers,
+            num_experts,
             enable_eviction=evict,
             enable_prefetch=prefetch,
             enable_mixed=mixed,
@@ -325,11 +348,15 @@ def main():
         )
         print(f"  Generation: {r['tps']:.1f} tok/s ({r['gen_time_s']:.2f}s)")
         print(f"  Simulation: {r['sim_time_s']:.3f}s overhead")
-        print(f"  Cache:      {r['cache_hit_rate']:.1%} hit rate ({r['cache_hits']}/{r['cache_hits']+r['cache_misses']}) in {r['cache_slots']} slots")
+        print(
+            f"  Cache:      {r['cache_hit_rate']:.1%} hit rate ({r['cache_hits']}/{r['cache_hits'] + r['cache_misses']}) in {r['cache_slots']} slots"
+        )
         if prefetch:
-            print(f"  Prefetch:   {r['prefetch_accuracy']:.1%} accuracy ({r['prefetch_hits']}/{r['prefetch_attempts']})")
+            print(
+                f"  Prefetch:   {r['prefetch_accuracy']:.1%} accuracy ({r['prefetch_hits']}/{r['prefetch_attempts']})"
+            )
         if mixed:
-            print(f"  Mixed prec: {r['hot_pct']:.0f}% hot, {100-r['hot_pct']:.0f}% cold (2-bit candidates)")
+            print(f"  Mixed prec: {r['hot_pct']:.0f}% hot, {100 - r['hot_pct']:.0f}% cold (2-bit candidates)")
         all_results.append((name, r))
 
     # ── Summary ──
@@ -338,14 +365,16 @@ def main():
     headers = ["Mode", "tok/s", "Cache Hit", "Prefetch Acc", "Hot%", "Sim Overhead"]
     rows = [["Pure MLX (baseline)", f"{baseline['tps']:.1f}", "N/A", "N/A", "N/A", "0ms"]]
     for name, r in all_results:
-        rows.append([
-            name[:30],
-            f"{r['tps']:.1f}",
-            f"{r['cache_hit_rate']:.1%}",
-            f"{r['prefetch_accuracy']:.1%}" if r['prefetch_attempts'] > 0 else "N/A",
-            f"{r['hot_pct']:.0f}%" if r['hot_experts'] + r['cold_experts'] > 0 else "N/A",
-            f"{r['sim_time_s']*1000:.0f}ms",
-        ])
+        rows.append(
+            [
+                name[:30],
+                f"{r['tps']:.1f}",
+                f"{r['cache_hit_rate']:.1%}",
+                f"{r['prefetch_accuracy']:.1%}" if r["prefetch_attempts"] > 0 else "N/A",
+                f"{r['hot_pct']:.0f}%" if r["hot_experts"] + r["cold_experts"] > 0 else "N/A",
+                f"{r['sim_time_s'] * 1000:.0f}ms",
+            ]
+        )
     print_table(headers, rows)
 
     # ── Projected Impact ──
@@ -353,12 +382,12 @@ def main():
     print()
 
     best = all_results[-1][1]  # ALL techniques combined
-    hit_rate = best['cache_hit_rate']
-    prefetch_acc = best['prefetch_accuracy']
-    cold_pct = (100 - best['hot_pct']) / 100
+    hit_rate = best["cache_hit_rate"]
+    prefetch_acc = best["prefetch_accuracy"]
+    cold_pct = (100 - best["hot_pct"]) / 100
 
     base_ssd_ms = 2.41  # Flash-MoE measured
-    gpu_ms = 1.86       # Flash-MoE measured
+    gpu_ms = 1.86  # Flash-MoE measured
 
     # Mixed precision: cold experts at 2-bit = 1.80x less data
     mixed_ssd = base_ssd_ms * (1 - cold_pct * 0.44)  # 44% savings on cold portion
@@ -376,12 +405,12 @@ def main():
     final_tps = 1000 / (60 * final_layer)
     base_tps = 4.36
 
-    print(f"  Flash-MoE baseline:           4.36 tok/s  (4.27ms/layer, 2.41ms I/O)")
-    print(f"  + Mixed precision ({cold_pct*100:.0f}% cold):   I/O → {mixed_ssd:.2f}ms")
+    print("  Flash-MoE baseline:           4.36 tok/s  (4.27ms/layer, 2.41ms I/O)")
+    print(f"  + Mixed precision ({cold_pct * 100:.0f}% cold):   I/O → {mixed_ssd:.2f}ms")
     print(f"  + Smart eviction ({hit_rate:.0%} hit):   I/O → {after_eviction:.2f}ms")
     print(f"  + Prefetch ({prefetch_acc:.0%} acc):         I/O → {final_io:.2f}ms")
     print(f"  Final layer time:             {final_layer:.2f}ms (was 4.27ms)")
-    print(f"  PROJECTED: {final_tps:.1f} tok/s ({final_tps/base_tps:.2f}x speedup)")
+    print(f"  PROJECTED: {final_tps:.1f} tok/s ({final_tps / base_tps:.2f}x speedup)")
     print()
 
     # Visual

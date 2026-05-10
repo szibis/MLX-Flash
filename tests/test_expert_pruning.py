@@ -1,15 +1,18 @@
 """Tests for dynamic expert pruning."""
+
 import numpy as np
 import pytest
 
 try:
     import mlx.core as mx
+
     from mlx_flash_compress.expert_pruning import (
-        ExpertPruningConfig,
         ExpertPruner,
-        prune_experts,
+        ExpertPruningConfig,
         install_expert_pruning,
+        prune_experts,
     )
+
     HAS_MODULE = True
 except (ImportError, ModuleNotFoundError):
     HAS_MODULE = False
@@ -18,6 +21,7 @@ pytestmark = pytest.mark.skipif(not HAS_MODULE, reason="expert_pruning requires 
 
 
 # -- ExpertPruningConfig tests --
+
 
 class TestExpertPruningConfig:
     def test_defaults(self):
@@ -28,9 +32,7 @@ class TestExpertPruningConfig:
         assert cfg.warmup_tokens == 100
 
     def test_custom_values(self):
-        cfg = ExpertPruningConfig(
-            gate_threshold=0.1, min_experts=2, adaptive=False, warmup_tokens=50
-        )
+        cfg = ExpertPruningConfig(gate_threshold=0.1, min_experts=2, adaptive=False, warmup_tokens=50)
         assert cfg.gate_threshold == 0.1
         assert cfg.min_experts == 2
         assert cfg.adaptive is False
@@ -63,6 +65,7 @@ class TestExpertPruningConfig:
 
 # -- ExpertPruner tests --
 
+
 class TestExpertPruner:
     def test_default_init(self):
         pruner = ExpertPruner()
@@ -76,28 +79,22 @@ class TestExpertPruner:
         assert mask == [True, True, True, True]
 
     def test_pruning_after_warmup(self):
-        pruner = ExpertPruner(ExpertPruningConfig(
-            warmup_tokens=0, gate_threshold=0.05, adaptive=False
-        ))
+        pruner = ExpertPruner(ExpertPruningConfig(warmup_tokens=0, gate_threshold=0.05, adaptive=False))
         # 0.03 < 0.05 * 0.8 = 0.04, so expert 3 pruned
         # 0.02 < 0.04, so expert 4 pruned
         mask = pruner.should_compute([0.8, 0.15, 0.03, 0.02])
-        assert mask[0] is True   # top-1 always kept
-        assert mask[1] is True   # 0.15 >= 0.04
+        assert mask[0] is True  # top-1 always kept
+        assert mask[1] is True  # 0.15 >= 0.04
         assert mask[2] is False  # 0.03 < 0.04
         assert mask[3] is False  # 0.02 < 0.04
 
     def test_all_above_threshold(self):
-        pruner = ExpertPruner(ExpertPruningConfig(
-            warmup_tokens=0, gate_threshold=0.01, adaptive=False
-        ))
+        pruner = ExpertPruner(ExpertPruningConfig(warmup_tokens=0, gate_threshold=0.01, adaptive=False))
         mask = pruner.should_compute([0.4, 0.3, 0.2, 0.1])
         assert mask == [True, True, True, True]
 
     def test_all_below_threshold_min_experts(self):
-        pruner = ExpertPruner(ExpertPruningConfig(
-            warmup_tokens=0, gate_threshold=0.99, min_experts=1, adaptive=False
-        ))
+        pruner = ExpertPruner(ExpertPruningConfig(warmup_tokens=0, gate_threshold=0.99, min_experts=1, adaptive=False))
         # All except top-1 are < 0.99 * 0.5 = 0.495
         mask = pruner.should_compute([0.5, 0.3, 0.15, 0.05])
         assert mask[0] is True  # min_experts=1 guarantees top-1
@@ -105,16 +102,12 @@ class TestExpertPruner:
         assert sum(mask) >= 1
 
     def test_min_experts_guarantee(self):
-        pruner = ExpertPruner(ExpertPruningConfig(
-            warmup_tokens=0, gate_threshold=0.99, min_experts=3, adaptive=False
-        ))
+        pruner = ExpertPruner(ExpertPruningConfig(warmup_tokens=0, gate_threshold=0.99, min_experts=3, adaptive=False))
         mask = pruner.should_compute([0.4, 0.3, 0.2, 0.1])
         assert sum(mask) >= 3
 
     def test_single_expert(self):
-        pruner = ExpertPruner(ExpertPruningConfig(
-            warmup_tokens=0, gate_threshold=0.05, adaptive=False
-        ))
+        pruner = ExpertPruner(ExpertPruningConfig(warmup_tokens=0, gate_threshold=0.05, adaptive=False))
         mask = pruner.should_compute([1.0])
         assert mask == [True]
 
@@ -124,9 +117,7 @@ class TestExpertPruner:
         assert mask == []
 
     def test_zero_weights(self):
-        pruner = ExpertPruner(ExpertPruningConfig(
-            warmup_tokens=0, min_experts=2, adaptive=False
-        ))
+        pruner = ExpertPruner(ExpertPruningConfig(warmup_tokens=0, min_experts=2, adaptive=False))
         mask = pruner.should_compute([0.0, 0.0, 0.0])
         # min_experts=2 should keep at least 2
         assert sum(mask) >= 2
@@ -170,9 +161,7 @@ class TestExpertPruner:
 
     def test_adaptive_threshold_aggressive_prune(self):
         """When pruning too aggressively, adaptive mode raises threshold."""
-        pruner = ExpertPruner(ExpertPruningConfig(
-            warmup_tokens=0, gate_threshold=0.05, adaptive=True
-        ))
+        pruner = ExpertPruner(ExpertPruningConfig(warmup_tokens=0, gate_threshold=0.05, adaptive=True))
         initial_threshold = pruner._current_threshold
 
         # Record many aggressive prunes (>80% pruned)
@@ -184,9 +173,7 @@ class TestExpertPruner:
 
     def test_adaptive_threshold_conservative(self):
         """When barely pruning, adaptive mode lowers threshold."""
-        pruner = ExpertPruner(ExpertPruningConfig(
-            warmup_tokens=0, gate_threshold=0.05, adaptive=True
-        ))
+        pruner = ExpertPruner(ExpertPruningConfig(warmup_tokens=0, gate_threshold=0.05, adaptive=True))
         initial_threshold = pruner._current_threshold
 
         # Record many conservative prunes (<10% pruned)
@@ -200,14 +187,23 @@ class TestExpertPruner:
         pruner = ExpertPruner()
         stats = pruner.get_stats()
         expected_keys = {
-            "decisions", "tokens_seen", "total_pruned", "total_experts",
-            "avg_pruned_per_token", "prune_rate", "current_threshold",
-            "base_threshold", "adaptive", "in_warmup", "ema_ratio",
+            "decisions",
+            "tokens_seen",
+            "total_pruned",
+            "total_experts",
+            "avg_pruned_per_token",
+            "prune_rate",
+            "current_threshold",
+            "base_threshold",
+            "adaptive",
+            "in_warmup",
+            "ema_ratio",
         }
         assert set(stats.keys()) == expected_keys
 
 
 # -- prune_experts functional API tests --
+
 
 class TestPruneExperts:
     def test_basic_2d(self):
@@ -218,9 +214,9 @@ class TestPruneExperts:
         mask_np = np.array(mask.tolist())
 
         # 0.02 < 0.05 * 0.7 = 0.035, should be zeroed
-        assert pruned_np[0, 0] > 0   # top-1 kept
-        assert pruned_np[0, 1] > 0   # 0.2 >= 0.035
-        assert pruned_np[0, 2] > 0   # 0.08 >= 0.035
+        assert pruned_np[0, 0] > 0  # top-1 kept
+        assert pruned_np[0, 1] > 0  # 0.2 >= 0.035
+        assert pruned_np[0, 2] > 0  # 0.08 >= 0.035
         assert pruned_np[0, 3] == 0  # 0.02 < 0.035
 
     def test_all_above_threshold(self):
@@ -249,18 +245,19 @@ class TestPruneExperts:
         assert mask_np.sum() >= 2
 
     def test_batch_dimension(self):
-        weights = mx.array([
-            [0.7, 0.2, 0.08, 0.02],
-            [0.4, 0.3, 0.2, 0.1],
-        ])
+        weights = mx.array(
+            [
+                [0.7, 0.2, 0.08, 0.02],
+                [0.4, 0.3, 0.2, 0.1],
+            ]
+        )
         pruned, mask = prune_experts(weights, threshold=0.05, min_experts=1)
 
         assert pruned.shape == weights.shape
         assert mask.shape == weights.shape
 
     def test_3d_input(self):
-        weights = mx.array([[[0.7, 0.2, 0.08, 0.02],
-                              [0.4, 0.3, 0.2, 0.1]]])
+        weights = mx.array([[[0.7, 0.2, 0.08, 0.02], [0.4, 0.3, 0.2, 0.1]]])
         pruned, mask = prune_experts(weights, threshold=0.05, min_experts=1)
 
         assert pruned.shape == weights.shape  # (1, 2, 4)
@@ -305,6 +302,7 @@ class TestPruneExperts:
 
 # -- install_expert_pruning tests --
 
+
 class TestInstallExpertPruning:
     def test_returns_pruner(self):
         class FakeModel:
@@ -348,6 +346,7 @@ class TestInstallExpertPruning:
 
     def test_finds_layers_via_model_model(self):
         """Verify it walks model.model.layers path."""
+
         class FakeLayer:
             pass
 
@@ -360,6 +359,7 @@ class TestInstallExpertPruning:
 
     def test_finds_layers_via_direct_layers(self):
         """Verify it walks model.layers path."""
+
         class FakeLayer:
             pass
 
@@ -371,6 +371,7 @@ class TestInstallExpertPruning:
 
 
 # -- Integration/edge case tests --
+
 
 class TestPruningEdgeCases:
     def test_single_batch_single_expert(self):
@@ -394,6 +395,7 @@ class TestPruningEdgeCases:
         pruner = ExpertPruner(ExpertPruningConfig(warmup_tokens=0, adaptive=False))
 
         import threading
+
         def record_many():
             for _ in range(100):
                 pruner.record_decision(1, 4)

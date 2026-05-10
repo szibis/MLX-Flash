@@ -20,15 +20,15 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
-
 # MLX imports
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm import load, generate
+import numpy as np
+from mlx_lm import generate, load
 
 from mlx_flash_compress.compression import LZ4Compressor, ZSTDCompressor
-from mlx_flash_compress.compression_native import is_available as native_available, NativeCompressor, Algorithm
+from mlx_flash_compress.compression_native import Algorithm, NativeCompressor
+from mlx_flash_compress.compression_native import is_available as native_available
 
 
 def print_separator(title: str):
@@ -52,6 +52,7 @@ def print_table(headers, rows):
 
 
 # ── Expert weight extraction ────────────────────────────────────
+
 
 def find_expert_params(model):
     """Find all expert weight parameters in the model tree.
@@ -135,9 +136,7 @@ def extract_expert_weights_to_disk(model, work_dir: str):
         if file_key not in metadata["expert_files"]:
             metadata["expert_files"][file_key] = {"bytes": 0, "shapes": []}
         metadata["expert_files"][file_key]["bytes"] += len(data)
-        metadata["expert_files"][file_key]["shapes"].append(
-            (weight_name, arr.shape, str(arr.dtype))
-        )
+        metadata["expert_files"][file_key]["shapes"].append((weight_name, arr.shape, str(arr.dtype)))
 
     metadata["num_layers"] = len(metadata["layers"])
     metadata["num_experts_per_layer"] = len(metadata["expert_ids"])
@@ -212,6 +211,7 @@ def _find_expert_params_flat(model):
 
 # ── Compression ratio on real weights ───────────────────────────
 
+
 def benchmark_real_compression(expert_dir: Path, max_files: int = 20):
     """Measure compression ratios on actual model expert weights."""
     files = sorted(expert_dir.rglob("*.bin"))[:max_files]
@@ -220,7 +220,7 @@ def benchmark_real_compression(expert_dir: Path, max_files: int = 20):
         return
 
     # Concatenate for bulk benchmark
-    all_data = b''.join(f.read_bytes() for f in files)
+    all_data = b"".join(f.read_bytes() for f in files)
     total_mb = len(all_data) / 1e6
     print(f"  Testing on {len(files)} expert files ({total_mb:.1f} MB total)")
     print()
@@ -251,17 +251,20 @@ def benchmark_real_compression(expert_dir: Path, max_files: int = 20):
         dt = time.monotonic() - t0
 
         ratio = buf.original_size / buf.compressed_size if buf.compressed_size > 0 else 0
-        rows.append([
-            name,
-            f"{ratio:.2f}x",
-            f"{total_mb / ct:.0f}" if ct > 0 else "N/A",
-            f"{total_mb / dt:.0f}" if dt > 0 else "N/A",
-        ])
+        rows.append(
+            [
+                name,
+                f"{ratio:.2f}x",
+                f"{total_mb / ct:.0f}" if ct > 0 else "N/A",
+                f"{total_mb / dt:.0f}" if dt > 0 else "N/A",
+            ]
+        )
 
     print_table(headers, rows)
 
 
 # ── Pure MLX inference benchmark ────────────────────────────────
+
 
 def benchmark_mlx_inference(model, tokenizer, prompt, max_tokens, warmup_tokens=10):
     """Run timed MLX inference and return (output_text, tokens, tok/s, time)."""
@@ -271,9 +274,7 @@ def benchmark_mlx_inference(model, tokenizer, prompt, max_tokens, warmup_tokens=
     if hasattr(tokenizer, "apply_chat_template"):
         messages = [{"role": "user", "content": prompt}]
         try:
-            formatted = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         except Exception:
             formatted = prompt
     else:
@@ -310,10 +311,18 @@ def benchmark_mlx_inference(model, tokenizer, prompt, max_tokens, warmup_tokens=
 
 # ── Cache-assisted inference simulation ─────────────────────────
 
+
 def benchmark_cache_inference(
-    model, tokenizer, prompt, max_tokens,
-    expert_dir, num_layers, num_experts,
-    hot_mb=512, workers=4, hot_algo="lz4",
+    model,
+    tokenizer,
+    prompt,
+    max_tokens,
+    expert_dir,
+    num_layers,
+    num_experts,
+    hot_mb=512,
+    workers=4,
+    hot_algo="lz4",
 ):
     """Run inference while routing expert fetches through the compressed cache.
 
@@ -345,9 +354,7 @@ def benchmark_cache_inference(
     if hasattr(tokenizer, "apply_chat_template"):
         messages = [{"role": "user", "content": prompt}]
         try:
-            formatted = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            formatted = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         except Exception:
             formatted = prompt
     else:
@@ -397,12 +404,17 @@ def benchmark_cache_inference(
 
 # ── Main benchmark ──────────────────────────────────────────────
 
+
 def main():
     parser = argparse.ArgumentParser(description="Real model benchmark for MLX-Flash")
-    parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit",
-                        help="MLX MoE model to benchmark")
-    parser.add_argument("--prompt", default="Explain the concept of mixture of experts in neural networks in detail.",
-                        help="Prompt for generation")
+    parser.add_argument(
+        "--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit", help="MLX MoE model to benchmark"
+    )
+    parser.add_argument(
+        "--prompt",
+        default="Explain the concept of mixture of experts in neural networks in detail.",
+        help="Prompt for generation",
+    )
     parser.add_argument("--tokens", type=int, default=100, help="Max tokens to generate")
     parser.add_argument("--hot-mb", type=int, default=512, help="Hot cache size in MB")
     parser.add_argument("--workers", type=int, default=4, help="Cache worker threads")
@@ -435,6 +447,7 @@ def main():
         elif isinstance(params, mx.array):
             total += params.size
         return total
+
     total_params = _count_params(model.parameters())
     print(f"  Total parameters: {total_params / 1e9:.2f}B")
 
@@ -475,7 +488,10 @@ def main():
         for algo_name, algo in [("LZ4", "lz4"), ("LZFSE", "lzfse")]:
             print_separator(f"5. Cache-Assisted Inference ({algo_name})")
             cached = benchmark_cache_inference(
-                model, tokenizer, args.prompt, args.tokens,
+                model,
+                tokenizer,
+                args.prompt,
+                args.tokens,
                 expert_dir=expert_dir,
                 num_layers=meta["num_layers"],
                 num_experts=meta["num_experts_per_layer"],
@@ -493,8 +509,8 @@ def main():
             print(f"  Decompress:   {cached['decompress_ms']:.1f}ms total")
             print(f"  Cache used:   {cached['hot_mb_used']:.1f} MB")
 
-            overhead = cached['time_s'] - baseline['time_s']
-            overhead_pct = (overhead / baseline['time_s'] * 100) if baseline['time_s'] > 0 else 0
+            overhead = cached["time_s"] - baseline["time_s"]
+            overhead_pct = (overhead / baseline["time_s"] * 100) if baseline["time_s"] > 0 else 0
             print(f"  Overhead:     {overhead:.2f}s ({overhead_pct:.1f}% vs baseline)")
 
     # ── Step 6: Summary ──

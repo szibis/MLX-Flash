@@ -15,12 +15,12 @@ pytestmark = pytest.mark.skipif(not HAS_MLX, reason="mlx not available")
 if HAS_MLX:
     from mlx_flash_compress.layer_quantization import (
         LayerQuantConfig,
-        LayerSensitivityProfile,
         LayerQuantizer,
+        LayerSensitivityProfile,
+        _count_linear_params,
+        _find_linear_layers,
         apply_layer_quantization,
         estimate_model_size,
-        _find_linear_layers,
-        _count_linear_params,
     )
 
 
@@ -525,9 +525,7 @@ class TestApplyLayerQuantization:
         calibration = mx.random.normal((2, 8, MODEL_DIM))
         mx.eval(calibration)
 
-        result = apply_layer_quantization(
-            tiny_model, profile=True, calibration_data=calibration
-        )
+        result = apply_layer_quantization(tiny_model, profile=True, calibration_data=calibration)
 
         assert result["profiling"]["profiled"] is True
         assert len(result["profiling"]["sensitivity_scores"]) == 4

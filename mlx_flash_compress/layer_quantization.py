@@ -56,9 +56,7 @@ class LayerSensitivityProfile:
         self.num_layers = num_layers
         self.sensitivity_scores: list[float] = []
 
-    def measure_sensitivity(
-        self, model, calibration_data: mx.array
-    ) -> list[float]:
+    def measure_sensitivity(self, model, calibration_data: mx.array) -> list[float]:
         """Measure per-layer sensitivity using output perturbation.
 
         For each layer: temporarily quantize weights, measure output MSE
@@ -81,9 +79,7 @@ class LayerSensitivityProfile:
 
         return self.sensitivity_scores
 
-    def _measure_layer_sensitivity(
-        self, layer: nn.Module, calibration_data: mx.array
-    ) -> float:
+    def _measure_layer_sensitivity(self, layer: nn.Module, calibration_data: mx.array) -> float:
         """Measure a single layer's sensitivity by comparing original vs quantized output.
 
         Feeds calibration data through the layer, quantizes the layer's linear
@@ -121,9 +117,7 @@ class LayerSensitivityProfile:
 
         return float(mse)
 
-    def get_precision_map(
-        self, config: LayerQuantConfig = None
-    ) -> dict[int, int]:
+    def get_precision_map(self, config: LayerQuantConfig = None) -> dict[int, int]:
         """Return {layer_idx: bits} mapping based on measured sensitivity.
 
         Layers with sensitivity above the 75th percentile get higher bits.
@@ -164,9 +158,7 @@ class LayerSensitivityProfile:
         return precision_map
 
     @staticmethod
-    def default_precision_map(
-        num_layers: int, config: LayerQuantConfig = None
-    ) -> dict[int, int]:
+    def default_precision_map(num_layers: int, config: LayerQuantConfig = None) -> dict[int, int]:
         """Heuristic precision map: first/last N layers at Q8, rest at Q4.
 
         No profiling needed — works well as a default for most architectures.
@@ -206,9 +198,7 @@ class LayerQuantizer:
             "elapsed_ms": 0.0,
         }
 
-    def quantize_model(
-        self, model, precision_map: dict[int, int] = None
-    ) -> dict:
+    def quantize_model(self, model, precision_map: dict[int, int] = None) -> dict:
         """Quantize model layers according to precision map.
 
         Args:
@@ -223,9 +213,7 @@ class LayerQuantizer:
         num_layers = len(layers)
 
         if precision_map is None:
-            precision_map = LayerSensitivityProfile.default_precision_map(
-                num_layers, self.config
-            )
+            precision_map = LayerSensitivityProfile.default_precision_map(num_layers, self.config)
 
         t0 = time.monotonic()
         self._stats["bits_distribution"] = {}
@@ -249,9 +237,7 @@ class LayerQuantizer:
             "stats": self.get_stats(),
         }
 
-    def quantize_layer(
-        self, layer: nn.Module, bits: int, group_size: int = 64
-    ):
+    def quantize_layer(self, layer: nn.Module, bits: int, group_size: int = 64):
         """Quantize a single transformer layer's Linear weights in-place.
 
         Uses MLX's nn.QuantizedLinear for efficient computation.
@@ -265,15 +251,11 @@ class LayerQuantizer:
         """
         linears = _find_linear_layers(layer)
         for name, linear in linears:
-            quantized = nn.QuantizedLinear.from_linear(
-                linear, group_size=group_size, bits=bits
-            )
+            quantized = nn.QuantizedLinear.from_linear(linear, group_size=group_size, bits=bits)
             _set_nested_attr(layer, name, quantized)
             self._stats["linears_quantized"] += 1
 
-    def estimate_memory_savings(
-        self, model, precision_map: dict[int, int]
-    ) -> dict:
+    def estimate_memory_savings(self, model, precision_map: dict[int, int]) -> dict:
         """Estimate memory savings vs uniform quantization.
 
         Compares the given mixed-precision map against uniform Q4 baseline.
@@ -357,9 +339,7 @@ def apply_layer_quantization(
 
     if profile:
         if calibration_data is None:
-            raise ValueError(
-                "calibration_data is required when profile=True"
-            )
+            raise ValueError("calibration_data is required when profile=True")
         profiler = LayerSensitivityProfile(num_layers)
         scores = profiler.measure_sensitivity(model, calibration_data)
         precision_map = profiler.get_precision_map(config)
@@ -368,9 +348,7 @@ def apply_layer_quantization(
             "profiled": True,
         }
     else:
-        precision_map = LayerSensitivityProfile.default_precision_map(
-            num_layers, config
-        )
+        precision_map = LayerSensitivityProfile.default_precision_map(num_layers, config)
         profiling_result = {"profiled": False}
 
     quantizer = LayerQuantizer(config)
@@ -381,9 +359,7 @@ def apply_layer_quantization(
     return result
 
 
-def estimate_model_size(
-    model, precision_map: dict[int, int]
-) -> dict:
+def estimate_model_size(model, precision_map: dict[int, int]) -> dict:
     """Estimate model size with given precision map vs uniform Q4.
 
     Convenience function that creates a temporary LayerQuantizer
@@ -435,9 +411,7 @@ def _find_linear_layers(module: nn.Module) -> list[tuple[str, nn.Linear]]:
     return results
 
 
-def _recursive_find_linear(
-    module: nn.Module, prefix: str
-) -> list[tuple[str, nn.Linear]]:
+def _recursive_find_linear(module: nn.Module, prefix: str) -> list[tuple[str, nn.Linear]]:
     """Recursively find all nn.Linear layers in a module tree."""
     results = []
     for name, child in module.children().items():
@@ -484,9 +458,7 @@ def _set_nested_attr(module, dotted_name: str, value):
     setattr(current, parts[-1], value)
 
 
-def _quantize_linears_inplace(
-    linears: list[tuple[str, nn.Linear]], bits: int, group_size: int
-):
+def _quantize_linears_inplace(linears: list[tuple[str, nn.Linear]], bits: int, group_size: int):
     """Quantize a list of (name, linear) pairs in-place on their parent.
 
     Note: This modifies the linear objects but does not set them back on the

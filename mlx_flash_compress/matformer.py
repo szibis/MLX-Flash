@@ -29,30 +29,31 @@ Usage:
   print(adaptive.get_stats())
 """
 
+import time
 from dataclasses import dataclass, field
 from typing import Optional
-import time
 
-import numpy as np
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 
 
 @dataclass
 class MatFormerConfig:
     """Configuration for MatFormer elastic inference."""
-    extraction_ratios: list[float] = field(
-        default_factory=lambda: [0.5, 0.625, 0.75, 0.875, 1.0]
+
+    extraction_ratios: list[float] = field(default_factory=lambda: [0.5, 0.625, 0.75, 0.875, 1.0])
+    auto_adapt: bool = True  # automatically select ratio based on memory pressure
+    min_ratio: float = 0.5  # minimum extraction (50% of full size)
+    pressure_thresholds: dict = field(
+        default_factory=lambda: {
+            "nominal": 1.0,  # no pressure -> full model
+            "warning": 0.875,  # yellow pressure -> 87.5%
+            "critical": 0.75,  # red pressure -> 75%
+            "urgent": 0.625,  # heavy swap -> 62.5%
+            "emergency": 0.5,  # out of memory -> 50%
+        }
     )
-    auto_adapt: bool = True         # automatically select ratio based on memory pressure
-    min_ratio: float = 0.5          # minimum extraction (50% of full size)
-    pressure_thresholds: dict = field(default_factory=lambda: {
-        "nominal": 1.0,    # no pressure -> full model
-        "warning": 0.875,  # yellow pressure -> 87.5%
-        "critical": 0.75,  # red pressure -> 75%
-        "urgent": 0.625,   # heavy swap -> 62.5%
-        "emergency": 0.5,  # out of memory -> 50%
-    })
 
 
 class MatFormerExtractor:
@@ -83,16 +84,25 @@ class MatFormerExtractor:
             return
 
         for i, layer in enumerate(layers):
-            mlp = getattr(layer, 'mlp', None)
+            mlp = getattr(layer, "mlp", None)
             if mlp is None:
-                mlp = getattr(layer, 'feed_forward', None)
+                mlp = getattr(layer, "feed_forward", None)
             if mlp is None:
                 continue
 
             # Look for linear projections in the MLP
-            for proj_name in ['gate_proj', 'up_proj', 'down_proj',
-                              'w1', 'w2', 'w3', 'fc1', 'fc2',
-                              'dense_h_to_4h', 'dense_4h_to_h']:
+            for proj_name in [
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+                "w1",
+                "w2",
+                "w3",
+                "fc1",
+                "fc2",
+                "dense_h_to_4h",
+                "dense_4h_to_h",
+            ]:
                 proj = getattr(mlp, proj_name, None)
                 if proj is not None and isinstance(proj, nn.Linear):
                     key = f"layer.{i}.mlp.{proj_name}"
@@ -100,9 +110,9 @@ class MatFormerExtractor:
 
     def _get_model_layers(self):
         """Get transformer layers from the model."""
-        if hasattr(self.model, 'model') and hasattr(self.model.model, 'layers'):
+        if hasattr(self.model, "model") and hasattr(self.model.model, "layers"):
             return self.model.model.layers
-        if hasattr(self.model, 'layers'):
+        if hasattr(self.model, "layers"):
             return self.model.layers
         return None
 
@@ -155,19 +165,19 @@ class MatFormerExtractor:
         """Cache original weight matrices for later restoration."""
         for key, proj in self._ffn_layers:
             self._original_weights[key] = {}
-            if hasattr(proj, 'weight'):
-                self._original_weights[key]['weight'] = proj.weight
-            if hasattr(proj, 'bias') and proj.bias is not None:
-                self._original_weights[key]['bias'] = proj.bias
+            if hasattr(proj, "weight"):
+                self._original_weights[key]["weight"] = proj.weight
+            if hasattr(proj, "bias") and proj.bias is not None:
+                self._original_weights[key]["bias"] = proj.bias
 
     def _restore_original_weights(self):
         """Restore original weight matrices."""
         for key, proj in self._ffn_layers:
             if key in self._original_weights:
-                if 'weight' in self._original_weights[key]:
-                    proj.weight = self._original_weights[key]['weight']
-                if 'bias' in self._original_weights[key]:
-                    proj.bias = self._original_weights[key]['bias']
+                if "weight" in self._original_weights[key]:
+                    proj.weight = self._original_weights[key]["weight"]
+                if "bias" in self._original_weights[key]:
+                    proj.bias = self._original_weights[key]["bias"]
         self._extracted_ratio = 1.0
 
     def _apply_extraction(self, ratio: float):
@@ -176,7 +186,7 @@ class MatFormerExtractor:
             if key not in self._original_weights:
                 continue
 
-            original_w = self._original_weights[key].get('weight')
+            original_w = self._original_weights[key].get("weight")
             if original_w is None:
                 continue
 
@@ -185,8 +195,7 @@ class MatFormerExtractor:
             # Determine which dimension to slice based on projection type
             # gate_proj, up_proj, w1, w3, fc1, dense_h_to_4h: slice output dim
             # down_proj, w2, fc2, dense_4h_to_h: slice input dim
-            is_down = any(name in key for name in
-                         ['down_proj', 'w2', 'fc2', 'dense_4h_to_h'])
+            is_down = any(name in key for name in ["down_proj", "w2", "fc2", "dense_4h_to_h"])
 
             if is_down:
                 # Down projection: reduce input dimension
@@ -200,7 +209,7 @@ class MatFormerExtractor:
                 proj.weight = original_w[:new_out, :]
 
                 # Also slice bias if present
-                original_bias = self._original_weights[key].get('bias')
+                original_bias = self._original_weights[key].get("bias")
                 if original_bias is not None:
                     proj.bias = original_bias[:new_out]
 
@@ -217,13 +226,12 @@ class MatFormerExtractor:
         for ratio in sorted(self.config.extraction_ratios):
             is_valid = True
             for key, proj in self._ffn_layers:
-                if not hasattr(proj, 'weight'):
+                if not hasattr(proj, "weight"):
                     continue
                 out_dim = proj.weight.shape[0]
                 in_dim = proj.weight.shape[1]
 
-                is_down = any(name in key for name in
-                              ['down_proj', 'w2', 'fc2', 'dense_4h_to_h'])
+                is_down = any(name in key for name in ["down_proj", "w2", "fc2", "dense_4h_to_h"])
 
                 if is_down:
                     new_dim = int(in_dim * ratio)
@@ -257,15 +265,14 @@ class MatFormerExtractor:
         extracted_params = 0
 
         for key, proj in self._ffn_layers:
-            if not hasattr(proj, 'weight'):
+            if not hasattr(proj, "weight"):
                 continue
 
-            orig_w = self._original_weights.get(key, {}).get('weight', proj.weight)
+            orig_w = self._original_weights.get(key, {}).get("weight", proj.weight)
             out_dim, in_dim = orig_w.shape
             full_params += out_dim * in_dim
 
-            is_down = any(name in key for name in
-                          ['down_proj', 'w2', 'fc2', 'dense_4h_to_h'])
+            is_down = any(name in key for name in ["down_proj", "w2", "fc2", "dense_4h_to_h"])
 
             if is_down:
                 new_in = int(in_dim * ratio)
@@ -275,7 +282,7 @@ class MatFormerExtractor:
                 extracted_params += max(new_out, 1) * in_dim
 
             # Add bias params
-            if hasattr(proj, 'bias') and proj.bias is not None:
+            if hasattr(proj, "bias") and proj.bias is not None:
                 full_params += out_dim
                 if not is_down:
                     extracted_params += int(out_dim * ratio)
@@ -284,8 +291,8 @@ class MatFormerExtractor:
 
         # Assume float16 (2 bytes per param)
         bytes_per_param = 2
-        full_mb = full_params * bytes_per_param / (1024 ** 2)
-        extracted_mb = extracted_params * bytes_per_param / (1024 ** 2)
+        full_mb = full_params * bytes_per_param / (1024**2)
+        extracted_mb = extracted_params * bytes_per_param / (1024**2)
 
         return {
             "ratio": ratio,
@@ -341,6 +348,7 @@ class AdaptiveMatFormer:
         """
         try:
             from mlx_flash_compress.memory_manager import get_memory_state
+
             state = get_memory_state()
 
             level = state.pressure_level
@@ -428,8 +436,11 @@ class AdaptiveMatFormer:
 
         # Compute ratio stability (how often we change)
         if len(self._ratio_history) >= 2:
-            changes = sum(1 for i in range(1, len(self._ratio_history))
-                          if self._ratio_history[i][1] != self._ratio_history[i - 1][1])
+            changes = sum(
+                1
+                for i in range(1, len(self._ratio_history))
+                if self._ratio_history[i][1] != self._ratio_history[i - 1][1]
+            )
             stability = 1.0 - (changes / len(self._ratio_history))
         else:
             stability = 1.0

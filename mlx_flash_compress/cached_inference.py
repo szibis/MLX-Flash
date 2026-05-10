@@ -30,19 +30,19 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Optional
 
-import numpy as np
-
 import mlx.core as mx
-from mlx_lm import load, generate
+import numpy as np
+from mlx_lm import generate, load
 
 from mlx_flash_compress.hardware import detect_hardware
 
-
 # ── Expert routing interceptor ──
+
 
 @dataclass
 class RoutingEvent:
     """A single expert routing decision captured during inference."""
+
     layer_idx: int
     expert_indices: list[int]
     token_idx: int
@@ -117,12 +117,14 @@ class ExpertRouter:
                 idx_np = np.array(indices).flatten().tolist()
             else:
                 idx_np = list(indices)
-            router.events.append(RoutingEvent(
-                layer_idx=layer_id,
-                expert_indices=idx_np,
-                token_idx=router.token_counter,
-                timestamp=time.monotonic(),
-            ))
+            router.events.append(
+                RoutingEvent(
+                    layer_idx=layer_id,
+                    expert_indices=idx_np,
+                    token_idx=router.token_counter,
+                    timestamp=time.monotonic(),
+                )
+            )
             return original_call(self_module, x, indices)
 
         switch_cls.__call__ = hooked_call
@@ -158,9 +160,11 @@ class ExpertRouter:
 
 # ── Cache simulation with real routing data ──
 
+
 @dataclass
 class CacheSimState:
     """Tracks cache state using real routing data."""
+
     capacity_experts: int  # how many experts fit in cache
     cached: set = field(default_factory=set)  # (layer, expert) tuples
     total_requests: int = 0
@@ -204,7 +208,7 @@ class CacheSimState:
         if not self.cached:
             return
         min_key = None
-        min_priority = float('inf')
+        min_priority = float("inf")
         for key in self.cached:
             freq = self.frequency.get(key, 0)
             age = self.step - self.last_used.get(key, 0)
@@ -217,6 +221,7 @@ class CacheSimState:
 
 
 # ── Rust-backed cache state ──
+
 
 class RustCacheState:
     """Cache state backed by the Rust expert cache server via Unix socket."""
@@ -234,6 +239,7 @@ class RustCacheState:
 
     def connect(self):
         from mlx_flash_compress.rust_bridge import RustCacheClient
+
         self._client = RustCacheClient(self.socket_path)
         self._client.connect()
 
@@ -277,12 +283,14 @@ class RustCacheState:
 
 # ── Token-by-token inference with warm-up display ──
 
+
 def _fmt_prompt(tokenizer, prompt):
     if hasattr(tokenizer, "apply_chat_template"):
         try:
             return tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
-                tokenize=False, add_generation_prompt=True,
+                tokenize=False,
+                add_generation_prompt=True,
             )
         except Exception:
             pass
@@ -290,8 +298,12 @@ def _fmt_prompt(tokenizer, prompt):
 
 
 def generate_with_warmup(
-    model, tokenizer, prompt: str, max_tokens: int = 100,
-    cache_experts: int = 500, show_progress: bool = True,
+    model,
+    tokenizer,
+    prompt: str,
+    max_tokens: int = 100,
+    cache_experts: int = 500,
+    show_progress: bool = True,
     cache_backend: str = "python",
 ) -> dict:
     """Generate text while showing progressive cache warm-up.
@@ -333,8 +345,7 @@ def generate_with_warmup(
     token_start = router.token_counter
 
     t0 = time.monotonic()
-    output = generate(model, tokenizer, prompt=formatted,
-                      max_tokens=max_tokens, verbose=False)
+    output = generate(model, tokenizer, prompt=formatted, max_tokens=max_tokens, verbose=False)
     mx.synchronize()
     total_time = time.monotonic() - t0
 
@@ -350,15 +361,17 @@ def generate_with_warmup(
             continue
         hits, misses = cache.process_token(events)
         total = hits + misses
-        token_metrics.append({
-            "token": len(token_metrics),  # sequential index
-            "real_token_idx": t,
-            "hits": hits,
-            "misses": misses,
-            "hit_rate": hits / total if total > 0 else 0,
-            "cumulative_hit_rate": cache.hit_rate,
-            "cache_size": len(cache.cached) if hasattr(cache, "cached") else -1,
-        })
+        token_metrics.append(
+            {
+                "token": len(token_metrics),  # sequential index
+                "real_token_idx": t,
+                "hits": hits,
+                "misses": misses,
+                "hit_rate": hits / total if total > 0 else 0,
+                "cumulative_hit_rate": cache.hit_rate,
+                "cache_size": len(cache.cached) if hasattr(cache, "cached") else -1,
+            }
+        )
 
     # Display warm-up curve
     if show_progress and token_metrics:
@@ -379,9 +392,11 @@ def generate_with_warmup(
                 else:
                     status = "cold"
 
-                print(f"  {m['token']:>5d}  {m['hit_rate']:>5.0%}      "
-                      f"{hr:>5.1%}       {m['cache_size']:>5d}       "
-                      f"{bar}  {status}")
+                print(
+                    f"  {m['token']:>5d}  {m['hit_rate']:>5.0%}      "
+                    f"{hr:>5.1%}       {m['cache_size']:>5d}       "
+                    f"{bar}  {status}"
+                )
 
     # Expert heatmap
     freqs = router.get_expert_frequencies()
@@ -421,13 +436,16 @@ def generate_with_warmup(
             first_10_hr = np.mean([m["cumulative_hit_rate"] for m in token_metrics[:10]])
             last_10_hr = np.mean([m["cumulative_hit_rate"] for m in token_metrics[-10:]])
             print(f"\n  Warm-up: {first_10_hr:.0%} -> {last_10_hr:.0%} hit rate")
-            print(f"  (Like ISP caching: slow start, then full speed)")
+            print("  (Like ISP caching: slow start, then full speed)")
 
     return result
 
 
 def run_multi_topic(
-    model, tokenizer, topics: list[tuple[str, str]], tokens_per_topic: int = 50,
+    model,
+    tokenizer,
+    topics: list[tuple[str, str]],
+    tokens_per_topic: int = 50,
     cache_experts: int = 500,
 ):
     """Run multiple topics to show topic-switch warm-up behavior."""
@@ -451,8 +469,7 @@ def run_multi_topic(
         router.reset_for_new_generation()
 
         t0 = time.monotonic()
-        output = generate(model, tokenizer, prompt=formatted,
-                          max_tokens=tokens_per_topic, verbose=False)
+        output = generate(model, tokenizer, prompt=formatted, max_tokens=tokens_per_topic, verbose=False)
         mx.synchronize()
         elapsed = time.monotonic() - t0
 
@@ -467,13 +484,15 @@ def run_multi_topic(
                 continue
             hits, misses = cache.process_token(events)
             total = hits + misses
-            session_metrics.append({
-                "token": t - start_token,
-                "hits": hits,
-                "misses": misses,
-                "hit_rate": hits / total if total > 0 else 0,
-                "cumulative_hit_rate": cache.hit_rate,
-            })
+            session_metrics.append(
+                {
+                    "token": t - start_token,
+                    "hits": hits,
+                    "misses": misses,
+                    "hit_rate": hits / total if total > 0 else 0,
+                    "cumulative_hit_rate": cache.hit_rate,
+                }
+            )
 
         tokens_out = len(tokenizer.encode(output))
         tps = tokens_out / elapsed if elapsed > 0 else 0
@@ -482,25 +501,29 @@ def run_multi_topic(
         if session_metrics:
             first_hr = session_metrics[0]["hit_rate"] if session_metrics else 0
             last_hr = session_metrics[-1]["cumulative_hit_rate"] if session_metrics else 0
-            print(f"  {tps:.1f} tok/s | First token hit: {first_hr:.0%} | "
-                  f"Final hit: {last_hr:.0%} | Cache: {len(cache.cached)} experts")
+            print(
+                f"  {tps:.1f} tok/s | First token hit: {first_hr:.0%} | "
+                f"Final hit: {last_hr:.0%} | Cache: {len(cache.cached)} experts"
+            )
 
             if first_hr >= 0.8:
-                print(f"  -> Instant fast (experts still cached from before)")
+                print("  -> Instant fast (experts still cached from before)")
             elif first_hr >= 0.3:
-                print(f"  -> Partial warm (some experts shared with previous topic)")
+                print("  -> Partial warm (some experts shared with previous topic)")
             else:
-                print(f"  -> Cold start (new topic, loading experts)")
+                print("  -> Cold start (new topic, loading experts)")
 
-        all_sessions.append({
-            "topic": topic_name,
-            "output": output[:100],
-            "tokens": tokens_out,
-            "time_s": elapsed,
-            "tok_per_s": tps,
-            "metrics": session_metrics,
-            "first_hit_rate": session_metrics[0]["hit_rate"] if session_metrics else 0,
-        })
+        all_sessions.append(
+            {
+                "topic": topic_name,
+                "output": output[:100],
+                "tokens": tokens_out,
+                "time_s": elapsed,
+                "tok_per_s": tps,
+                "metrics": session_metrics,
+                "first_hit_rate": session_metrics[0]["hit_rate"] if session_metrics else 0,
+            }
+        )
 
     router.uninstall(model)
 
@@ -522,20 +545,21 @@ def run_multi_topic(
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="MLX-Flash: Cached Inference with Warm-up"
-    )
+    parser = argparse.ArgumentParser(description="MLX-Flash: Cached Inference with Warm-up")
     parser.add_argument("--model", default="mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit")
-    parser.add_argument("--prompt", default="Explain how caching works in computer systems, "
-                        "from CPU L1/L2 caches to disk caches and CDN caching.")
+    parser.add_argument(
+        "--prompt",
+        default="Explain how caching works in computer systems, from CPU L1/L2 caches to disk caches and CDN caching.",
+    )
     parser.add_argument("--tokens", type=int, default=100)
-    parser.add_argument("--cache-experts", type=int, default=500,
-                        help="Number of expert slots in cache")
-    parser.add_argument("--multi-topic", action="store_true",
-                        help="Run multi-topic demo showing topic switching")
-    parser.add_argument("--cache-backend", choices=["python", "rust"], default="python",
-                        help="Cache backend: 'python' (default, CacheSimState) or "
-                             "'rust' (RustCacheState via Unix socket)")
+    parser.add_argument("--cache-experts", type=int, default=500, help="Number of expert slots in cache")
+    parser.add_argument("--multi-topic", action="store_true", help="Run multi-topic demo showing topic switching")
+    parser.add_argument(
+        "--cache-backend",
+        choices=["python", "rust"],
+        default="python",
+        help="Cache backend: 'python' (default, CacheSimState) or 'rust' (RustCacheState via Unix socket)",
+    )
     args = parser.parse_args()
 
     print()
@@ -559,14 +583,16 @@ def main():
             ("math", "Prove that the square root of 2 is irrational using proof by contradiction."),
             ("coding", "Refactor the merge sort to use an in-place algorithm for better memory efficiency."),
         ]
-        run_multi_topic(model, tokenizer, topics,
-                        tokens_per_topic=args.tokens,
-                        cache_experts=args.cache_experts)
+        run_multi_topic(model, tokenizer, topics, tokens_per_topic=args.tokens, cache_experts=args.cache_experts)
     else:
-        generate_with_warmup(model, tokenizer, args.prompt,
-                             max_tokens=args.tokens,
-                             cache_experts=args.cache_experts,
-                             cache_backend=args.cache_backend)
+        generate_with_warmup(
+            model,
+            tokenizer,
+            args.prompt,
+            max_tokens=args.tokens,
+            cache_experts=args.cache_experts,
+            cache_backend=args.cache_backend,
+        )
 
 
 if __name__ == "__main__":
