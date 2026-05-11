@@ -29,12 +29,18 @@ const CHAT_HTML: &str = r##"<!DOCTYPE html>
   .topbar { padding: 14px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
   .topbar h1 { font-size: 1.1rem; font-weight: 600; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
   .topbar .model-name { font-size: 0.8rem; color: var(--dim); padding: 3px 10px; background: var(--card); border-radius: 6px; border: 1px solid var(--border); }
-  .topbar .nav { margin-left: auto; display: flex; gap: 8px; }
+  .topbar .nav { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
   .topbar .nav a { color: var(--dim); text-decoration: none; font-size: 0.8rem; padding: 4px 10px; border-radius: 6px; transition: all 0.15s; }
   .topbar .nav a:hover { color: var(--text); background: var(--hover); }
+  .topbar .nav a.nav-active { background: rgba(77,166,255,0.15); color: var(--accent); }
   .model-select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 12px; font-size: 0.8rem; font-family: inherit; cursor: pointer; outline: none; -webkit-appearance: none; max-width: 280px; }
   .model-select:focus { border-color: var(--accent); }
   .model-select option { background: var(--card); color: var(--text); }
+  .model-select optgroup { background: var(--surface); color: var(--dim); font-style: normal; font-size: 0.75rem; }
+  .loading-indicator { display: none; align-items: center; gap: 8px; padding: 12px 0; }
+  .loading-indicator.active { display: flex; }
+  .loading-spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   .messages { flex: 1; overflow-y: auto; padding: 20px 0; scroll-behavior: smooth; }
   .messages::-webkit-scrollbar { width: 6px; }
@@ -120,7 +126,11 @@ const CHAT_HTML: &str = r##"<!DOCTYPE html>
   </select>
   <div class="nav">
     <a href="/admin">Dashboard</a>
-    <a href="/chat">Chat</a>
+    <a href="/chat" class="nav-active">Chat</a>
+    <a href="/metrics">Prometheus</a>
+    <a href="/status" target="_blank">Status</a>
+    <a href="/gpu" target="_blank">GPU</a>
+    <a href="/workers" target="_blank">Workers</a>
   </div>
 </div>
 
@@ -476,11 +486,11 @@ async function sendMessage() {
 
   try {
     const sel = document.getElementById('model-select');
-    const currentModel = sel.value || localStorage.getItem('mlx-flash-model') || 'local';
+    const currentModel = sel.value || activeModelId || localStorage.getItem('mlx-flash-model') || 'local';
     const payload = {
       model: currentModel,
       messages: messages.map(m => ({role: m.role, content: m.content})),
-      stream: false, max_tokens: 1024,
+      stream: true, max_tokens: 1024,
     };
 
     const t0 = Date.now();
@@ -489,12 +499,9 @@ async function sendMessage() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
     });
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-
-    let fullText = '';
-    let respTokens = 0;
 
     if (!resp.ok) {
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
       let errMsg = 'Server error ' + resp.status;
       try { const j = await resp.json(); errMsg = j.error || errMsg; } catch(e) {}
 
@@ -503,6 +510,10 @@ async function sendMessage() {
           + '<p style="color:var(--dim);font-size:0.85rem;margin-top:8px">Start it in another terminal:</p>'
           + '<pre style="background:var(--surface);padding:10px 14px;border-radius:8px;margin-top:6px;font-size:0.82rem;border:1px solid var(--border)">'
           + '<code>pip install mlx mlx-lm mlx-flash\nmlx-flash --port 8081 --preload</code></pre>';
+      } else if (resp.status === 503 || errMsg.toLowerCase().includes('loading')) {
+        aiEl.innerHTML = '<p style="color:var(--yellow)"><strong>Model is still loading...</strong></p>'
+          + '<p style="color:var(--dim);font-size:0.85rem;margin-top:8px">Please wait for the model to finish loading, then try again. '
+          + 'Check the <a href="/admin" style="color:var(--accent)">Dashboard</a> for progress.</p>';
       } else {
         aiEl.innerHTML = '<p style="color:var(--red)">' + errMsg + '</p>';
       }
@@ -510,25 +521,76 @@ async function sendMessage() {
       return;
     }
 
+    // SSE streaming — read tokens as they arrive
+    let fullText = '';
+    let respTokens = 0;
     let tokPerSec = '';
-    try {
-      const json = await resp.json();
-      fullText = json.choices?.[0]?.message?.content
-        || json.choices?.[0]?.text
-        || JSON.stringify(json);
-      // Extract MLX-Flash performance data if present
-      const mlxData = json.mlx_flash_compress || {};
-      if (mlxData.tok_per_s) tokPerSec = mlxData.tok_per_s.toFixed(1) + ' tok/s';
-      const usage = json.usage || {};
-      respTokens = usage.completion_tokens || 0;
-      if (respTokens && !tokPerSec) {
-        tokPerSec = (respTokens / parseFloat(elapsed)).toFixed(1) + ' tok/s';
+    let lastChunkModel = currentModel;
+
+    const contentType = resp.headers.get('content-type') || '';
+    if (contentType.includes('text/event-stream') || contentType.includes('text/plain')) {
+      // SSE stream mode
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, {stream: true});
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            const chunk = JSON.parse(payload);
+            const delta = chunk.choices?.[0]?.delta || {};
+            if (delta.content) {
+              fullText += delta.content;
+              aiEl.innerHTML = formatContent(fullText);
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+            if (chunk.model) lastChunkModel = chunk.model;
+            // Some implementations send usage in the final chunk
+            if (chunk.usage) {
+              respTokens = chunk.usage.completion_tokens || 0;
+            }
+            // Extract MLX-Flash performance data if present
+            const mlxData = chunk.mlx_flash_compress || {};
+            if (mlxData.tok_per_s) tokPerSec = mlxData.tok_per_s.toFixed(1) + ' tok/s';
+          } catch(e) { /* skip unparseable lines */ }
+        }
       }
-    } catch(e) {
-      fullText = 'Failed to parse response';
+    } else {
+      // Fallback: non-streaming JSON response
+      try {
+        const json = await resp.json();
+        fullText = json.choices?.[0]?.message?.content
+          || json.choices?.[0]?.text
+          || JSON.stringify(json);
+        const mlxData = json.mlx_flash_compress || {};
+        if (mlxData.tok_per_s) tokPerSec = mlxData.tok_per_s.toFixed(1) + ' tok/s';
+        const usage = json.usage || {};
+        respTokens = usage.completion_tokens || 0;
+        if (json.model) lastChunkModel = json.model;
+      } catch(e) {
+        fullText = 'Failed to parse response';
+      }
+      aiEl.innerHTML = formatContent(fullText);
     }
 
-    aiEl.innerHTML = formatContent(fullText);
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    // Estimate tokens from text if not provided
+    if (!respTokens && fullText) {
+      respTokens = Math.ceil(fullText.length / 4);
+    }
+    if (respTokens && !tokPerSec) {
+      tokPerSec = (respTokens / parseFloat(elapsed)).toFixed(1) + ' tok/s';
+    }
+
     messages[messages.length-1].content = fullText;
     // Track cumulative tokens for savings calculator
     if (respTokens > 0) {
@@ -539,11 +601,11 @@ async function sendMessage() {
 
     // Get current model + pressure for metadata bar
     let currentPressure = 'Normal';
-    let currentModelName = currentModel;
+    let currentModelName = lastChunkModel || currentModel;
     try {
       const st = await fetch('/status').then(r=>r.json());
       currentPressure = (st.memory||{}).pressure || 'Normal';
-      currentModelName = st.model || currentModel;
+      if (st.model) currentModelName = st.model;
     } catch(e) {}
 
     // Set metadata bar under the AI message
@@ -570,31 +632,97 @@ async function sendMessage() {
   }
 }
 
-// Known models catalog (matches Python MODELS list)
-const KNOWN_MODELS = [
-  {id:'mlx-community/gemma-4-E2B-it-4bit', label:'Gemma 4 E2B (1.5GB)', size:1.5},
-  {id:'mlx-community/gemma-4-E4B-it-4bit', label:'Gemma 4 E4B (2.8GB)', size:2.8},
-  {id:'mlx-community/Qwen3-4B-4bit', label:'Qwen3 4B (2.5GB)', size:2.5},
-  {id:'mlx-community/Qwen3-8B-4bit', label:'Qwen3 8B (5GB)', size:5.0},
-  {id:'mlx-community/gemma-4-26b-it-4bit', label:'Gemma 4 26B MoE (15GB)', size:15.0},
-  {id:'mlx-community/Qwen3-30B-A3B-4bit', label:'Qwen3 30B MoE (18GB)', size:18.0},
-  {id:'mlx-community/gemma-4-31b-it-4bit', label:'Gemma 4 31B (20GB)', size:20.0},
-  {id:'mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit', label:'Mixtral 8x7B (26GB)', size:26.0},
-];
+// Dynamic model registry — populated from /v1/models/registry at page load
+let KNOWN_MODELS = [];
+let activeModelId = '';
+
+async function loadModelRegistry() {
+  try {
+    const resp = await fetch('/v1/models/registry');
+    const data = await resp.json();
+    const models = data.models || data || [];
+    KNOWN_MODELS = models.map(m => ({
+      id: m.id || m.model_id || m.name,
+      label: (m.id || m.name || '').split('/').pop() + (m.size_gb_approx ? ' (' + m.size_gb_approx + 'GB)' : ''),
+      size: m.size_gb_approx || 0,
+      category: m.category_expected || '',
+    }));
+  } catch(e) {
+    // Fallback to a minimal list if registry fails
+    KNOWN_MODELS = [
+      {id:'mlx-community/Llama-3.2-3B-Instruct-4bit', label:'Llama 3.2 3B (2GB)', size:2, category:'small_dense'},
+      {id:'mlx-community/Qwen3-30B-A3B-4bit', label:'Qwen3 30B MoE (18GB)', size:18, category:'large_moe'},
+      {id:'mlx-community/Qwen3.6-35B-A3B-4bit', label:'Qwen3.6 35B MoE (20GB)', size:20, category:'large_moe'},
+    ];
+  }
+  // Also add the currently active model if not in list
+  try {
+    const st = await fetch('/status');
+    const data = await st.json();
+    if (data.model) {
+      activeModelId = data.model;
+      if (!KNOWN_MODELS.some(m => m.id === activeModelId)) {
+        KNOWN_MODELS.unshift({id: activeModelId, label: activeModelId.split('/').pop() + ' (active)', size: 0, category: ''});
+      }
+    }
+  } catch(e) {}
+  populateModelSelect(activeModelId || localStorage.getItem('mlx-flash-model') || '');
+}
+
+const CATEGORY_LABELS = {
+  'small_dense': 'Small Dense',
+  'medium_dense': 'Medium Dense',
+  'large_dense': 'Large Dense',
+  'small_moe': 'Small MoE',
+  'medium_moe': 'Medium MoE',
+  'large_moe': 'Large MoE',
+  '': 'Other',
+};
 
 function populateModelSelect(currentModel) {
   const sel = document.getElementById('model-select');
+  // Group models by category
+  const groups = {};
   const isKnown = KNOWN_MODELS.some(m => m.id === currentModel);
-  let opts = '';
+  // If the active model isn't in the registry, add it at the top
+  let topOpts = '';
   if (currentModel && !isKnown) {
     const short = currentModel.split('/').pop() || currentModel;
-    opts += '<option value="'+currentModel+'" selected>'+short+' (active)</option>';
+    topOpts += '<option value="'+currentModel+'" selected>'+short+' (active)</option>';
   }
-  opts += KNOWN_MODELS.map(m =>
-    '<option value="'+m.id+'" '+(m.id===currentModel?'selected':'')+'>'+m.label+'</option>'
-  ).join('');
-  opts += '<option value="_custom">Custom model...</option>';
-  sel.innerHTML = opts;
+  KNOWN_MODELS.forEach(m => {
+    const cat = m.category || '';
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(m);
+  });
+  let html = topOpts;
+  // Sort categories: small_dense, medium_dense, large_dense, small_moe, medium_moe, large_moe, then other
+  const catOrder = ['small_dense','medium_dense','large_dense','small_moe','medium_moe','large_moe',''];
+  const sortedCats = Object.keys(groups).sort((a,b) => {
+    const ai = catOrder.indexOf(a), bi = catOrder.indexOf(b);
+    return (ai===-1?99:ai) - (bi===-1?99:bi);
+  });
+  if (sortedCats.length > 1 || (sortedCats.length === 1 && sortedCats[0] !== '')) {
+    sortedCats.forEach(cat => {
+      const label = CATEGORY_LABELS[cat] || cat || 'Other';
+      html += '<optgroup label="'+label+'">';
+      groups[cat].forEach(m => {
+        const isActive = m.id === currentModel;
+        const displayLabel = isActive ? m.label + ' *' : m.label;
+        html += '<option value="'+m.id+'" '+(isActive?'selected':'')+'>'+displayLabel+'</option>';
+      });
+      html += '</optgroup>';
+    });
+  } else {
+    // Flat list if all same category
+    KNOWN_MODELS.forEach(m => {
+      const isActive = m.id === currentModel;
+      const displayLabel = isActive ? m.label + ' *' : m.label;
+      html += '<option value="'+m.id+'" '+(isActive?'selected':'')+'>'+displayLabel+'</option>';
+    });
+  }
+  html += '<option value="_custom">Custom model...</option>';
+  sel.innerHTML = html;
 }
 
 async function switchModel(modelId) {
@@ -628,15 +756,31 @@ async function switchModel(modelId) {
 }
 
 // Poll model + memory for status bar + pressure detection
+let registryLoaded = false;
 async function updateStatus() {
   try {
     const st = await fetch('/status').then(r=>r.json());
     const model = st.model || '';
-    populateModelSelect(model);
+    activeModelId = model;
+    // On subsequent polls, just update the select highlight (don't re-fetch registry)
+    if (registryLoaded) {
+      populateModelSelect(model);
+    }
     const mem = st.memory || {};
     const avail = Math.max((mem.free_gb||0)+(mem.inactive_gb||0)*0.5, 0);
     const pressure = (mem.pressure||'Normal').toString();
     document.getElementById('mem-info').textContent = avail.toFixed(1)+'GB free / '+((mem.total_gb||0).toFixed(0))+'GB';
+    // Detect model loading state
+    if (!model || model === 'loading...' || model === 'none') {
+      document.getElementById('status-text').textContent = 'Waiting for model to load...';
+      document.getElementById('status-dot').style.background = 'var(--yellow)';
+    } else if (!generating) {
+      const dotEl = document.getElementById('status-dot');
+      if (dotEl.style.background !== 'var(--green)') {
+        document.getElementById('status-text').textContent = 'Ready';
+        dotEl.style.background = 'var(--green)';
+      }
+    }
     // Cumulative savings
     if (totalTokensSession > 0) {
       const totalSaved = calcSavings(totalTokensSession);
@@ -646,6 +790,8 @@ async function updateStatus() {
     if (!generating) updatePressureBanner(pressure, avail.toFixed(1), mem.swap_used_gb||0);
   } catch(e) {}
 }
+// Load model registry once at startup, then poll status
+loadModelRegistry().then(() => { registryLoaded = true; });
 updateStatus(); setInterval(updateStatus, 5000);
 </script>
 </body>
