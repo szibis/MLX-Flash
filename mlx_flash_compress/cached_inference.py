@@ -145,7 +145,7 @@ class ExpertRouter:
 
     def get_expert_frequencies(self) -> dict[tuple[int, int], int]:
         """Get (layer, expert) -> activation count."""
-        freq = defaultdict(int)
+        freq: defaultdict[tuple[int, int], int] = defaultdict(int)
         for event in self.events:
             for eid in event.expert_indices:
                 freq[(event.layer_idx, eid)] += 1
@@ -252,7 +252,7 @@ class RustCacheState:
         misses = 0
         for event in events:
             self._request_id += 1
-            result = self._client.fetch_experts(
+            result = self._client.fetch_experts(  # type: ignore[attr-defined]
                 layer=event.layer_idx,
                 experts=event.expert_indices,
                 request_id=self._request_id,
@@ -268,7 +268,7 @@ class RustCacheState:
                         misses += 1
 
             # Report routing for prefetch learning
-            self._client.report_routing(
+            self._client.report_routing(  # type: ignore[attr-defined]
                 layer=event.layer_idx,
                 activated=event.expert_indices,
                 token_idx=event.token_idx,
@@ -329,6 +329,7 @@ def generate_with_warmup(
     router.token_counter = 0
     router.reset_for_new_generation()
 
+    cache: RustCacheState | CacheSimState
     if cache_backend == "rust":
         cache = RustCacheState()
     else:
@@ -354,7 +355,7 @@ def generate_with_warmup(
     token_indices = sorted(set(e.token_idx for e in gen_events))
 
     # Group events by token and process through cache
-    token_metrics = []
+    token_metrics: list[dict[str, object]] = []
     for t in token_indices:
         events = [e for e in gen_events if e.token_idx == t]
         if not events:
@@ -381,7 +382,7 @@ def generate_with_warmup(
         display_every = max(1, len(token_metrics) // 25)
         for i, m in enumerate(token_metrics):
             if i % display_every == 0 or i == len(token_metrics) - 1:
-                hr = m["cumulative_hit_rate"]
+                hr = float(m["cumulative_hit_rate"])  # type: ignore[arg-type]
                 bar_len = int(hr * 20)
                 bar = "#" * bar_len + "." * (20 - bar_len)
 
@@ -533,7 +534,7 @@ def run_multi_topic(
     print("=" * 60)
     print()
     for s in all_sessions:
-        first = s["first_hit_rate"]
+        first = float(s["first_hit_rate"])  # type: ignore[arg-type]
         bar = "#" * int(first * 20) + "." * (20 - int(first * 20))
         print(f"  {s['topic']:<15s} first_hit: {first:>5.0%}  {bar}  {s['tok_per_s']:.0f} tok/s")
 

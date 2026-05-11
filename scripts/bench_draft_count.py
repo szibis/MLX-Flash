@@ -24,8 +24,9 @@ def main():
     args = parser.parse_args()
 
     print("Loading models...")
-    from mlx_lm import load
     from huggingface_hub import snapshot_download
+    from mlx_lm import load
+
     model, tokenizer = load("mlx-community/Qwen3.6-35B-A3B-4bit")
     drafter_path = snapshot_download("z-lab/Qwen3.6-35B-A3B-DFlash")
     print("  Done.\n")
@@ -43,8 +44,10 @@ def main():
     runner = DFlashRunner(model, tokenizer, drafter, config)
     runner.generate(args.prompt, max_tokens=4, use_cache=True)
 
-    print(f"  {'block_size':>10s} | {'drafts':>6s} | {'tok/s':>8s} | {'accept':>7s} | "
-          f"{'tok/step':>8s} | {'draft_ms':>8s} | {'verify_ms':>9s} | {'calls':>5s}")
+    print(
+        f"  {'block_size':>10s} | {'drafts':>6s} | {'tok/s':>8s} | {'accept':>7s} | "
+        f"{'tok/step':>8s} | {'draft_ms':>8s} | {'verify_ms':>9s} | {'calls':>5s}"
+    )
     print("-" * 85)
 
     for bs in [16, 12, 8, 6, 4]:
@@ -54,18 +57,19 @@ def main():
 
         results = []
         for _ in range(args.trials):
-            runner = DFlashRunner(model, tokenizer, drafter_i, config_i,
-                                  inference_block_size=bs)
+            runner = DFlashRunner(model, tokenizer, drafter_i, config_i, inference_block_size=bs)
             _, stats = runner.generate(args.prompt, max_tokens=args.max_tokens, use_cache=True)
             results.append(stats)
 
         results.sort(key=lambda s: s["tok_per_sec"])
         s = results[len(results) // 2]
 
-        print(f"  {bs:>10d} | {bs-1:>6d} | {s['tok_per_sec']:8.1f} | "
-              f"{s['acceptance_rate']:7.1%} | {s['tokens_per_step']:8.1f} | "
-              f"{s['avg_draft_ms']:8.1f} | {s['avg_verify_ms']:9.1f} | "
-              f"{s['total_target_calls']:>5d}")
+        print(
+            f"  {bs:>10d} | {bs - 1:>6d} | {s['tok_per_sec']:8.1f} | "
+            f"{s['acceptance_rate']:7.1%} | {s['tokens_per_step']:8.1f} | "
+            f"{s['avg_draft_ms']:8.1f} | {s['avg_verify_ms']:9.1f} | "
+            f"{s['total_target_calls']:>5d}"
+        )
 
 
 if __name__ == "__main__":

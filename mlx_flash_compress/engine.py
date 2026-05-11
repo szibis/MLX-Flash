@@ -74,15 +74,23 @@ class ExpertWeightManager:
         self.expert_dir = self.work_dir / "experts"
         self.num_layers = num_layers
         self.num_experts = num_experts
-        self._expert_shapes: dict[tuple[int, int], tuple] = {}
+        self._expert_shapes: dict[tuple[int, int], list[tuple]] = {}
         self._expert_dtypes: dict[tuple[int, int], np.dtype] = {}
 
     def evict_experts_to_disk(self, model) -> dict:
         """Extract expert weights from an MLX model and save to disk.
 
         Returns metadata about evicted experts (shapes, dtypes, paths).
+
+        Raises:
+            OSError: If disk is full or directory is not writable.
         """
-        self.expert_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.expert_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            raise OSError(f"Permission denied creating expert directory '{self.expert_dir}': {e}") from e
+        except OSError as e:
+            raise OSError(f"Cannot create expert directory '{self.expert_dir}': {e}") from e
         metadata = {}
 
         # Walk model parameters looking for expert/switch layers
@@ -90,7 +98,10 @@ class ExpertWeightManager:
 
         for key, (layer_idx, expert_id, weight_name, param) in expert_params.items():
             layer_dir = self.expert_dir / f"layer_{layer_idx:03d}"
-            layer_dir.mkdir(exist_ok=True)
+            try:
+                layer_dir.mkdir(exist_ok=True)
+            except PermissionError as e:
+                raise OSError(f"Permission denied creating layer directory '{layer_dir}': {e}") from e
 
             # Convert MLX array to numpy bytes
             arr = np.array(param)
@@ -99,9 +110,12 @@ class ExpertWeightManager:
             path = layer_dir / f"expert_{expert_id:04d}.bin"
 
             # Append weight data (experts may have gate/up/down projections)
-            mode = "ab" if path.exists() else "wb"
-            with open(path, mode) as f:
-                f.write(data)
+            write_mode = "ab" if path.exists() else "wb"
+            try:
+                with open(path, write_mode) as f:
+                    f.write(data)
+            except OSError as e:
+                raise OSError(f"Failed to write expert weights to '{path}' ({len(data)} bytes): {e}") from e
 
             shape_key = (layer_idx, expert_id)
             if shape_key not in self._expert_shapes:
@@ -122,8 +136,18 @@ class ExpertWeightManager:
         return metadata
 
     def _find_expert_params(self, model) -> dict:
-        """Find all expert weight parameters in the model tree."""
-        expert_params = {}
+        """Find all expert weight parameters in the model tree.
+
+        Walks the model's named parameters and identifies expert weights
+        by looking for patterns like ``layers.N.experts.M.w1.weight``.
+
+        Args:
+            model: An MLX model with a ``parameters()`` method.
+
+        Returns:
+            dict mapping parameter name to (layer_idx, expert_id, weight_name, param).
+        """
+        expert_params: dict[str, tuple] = {}
 
         if not HAS_MLX:
             return expert_params
@@ -153,9 +177,19 @@ class ExpertWeightManager:
         return expert_params
 
     def get_expert_dtype(self, layer_idx: int, expert_id: int) -> np.dtype:
-        return self._expert_dtypes.get((layer_idx, expert_id), np.float16)
+        """Get the numpy dtype for a specific expert's weights.
+
+        Args:
+            layer_idx: Transformer layer index.
+            expert_id: Expert index within the layer.
+
+        Returns:
+            The dtype recorded during eviction, or np.float16 as default.
+        """
+        return self._expert_dtypes.get((layer_idx, expert_id), np.dtype(np.float16))
 
     def cleanup(self):
+        """Remove evicted expert files and directories from disk."""
         if self.expert_dir.exists():
             shutil.rmtree(self.expert_dir)
 
@@ -223,9 +257,38 @@ class MoEInferenceEngine:
         self._model, self._tokenizer = load(self.model_name)
 
     def prepare_expert_eviction(self):
-        """Evict expert weights to SSD for streaming/cache benchmarks."""
+        """Evict expert weights to SSD for streaming/cache benchmarks.
+
+        Extracts expert weights from the loaded model and writes them
+        to disk in a structured directory layout for later retrieval by
+        the cache subsystem.
+
+        Returns:
+            dict: Metadata about evicted experts (paths, shapes, dtypes, sizes).
+
+        Raises:
+            RuntimeError: If no model has been loaded yet.
+            OSError: If expert weights cannot be written (disk full,
+                permission denied, or missing model weights directory).
+        """
         if self._model is None:
             raise RuntimeError("Load model first")
+
+        # Verify work_dir is writable before starting eviction
+        if not os.access(self.work_dir, os.W_OK):
+            raise OSError(
+                f"Work directory '{self.work_dir}' is not writable. Check permissions or provide an alternative path."
+            )
+
+        # Check available disk space (warn if < 1GB free)
+        disk_usage = shutil.disk_usage(self.work_dir)
+        free_gb = disk_usage.free / (1024**3)
+        if free_gb < 1.0:
+            raise OSError(
+                f"Insufficient disk space: {free_gb:.1f}GB free at "
+                f"'{self.work_dir}'. Expert eviction requires significant "
+                "storage for model weights."
+            )
 
         self._weight_mgr = ExpertWeightManager(
             work_dir=str(self.work_dir),
@@ -321,7 +384,7 @@ class MoEInferenceEngine:
         # Tokenize
         if hasattr(self._tokenizer, "apply_chat_template"):
             messages = [{"role": "user", "content": prompt}]
-            formatted = self._tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            formatted = self._tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)  # type: ignore[attr-defined]
         else:
             formatted = prompt
 
@@ -336,7 +399,7 @@ class MoEInferenceEngine:
         t_done = time.monotonic()
 
         # Count tokens in output
-        out_tokens = len(self._tokenizer.encode(output))
+        out_tokens = len(self._tokenizer.encode(output))  # type: ignore[attr-defined]
 
         total_time = t_done - t0
         gen_time = t_done - t_prompt_start
@@ -375,6 +438,7 @@ class MoEInferenceEngine:
         mode: InferenceMode,
         cache: Optional[ExpertCacheManager],
         verbose: bool,
+        routing_traces: Optional[list[list[list[int]]]] = None,
     ) -> InferenceResult:
         """Benchmark the cache subsystem by simulating expert access patterns.
 
@@ -383,6 +447,25 @@ class MoEInferenceEngine:
         - At each layer: route to K=4 experts (power-law distribution)
         - Fetch expert weights through the configured cache path
         - Measure total time and cache statistics
+
+        Args:
+            prompt: The input prompt (used for context, not directly by cache).
+            max_tokens: Number of tokens to simulate.
+            mode: The inference mode being benchmarked.
+            cache: The ExpertCacheManager to benchmark.
+            verbose: Whether to print progress information.
+            routing_traces: Optional real routing traces from RouterHook.
+                Format: ``routing_traces[token_idx][layer_idx]`` is a list
+                of expert IDs selected at that layer for that token. When
+                provided, these replace the synthetic power-law distribution
+                for more realistic benchmarking.
+
+        Returns:
+            InferenceResult with timing and throughput metrics.
+
+        Raises:
+            RuntimeError: If prepare_expert_eviction() has not been called,
+                or if the model has no MoE expert layers.
         """
         if self._weight_mgr is None or cache is None:
             raise RuntimeError("Call prepare_expert_eviction() first")
@@ -396,41 +479,51 @@ class MoEInferenceEngine:
                 f"No experts found (layers={num_layers}, experts={num_experts}). Ensure model has MoE expert layers."
             )
 
-        # Generate power-law expert routing (simulates real MoE routing)
-        rng = np.random.default_rng(42)
-        # Zipf-like distribution: a few experts get most traffic
-        expert_probs = np.array([(1.0 / (i + 1)) ** 0.8 for i in range(num_experts)])
-        expert_probs /= expert_probs.sum()
+        # Use real routing traces if provided, otherwise generate synthetic
+        use_real_traces = routing_traces is not None and len(routing_traces) > 0 and len(routing_traces[0]) > 0
+
+        if not use_real_traces:
+            # Generate power-law expert routing (simulates real MoE routing)
+            rng = np.random.default_rng(42)
+            # Zipf-like distribution: a few experts get most traffic
+            expert_probs = np.array([(1.0 / (i + 1)) ** 0.8 for i in range(num_experts)])
+            expert_probs /= expert_probs.sum()
 
         t0 = time.monotonic()
 
+        effective_tokens = min(max_tokens, len(routing_traces)) if use_real_traces else max_tokens
         total_fetches = 0
-        for token_idx in range(max_tokens):
+        for token_idx in range(effective_tokens):
             for layer_idx in range(num_layers):
-                # Sample K experts with power-law routing
-                expert_ids = rng.choice(num_experts, size=k, replace=False, p=expert_probs).tolist()
+                if use_real_traces:
+                    # Use real routing decisions from RouterHook
+                    expert_ids = routing_traces[token_idx][layer_idx]
+                else:
+                    # Sample K experts with power-law routing
+                    expert_ids = rng.choice(num_experts, size=k, replace=False, p=expert_probs).tolist()
 
                 # Fetch through cache (this is what we're benchmarking)
-                results = cache.fetch_experts(
+                cache.fetch_experts(
                     layer_idx=layer_idx,
                     expert_ids=expert_ids,
                     expert_dtype=self._weight_mgr.get_expert_dtype(layer_idx, expert_ids[0]),
                 )
-                total_fetches += k
+                total_fetches += len(expert_ids)
 
         t_done = time.monotonic()
         total_time = t_done - t0
         gen_time = total_time  # All time is generation in this simulation
 
         return InferenceResult(
-            tokens_generated=max_tokens,
+            tokens_generated=effective_tokens,
             total_time_s=total_time,
             prompt_time_s=0.0,
             generation_time_s=gen_time,
-            tokens_per_second=max_tokens / gen_time if gen_time > 0 else 0,
+            tokens_per_second=effective_tokens / gen_time if gen_time > 0 else 0,
             peak_memory_mb=0,
         )
 
     def cleanup(self):
+        """Clean up evicted expert files and release resources."""
         if self._weight_mgr:
             self._weight_mgr.cleanup()

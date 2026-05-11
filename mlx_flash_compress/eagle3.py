@@ -35,6 +35,7 @@ Usage:
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -50,6 +51,18 @@ class EAGLE3Config:
     num_heads: int = 4
     num_layers: int = 1  # lightweight single-layer draft head
     temperature: float = 0.0
+
+    def __post_init__(self):
+        if self.num_draft_tokens < 1:
+            raise ValueError(f"num_draft_tokens must be >= 1, got {self.num_draft_tokens}")
+        if self.hidden_dim < 0:
+            raise ValueError(f"hidden_dim must be >= 0 (0 = auto-detect), got {self.hidden_dim}")
+        if self.num_heads < 1:
+            raise ValueError(f"num_heads must be >= 1, got {self.num_heads}")
+        if self.num_layers < 1:
+            raise ValueError(f"num_layers must be >= 1, got {self.num_layers}")
+        if self.temperature < 0.0:
+            raise ValueError(f"temperature must be >= 0.0, got {self.temperature}")
 
 
 class EAGLEDraftHead(nn.Module):
@@ -138,11 +151,11 @@ class EAGLE3Engine:
         self.config = config or EAGLE3Config()
 
         # Detect model components
-        self._embed_fn = None
-        self._layers = None
-        self._norm_fn = None
-        self._lm_head_fn = None
-        self._inner_model = None
+        self._embed_fn: Any = None
+        self._layers: Any = None
+        self._norm_fn: Any = None
+        self._lm_head_fn: Any = None
+        self._inner_model: Any = None
         self._detect_components()
 
         # Auto-detect hidden dim if needed
@@ -159,7 +172,7 @@ class EAGLE3Engine:
                 num_layers=self.config.num_layers,
             )
 
-        self.stats = {
+        self.stats: dict[str, Any] = {
             "total_draft_tokens": 0,
             "total_accepted": 0,
             "total_verify_steps": 0,
@@ -186,6 +199,11 @@ class EAGLE3Engine:
             norm = getattr(inner, "norm", None)
             head = getattr(outer, "lm_head", None) or getattr(inner, "output", None)
 
+            if head is None and embed is not None:
+                args = getattr(outer, "args", getattr(inner, "args", None))
+                if args is not None and getattr(args, "tie_word_embeddings", False):
+                    head = embed.as_linear
+
             if embed is not None and layers is not None:
                 self._embed_fn = embed
                 self._layers = layers
@@ -200,10 +218,7 @@ class EAGLE3Engine:
         )
 
     def _detect_hidden_dim(self) -> int:
-        """Auto-detect hidden dimension from model's embedding layer."""
-        if hasattr(self._embed_fn, "weight"):
-            return self._embed_fn.weight.shape[-1]
-        # Fallback: probe with a dummy input
+        """Auto-detect hidden dimension by probing embedding output."""
         dummy = mx.array([[0]])
         out = self._embed_fn(dummy)
         return out.shape[-1]
@@ -321,8 +336,8 @@ class EAGLE3Engine:
         target_ids = mx.argmax(verify_logits, axis=-1)
         mx.eval(target_ids)
 
-        draft_np = draft_tokens[0].tolist()
-        target_np = target_ids[0].tolist()
+        draft_np: list = list(draft_tokens[0].tolist())  # type: ignore[arg-type]
+        target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
 
         num_accepted = 0
         for d, t in zip(draft_np, target_np):
@@ -371,7 +386,7 @@ class EAGLE3Engine:
             prompt_tokens = prompt_tokens.reshape(1, -1)
 
         prompt_len = prompt_tokens.shape[-1]
-        generated = list(prompt_tokens[0].tolist())
+        generated: list = list(prompt_tokens[0].tolist())  # type: ignore[arg-type]
         tokens_generated = 0
 
         # Initial forward pass to get hidden states for last context token
@@ -392,7 +407,7 @@ class EAGLE3Engine:
             if num_accepted == 0 and len(accepted) == 0:
                 break
 
-            accepted_list = accepted.tolist()
+            accepted_list: list = list(accepted.tolist())  # type: ignore[arg-type]
             generated.extend(accepted_list)
             tokens_generated += len(accepted_list)
 
@@ -424,7 +439,8 @@ class EAGLE3Engine:
         # So draft cost is negligible; speedup ~= tokens_per_step
         speedup = tokens_per_step
 
-        import numpy as np
+        draft_times = self.stats["draft_times_ms"]
+        verify_times = self.stats["verify_times_ms"]
 
         return {
             "total_draft_tokens": total_drafts,
@@ -433,12 +449,8 @@ class EAGLE3Engine:
             "acceptance_rate": round(acceptance_rate, 3),
             "tokens_per_step": round(tokens_per_step, 1),
             "speedup_factor": round(speedup, 2),
-            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1)
-            if self.stats["draft_times_ms"]
-            else 0,
-            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1)
-            if self.stats["verify_times_ms"]
-            else 0,
+            "avg_draft_ms": round(sum(draft_times) / len(draft_times), 1) if draft_times else 0,
+            "avg_verify_ms": round(sum(verify_times) / len(verify_times), 1) if verify_times else 0,
         }
 
 
@@ -456,10 +468,10 @@ class EAGLE3Trainer:
         self.config = config or EAGLE3Config()
 
         # Detect model components
-        self._embed_fn = None
-        self._layers = None
-        self._norm_fn = None
-        self._lm_head_fn = None
+        self._embed_fn: Any = None
+        self._layers: Any = None
+        self._norm_fn: Any = None
+        self._lm_head_fn: Any = None
         self._detect_components()
 
         if self.config.hidden_dim == 0:
@@ -493,9 +505,7 @@ class EAGLE3Trainer:
         raise RuntimeError("Cannot detect target model components")
 
     def _detect_hidden_dim(self) -> int:
-        """Auto-detect hidden dimension."""
-        if hasattr(self._embed_fn, "weight"):
-            return self._embed_fn.weight.shape[-1]
+        """Auto-detect hidden dimension by probing embedding output."""
         dummy = mx.array([[0]])
         out = self._embed_fn(dummy)
         return out.shape[-1]
@@ -635,7 +645,7 @@ class EAGLE3Trainer:
             path: File path (typically .safetensors or .npz)
         """
         weights = dict(draft_head.parameters())
-        flat = {}
+        flat: dict[str, Any] = {}
         _flatten_dict(weights, "", flat)
         mx.save_safetensors(path, flat)
 
@@ -658,8 +668,28 @@ class EAGLE3Trainer:
             num_layers=num_layers,
         )
         weights = mx.load(path)
-        draft_head.load_weights(list(weights.items()))
+        draft_head.load_weights(list(weights.items()))  # type: ignore[union-attr]
         return draft_head
+
+
+def apply_eagle3(
+    model,
+    tokenizer,
+    config: EAGLE3Config = None,
+    draft_head: EAGLEDraftHead = None,
+) -> EAGLE3Engine:
+    """One-line setup for EAGLE-3 speculative decoding.
+
+    Args:
+        model: Target model (HuggingFace/MLX causal LM)
+        tokenizer: Tokenizer with encode/decode
+        config: Optional EAGLE3Config
+        draft_head: Optional pre-trained EAGLEDraftHead
+
+    Returns:
+        EAGLE3Engine ready for generation
+    """
+    return EAGLE3Engine(model, tokenizer, config, draft_head)
 
 
 def _flatten_dict(d, prefix, out):

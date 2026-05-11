@@ -186,7 +186,7 @@ def detect_model(model, tokenizer=None) -> ModelProfile:
     has_ssm = num_ssm > 0
     is_moe = any(_is_moe_layer(l) for l in layers)
 
-    total_bytes = sum(p.nbytes for _, p in mlx.utils.tree_flatten(model.parameters()))
+    total_bytes = sum(p.nbytes for _, p in mlx.utils.tree_flatten(model.parameters()))  # type: ignore[union-attr, str-unpack]
     total_params_b = total_bytes / 1e9
 
     active_params_b = _estimate_active_params(model, layers, is_moe)
@@ -219,7 +219,7 @@ def detect_model(model, tokenizer=None) -> ModelProfile:
             category = "large_dense"
 
     return ModelProfile(
-        category=category,
+        category=category,  # type: ignore[arg-type]
         total_params_b=round(total_params_b, 1),
         active_params_b=round(active_params_b, 1),
         num_layers=num_layers,
@@ -343,19 +343,19 @@ def _is_moe_layer(layer) -> bool:
 
 def _estimate_active_params(model, layers, is_moe: bool) -> float:
     """Estimate active parameters per token (in billions)."""
-    total_bytes = sum(p.nbytes for _, p in mlx.utils.tree_flatten(model.parameters()))
+    total_bytes = sum(p.nbytes for _, p in mlx.utils.tree_flatten(model.parameters()))  # type: ignore[union-attr, str-unpack]
 
     if not is_moe:
         return total_bytes / 1e9
 
     total_expert_bytes = 0
-    active_expert_bytes = 0
+    active_expert_bytes: float = 0
     non_expert_bytes = 0
 
     for layer in layers:
         for name, child in layer.named_modules():
             child_type = type(child).__name__.lower()
-            child_bytes = sum(p.nbytes for _, p in mlx.utils.tree_flatten(child.parameters()))
+            child_bytes = sum(p.nbytes for _, p in mlx.utils.tree_flatten(child.parameters()))  # type: ignore[union-attr, str-unpack]
 
             if "switch" in child_type or "moe" in child_type:
                 num_experts = getattr(child, "num_experts", getattr(child, "num_local_experts", 8))

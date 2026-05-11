@@ -127,3 +127,54 @@ class TestEstimateTierSavings:
         freqs = {i: 0.06 for i in range(100)}  # all Q4
         result = estimate_tier_savings(100, 1000, freqs)
         assert abs(result["effective_bits"] - 4.0) < 0.1
+
+
+class TestExpertHotnessEdgeCases:
+    """Cover line 51: get_frequency with zero total_tokens."""
+
+    def test_get_frequency_zero_tokens(self):
+        h = ExpertHotness()
+        assert h.total_tokens == 0
+        assert h.get_frequency(0, 0) == 0.0
+
+    def test_classify_zero_tokens(self):
+        h = ExpertHotness()
+        assert h.classify(0, 0) == "cold"
+
+    def test_classify_precision_zero_tokens(self):
+        h = ExpertHotness()
+        assert h.classify_precision(0, 0) == "q2"
+
+
+class TestBenchmarkMixedPrecision:
+    """Cover lines 278-307: benchmark_mixed_precision function."""
+
+    def test_benchmark_basic(self):
+        from mlx_flash_compress.mixed_precision import benchmark_mixed_precision
+
+        rng = np.random.default_rng(42)
+        weight = rng.integers(0, 2**32, size=(64, 32), dtype=np.uint32)
+        scales = rng.uniform(0.001, 0.05, size=(64, 4)).astype(np.float16)
+        biases = rng.uniform(-0.01, 0.01, size=(64, 4)).astype(np.float16)
+
+        result = benchmark_mixed_precision(weight, scales, biases, expert_id=5)
+        assert result.expert_id == 5
+        assert result.ratio_4to2 > 1.0
+        assert result.requant_ms >= 0
+        assert result.mse >= 0
+        assert result.max_error >= 0
+        assert result.original_bytes > 0
+        assert result.q2_bytes > 0
+
+    def test_benchmark_mse_reasonable(self):
+        from mlx_flash_compress.mixed_precision import benchmark_mixed_precision
+
+        rng = np.random.default_rng(42)
+        weight = rng.integers(0, 2**32, size=(32, 16), dtype=np.uint32)
+        scales = rng.uniform(0.001, 0.05, size=(32, 2)).astype(np.float16)
+        biases = rng.uniform(-0.01, 0.01, size=(32, 2)).astype(np.float16)
+
+        result = benchmark_mixed_precision(weight, scales, biases)
+        # MSE should be finite
+        assert np.isfinite(result.mse)
+        assert np.isfinite(result.max_error)

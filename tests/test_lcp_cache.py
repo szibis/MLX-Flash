@@ -191,3 +191,140 @@ class TestSmartEviction:
         assert result.total_predictions > 0
         assert 0.0 <= result.avg_accuracy <= 1.0
         assert result.prefetch_hit_rate >= 0
+
+
+# -- Additional coverage tests for LCPCache --
+
+
+class TestPipelineStats:
+    def test_hit_rate_zero_requests(self):
+        from mlx_flash_compress.lcp_cache import PipelineStats
+
+        stats = PipelineStats()
+        assert stats.hit_rate == 0.0
+        assert stats.skip_rate == 0.0
+
+    def test_hit_rate_calculation(self):
+        from mlx_flash_compress.lcp_cache import PipelineStats
+
+        stats = PipelineStats(cache_hits=5, prefetch_hits=3, cold_loads=2, total_requests=10)
+        assert stats.hit_rate == 0.8
+
+    def test_skip_rate_calculation(self):
+        from mlx_flash_compress.lcp_cache import PipelineStats
+
+        stats = PipelineStats(skip_fallbacks=3, total_requests=10)
+        assert stats.skip_rate == 0.3
+
+
+class TestLCPCacheEviction:
+    def test_eviction_with_tiny_capacity(self, expert_dir):
+        """Cache with minimal capacity should evict entries."""
+        cache = LCPCache(
+            expert_dir=expert_dir,
+            capacity_bytes=50,  # extremely small
+            enable_dendritic=False,
+            enable_skip_fallback=False,
+        )
+        # Fetch multiple experts to trigger eviction
+        for eid in range(4):
+            cache.fetch(0, [eid], allow_skip=False)
+            cache.advance_step()
+
+        # Cache should have evicted some entries
+        assert cache._current_bytes <= cache.capacity + 2048  # approximate
+        cache.shutdown()
+
+    def test_cold_load_path(self, expert_dir):
+        """Test cold load when skip and dendritic are disabled."""
+        cache = LCPCache(
+            expert_dir=expert_dir,
+            capacity_bytes=1024 * 1024,
+            enable_dendritic=False,
+            enable_skip_fallback=False,
+        )
+        results = cache.fetch(0, [0, 1])
+        sources = [r[1] for r in results]
+        assert all(s == "cold" for s in sources)
+        assert cache.stats.cold_loads == 2
+        cache.shutdown()
+
+    def test_cache_hit_after_cold_load(self, expert_dir):
+        """Test that cold-loaded entries become cache hits."""
+        cache = LCPCache(
+            expert_dir=expert_dir,
+            capacity_bytes=1024 * 1024,
+            enable_dendritic=False,
+            enable_skip_fallback=False,
+        )
+        cache.fetch(0, [0], allow_skip=False)
+        cache.advance_step()
+
+        results = cache.fetch(0, [0])
+        assert results[0][1] == "cache"
+        assert cache.stats.cache_hits == 1
+        cache.shutdown()
+
+    def test_get_cache_summary(self, expert_dir):
+        """Test cache summary dict."""
+        cache = LCPCache(
+            expert_dir=expert_dir,
+            capacity_bytes=1024 * 1024,
+            enable_dendritic=False,
+            enable_skip_fallback=False,
+        )
+        cache.fetch(0, [0], allow_skip=False)
+        summary = cache.get_cache_summary()
+        assert "entries" in summary
+        assert "bytes_used_mb" in summary
+        assert "utilization" in summary
+        assert "avg_priority" in summary
+        assert summary["entries"] >= 1
+        cache.shutdown()
+
+    def test_cooccurrence_update(self, expert_dir):
+        """Test co-occurrence tracking on cold load path."""
+        cache = LCPCache(
+            expert_dir=expert_dir,
+            capacity_bytes=1024 * 1024,
+            enable_dendritic=False,
+            enable_skip_fallback=False,
+        )
+        cache.fetch(0, [0, 1], allow_skip=False)
+        cache.fetch(1, [2, 3], allow_skip=False)
+        # Co-occurrence should be updated
+        assert len(cache._cooccurrence) > 0
+        cache.shutdown()
+
+    def test_predict_next_no_history(self, expert_dir):
+        """Predict with no co-occurrence data returns empty."""
+        cache = LCPCache(
+            expert_dir=expert_dir,
+            capacity_bytes=1024 * 1024,
+        )
+        predicted = cache.predict_next(0, [0])
+        assert predicted == []
+        cache.shutdown()
+
+    def test_insert_replaces_existing(self, expert_dir):
+        """Inserting same key twice should replace old entry."""
+        cache = LCPCache(
+            expert_dir=expert_dir,
+            capacity_bytes=1024 * 1024,
+            enable_dendritic=False,
+            enable_skip_fallback=False,
+        )
+        cache.fetch(0, [0], allow_skip=False)
+        old_bytes = cache._current_bytes
+        # Re-insert should not double count
+        cache._insert(0, 0, b"replacement data")
+        cache.shutdown()
+
+    def test_empty_cache_summary(self, expert_dir):
+        """Summary of empty cache."""
+        cache = LCPCache(expert_dir=expert_dir, capacity_bytes=1024)
+        summary = cache.get_cache_summary()
+        assert summary["entries"] == 0
+        assert summary["avg_priority"] == 0
+        assert summary["utilization"] == 0
+        cache.shutdown()

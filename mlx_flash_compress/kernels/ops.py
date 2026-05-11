@@ -99,7 +99,7 @@ def _swiglu_metal(gate: "mx.array", up: "mx.array") -> "mx.array":
         output_names=["output"],
         source=source,
     )
-    return kernel(
+    return kernel(  # type: ignore[operator]
         inputs=[gate.astype(mx.float32), up.astype(mx.float32)],
         output_shapes=[gate.shape],
         output_dtypes=[gate.dtype],

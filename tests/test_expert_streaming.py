@@ -193,3 +193,111 @@ class TestGetWarmupExperts:
         r1 = get_warmup_experts(task="coding", num_layers=4, num_experts=20, top_n=8)
         r2 = get_warmup_experts(task="coding", num_layers=4, num_experts=20, top_n=8)
         assert r1 == r2
+
+
+class TestLCPTrackerDepthBias:
+    """Test layer-depth bias in LCPTracker (FATE paper feature)."""
+
+    def test_no_bias_default(self):
+        tracker = LCPTracker(num_experts=10, layer_depth_bias=0.0)
+        assert tracker._depth_multiplier == 1.0
+
+    def test_shallow_layer_higher_priority(self):
+        """Early layers (low layer_frac) should get higher depth multiplier."""
+        shallow = LCPTracker(num_experts=10, layer_depth_bias=0.5, layer_frac=0.0)
+        deep = LCPTracker(num_experts=10, layer_depth_bias=0.5, layer_frac=1.0)
+        assert shallow._depth_multiplier > deep._depth_multiplier
+
+    def test_depth_bias_affects_priority(self):
+        shallow = LCPTracker(num_experts=10, layer_depth_bias=1.0, layer_frac=0.0)
+        deep = LCPTracker(num_experts=10, layer_depth_bias=1.0, layer_frac=1.0)
+        shallow.record([0])
+        deep.record([0])
+        assert shallow.priority(0) > deep.priority(0)
+
+    def test_record_bounds_checking(self):
+        """Out-of-bounds expert IDs should be handled safely."""
+        tracker = LCPTracker(num_experts=5)
+        tracker.record([0, 4])  # valid
+        tracker.record([-1, 5, 100])  # out of bounds
+        assert tracker.frequency[0] == 1
+        assert tracker.frequency[4] == 1
+
+
+class TestExpertCacheStats:
+    """Test ExpertCache.stats() without needing actual safetensors files."""
+
+    def test_new_cache_stats(self):
+        cache = ExpertCache.__new__(ExpertCache)
+        cache.layer_idx = 3
+        cache.num_experts = 60
+        cache.capacity = 20
+        cache.cached_ids = list(range(20))
+        cache.total_tokens = 0
+        cache.cache_updates = 0
+        stats = cache.stats()
+        assert stats["layer"] == 3
+        assert stats["cached"] == 20
+        assert stats["capacity"] == 20
+        assert abs(stats["coverage"] - 20 / 60) < 0.001
+        assert stats["tokens"] == 0
+        assert stats["updates"] == 0
+
+    def test_empty_cache_stats(self):
+        cache = ExpertCache.__new__(ExpertCache)
+        cache.layer_idx = 0
+        cache.num_experts = 10
+        cache.capacity = 5
+        cache.cached_ids = []
+        cache.total_tokens = 100
+        cache.cache_updates = 5
+        stats = cache.stats()
+        assert stats["cached"] == 0
+        assert stats["coverage"] == 0.0
+
+
+class TestStreamingStateAggregation:
+    """Test StreamingState methods that aggregate across multiple caches."""
+
+    def test_total_cached_multiple_caches(self):
+        state = StreamingState()
+        c1 = ExpertCache.__new__(ExpertCache)
+        c1.layer_idx = 0
+        c1.num_experts = 10
+        c1.capacity = 5
+        c1.cached_ids = [0, 1, 2]
+        c1.total_tokens = 0
+        c1.cache_updates = 0
+
+        c2 = ExpertCache.__new__(ExpertCache)
+        c2.layer_idx = 1
+        c2.num_experts = 10
+        c2.capacity = 5
+        c2.cached_ids = [0, 1, 2, 3, 4]
+        c2.total_tokens = 0
+        c2.cache_updates = 0
+
+        state.caches = [c1, c2]
+        assert state.total_cached() == 8
+
+    def test_avg_coverage(self):
+        state = StreamingState()
+        c1 = ExpertCache.__new__(ExpertCache)
+        c1.layer_idx = 0
+        c1.num_experts = 10
+        c1.capacity = 5
+        c1.cached_ids = [0, 1, 2, 3, 4]  # 50% coverage
+        c1.total_tokens = 0
+        c1.cache_updates = 0
+
+        c2 = ExpertCache.__new__(ExpertCache)
+        c2.layer_idx = 1
+        c2.num_experts = 10
+        c2.capacity = 10
+        c2.cached_ids = list(range(10))  # 100% coverage
+        c2.total_tokens = 0
+        c2.cache_updates = 0
+
+        state.caches = [c1, c2]
+        avg = state.avg_coverage()
+        assert abs(avg - 0.75) < 0.001  # (0.5 + 1.0) / 2

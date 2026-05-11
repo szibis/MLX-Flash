@@ -16,6 +16,7 @@ impl ExpertStore {
             .join(format!("expert_{:04}.bin", expert))
     }
 
+    #[allow(dead_code)]
     pub fn load_expert(&self, layer: u32, expert: u32) -> std::io::Result<Vec<u8>> {
         std::fs::read(self.expert_path(layer, expert))
     }

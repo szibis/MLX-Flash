@@ -43,12 +43,12 @@ def main():
     print("-" * 35)
 
     base = bench(drafter, noise_embedding, target_hidden, num_layers=None)
-    print(f"{'8 (all)':>8s} | {base*1000:10.2f} | {'baseline':>10s}")
+    print(f"{'8 (all)':>8s} | {base * 1000:10.2f} | {'baseline':>10s}")
 
     for n_layers in [6, 4, 2, 1]:
         t = bench(drafter, noise_embedding, target_hidden, num_layers=n_layers)
         speedup = base / t if t > 0 else 0
-        print(f"{n_layers:>8d} | {t*1000:10.2f} | {speedup:9.2f}x")
+        print(f"{n_layers:>8d} | {t * 1000:10.2f} | {speedup:9.2f}x")
 
 
 if __name__ == "__main__":

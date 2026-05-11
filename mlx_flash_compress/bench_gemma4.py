@@ -88,7 +88,7 @@ def benchmark_model(
     t0 = time.monotonic()
 
     try:
-        model, tokenizer = load(model_name)
+        model, tokenizer = load(model_name)  # type: ignore[misc]
         mx.eval(model.parameters())
     except Exception as e:
         print(f"  Failed to load: {e}")

@@ -19,8 +19,11 @@ Or from LM Studio: Add custom endpoint http://localhost:8080/v1
 """
 
 import argparse
+import gc
 import json
 import os
+import pathlib
+import signal
 import sys
 import time
 import uuid
@@ -29,6 +32,7 @@ from socketserver import ThreadingMixIn
 from typing import Optional
 
 import mlx.core as mx
+import yaml
 from mlx_lm import generate, load
 
 from mlx_flash_compress.hardware import detect_hardware
@@ -37,6 +41,18 @@ from mlx_flash_compress.memory_manager import MemoryManager, get_memory_state
 
 # Module-level logger, configured in main()
 logger = None
+
+# Available speculative decoding engines
+SPECULATIVE_ENGINES = ("eagle3", "layerskip", "dflash", "none")
+
+# Path to the model registry YAML
+MODELS_YAML = pathlib.Path(__file__).parent.parent / "scripts" / "models.yaml"
+
+
+def load_model_registry() -> dict:
+    """Load the model registry from models.yaml."""
+    with open(MODELS_YAML) as f:
+        return yaml.safe_load(f)
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -48,16 +64,28 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 class InferenceState:
     """Shared state for the inference server."""
 
-    def __init__(self, model_name: str, cache_budget_pct: float = 0.8, kv_bits: int = 0, batching: bool = False):
+    def __init__(
+        self,
+        model_name: str,
+        cache_budget_pct: float = 0.8,
+        kv_bits: int = 0,
+        batching: bool = False,
+        speculative: str = "none",
+        request_timeout: float = 120.0,
+        safety_margin_gb: float = 2.0,
+    ):
         self.model_name = model_name
         self.model = None
         self.tokenizer = None
         self.kv_bits = kv_bits  # 0 = no KV quant, 8 = 8-bit (45% savings)
         self.hw = detect_hardware()
-        self.mem_mgr = MemoryManager(safety_margin_gb=2.0)
+        self.mem_mgr = MemoryManager(safety_margin_gb=safety_margin_gb)
         self.cache_budget_pct = cache_budget_pct
         self.batching = batching
+        self.speculative = speculative  # "eagle3", "layerskip", "dflash", or "none"
+        self.request_timeout = request_timeout
         self.engine = None  # ContinuousBatchingEngine, created after model load
+        self.spec_engine = None  # Speculative decoding engine, created after model load
 
         # Stats
         self.total_requests = 0
@@ -180,6 +208,40 @@ class InferenceState:
             self.engine = ContinuousBatchingEngine(self.model, self.tokenizer)
             self.engine.start()
 
+        # Initialize speculative decoding engine if enabled
+        if self.speculative != "none" and self.spec_engine is None:
+            self._init_speculative_engine(log)
+
+    def _init_speculative_engine(self, log):
+        """Initialize the configured speculative decoding engine."""
+        if self.speculative == "eagle3":
+            from mlx_flash_compress.eagle3 import EAGLE3Engine
+
+            log.info("Initializing EAGLE-3 speculative decoding", extra={"action": "spec_init", "engine": "eagle3"})
+            self.spec_engine = EAGLE3Engine(self.model, self.tokenizer)
+        elif self.speculative == "layerskip":
+            from mlx_flash_compress.layerskip import LayerSkipEngine
+
+            log.info(
+                "Initializing LayerSkip speculative decoding", extra={"action": "spec_init", "engine": "layerskip"}
+            )
+            self.spec_engine = LayerSkipEngine(self.model, self.tokenizer)
+        elif self.speculative == "dflash":
+            from mlx_flash_compress.dflash import DFlashEngine
+
+            log.info("Initializing DFlash speculative decoding", extra={"action": "spec_init", "engine": "dflash"})
+            self.spec_engine = DFlashEngine(
+                self.model,
+                drafter=None,
+                config=__import__("mlx_flash_compress.dflash", fromlist=["DFlashConfig"]).DFlashConfig(),
+                tokenizer=self.tokenizer,
+            )
+        else:
+            log.warning(
+                f"Unknown speculative engine: {self.speculative}",
+                extra={"action": "spec_init_failed", "engine": self.speculative},
+            )
+
     def _suggest_memory_actions(self, mem):
         """Suggest actions to reduce memory pressure."""
         global logger
@@ -200,8 +262,9 @@ class InferenceState:
         cache_budget = self.mem_mgr.get_cache_budget_gb()
         hints = self.mem_mgr.get_optimization_hints()
 
-        return {
+        status = {
             "model": self.model_name,
+            "model_loaded": self.model is not None,
             "hardware": {
                 "chip": self.hw.chip,
                 "ram_gb": self.hw.total_ram_gb,
@@ -220,7 +283,17 @@ class InferenceState:
                 "uptime_s": round(uptime, 0),
             },
             "optimization_hints": hints,
+            "speculative_engine": self.speculative,
         }
+        if self.spec_engine is not None:
+            try:
+                if hasattr(self.spec_engine, "get_stats"):
+                    status["speculative_stats"] = self.spec_engine.get_stats()
+                elif hasattr(self.spec_engine, "get_stats_summary"):
+                    status["speculative_stats"] = self.spec_engine.get_stats_summary()
+            except Exception:
+                pass
+        return status
 
     def generate(self, messages: list[dict], max_tokens: int = 256, temperature: float = 0.7) -> dict:
         """Generate a response with memory awareness."""
@@ -258,19 +331,30 @@ class InferenceState:
         # Format prompt
         prompt = self._format_messages(messages)
 
-        # Generate
+        # Generate — use speculative engine if available
         t0 = time.monotonic()
-        output = generate(
-            self.model,
-            self.tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            verbose=False,
-        )
+        spec_stats = None
+        if self.spec_engine is not None:
+            prompt_tokens = mx.array(self.tokenizer.encode(prompt))
+            result_tokens = self.spec_engine.generate(prompt_tokens, max_tokens=max_tokens)
+            mx.synchronize()
+            output = self.tokenizer.decode(result_tokens.tolist()[len(prompt_tokens) :])
+            if hasattr(self.spec_engine, "get_stats"):
+                spec_stats = self.spec_engine.get_stats()
+            elif hasattr(self.spec_engine, "get_stats_summary"):
+                spec_stats = self.spec_engine.get_stats_summary()
+        else:
+            output = generate(
+                self.model,
+                self.tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                verbose=False,
+            )
         mx.synchronize()
         elapsed = time.monotonic() - t0
 
-        tokens = len(self.tokenizer.encode(output))
+        tokens = len(self.tokenizer.encode(output))  # type: ignore[attr-defined]
         tps = tokens / elapsed if elapsed > 0 else 0
 
         self.total_requests += 1
@@ -283,6 +367,7 @@ class InferenceState:
                 "tokens": tokens,
                 "tok_per_s": round(tps, 1),
                 "latency_ms": round(elapsed * 1000),
+                "speculative": self.speculative,
             },
         )
 
@@ -298,19 +383,22 @@ class InferenceState:
                 },
             )
 
-        return {
+        result = {
             "output": output,
             "tokens": tokens,
             "time_s": round(elapsed, 2),
             "tok_per_s": round(tps, 1),
             "memory_pressure": mem_after.pressure_level,
         }
+        if spec_stats is not None:
+            result["speculative_stats"] = spec_stats
+        return result
 
     def _format_messages(self, messages: list[dict]) -> str:
         """Format chat messages for the model."""
         if hasattr(self.tokenizer, "apply_chat_template"):
             try:
-                return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)  # type: ignore[attr-defined]
             except Exception:
                 pass
         # Fallback: join messages
@@ -335,7 +423,37 @@ class ChatHandler(BaseHTTPRequestHandler):
                     ]
                 }
             )
-        elif self.path in ("/health", "/status"):
+        elif self.path == "/v1/engines":
+            state = self.server_state
+            engines = []
+            for eng in SPECULATIVE_ENGINES:
+                engines.append(
+                    {
+                        "id": eng,
+                        "active": eng == state.speculative,
+                        "description": {
+                            "eagle3": "EAGLE-3: Autoregression head for hidden-state speculation (2.7-3.5x speedup)",
+                            "layerskip": "LayerSkip: Self-speculative decoding via early exit (1.8-2.2x speedup)",
+                            "dflash": "DFlash: Block diffusion parallel drafting (2-3x speedup)",
+                            "none": "Standard autoregressive decoding",
+                        }.get(eng, ""),
+                    }
+                )
+            self._send_json({"engines": engines})
+        elif self.path == "/health":
+            state = self.server_state
+            mem = get_memory_state()
+            self._send_json(
+                {
+                    "status": "ok",
+                    "model": state.model_name,
+                    "model_loaded": state.model is not None,
+                    "speculative_engine": state.speculative,
+                    "memory_pressure": mem.pressure_level,
+                    "uptime_s": round(time.monotonic() - state.start_time, 0),
+                }
+            )
+        elif self.path == "/status":
             self._send_json(self.server_state.get_status())
         elif self.path == "/hints":
             hints = self.server_state.mem_mgr.get_optimization_hints()
@@ -347,8 +465,12 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._serve_metrics()
         elif self.path == "/chat":
             self._serve_chat_html()
+        elif self.path == "/config":
+            self._handle_config_get()
         elif self.path == "/admin":
             self._serve_dashboard_html()
+        elif self.path == "/profile/models":
+            self._handle_profile_models()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -361,6 +483,12 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._handle_reload()
         elif self.path == "/shutdown":
             self._handle_shutdown()
+        elif self.path == "/config":
+            self._handle_config_set()
+        elif self.path == "/profile":
+            self._handle_profile()
+        elif self.path == "/profile/batch":
+            self._handle_profile_batch()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -452,6 +580,230 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         threading.Thread(target=_stop, daemon=True).start()
 
+    def _handle_config_get(self):
+        state = self.server_state
+        mem = get_memory_state()
+        config = {
+            "model": state.model_name,
+            "model_loaded": state.model is not None,
+            "speculative": state.speculative,
+            "kv_bits": state.kv_bits,
+            "cache_budget_pct": state.cache_budget_pct,
+            "batching": state.batching,
+            "request_timeout": state.request_timeout,
+            "memory": {
+                "total_gb": round(mem.total_gb, 1),
+                "available_gb": round(mem.available_gb, 1),
+                "pressure": mem.pressure_level,
+            },
+            "stats": {
+                "total_requests": state.total_requests,
+                "total_tokens": state.total_tokens,
+                "uptime_secs": round(time.monotonic() - state.start_time, 1),
+            },
+        }
+        if state.spec_engine is not None and hasattr(state.spec_engine, "get_stats"):
+            config["speculative_stats"] = state.spec_engine.get_stats()
+        self._send_json(config)
+
+    def _handle_config_set(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+
+        state = self.server_state
+        updated = []
+        if "cache_budget_pct" in data:
+            state.cache_budget_pct = float(data["cache_budget_pct"])
+            updated.append("cache_budget_pct")
+        if "kv_bits" in data:
+            state.kv_bits = int(data["kv_bits"])
+            updated.append("kv_bits")
+        if "request_timeout" in data:
+            state.request_timeout = float(data["request_timeout"])
+            updated.append("request_timeout")
+        if "batching" in data:
+            state.batching = bool(data["batching"])
+            updated.append("batching")
+        self._send_json({"updated": updated, "status": "ok"})
+
+    def _handle_profile(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+
+        state = self.server_state
+        if state.model is None:
+            self._send_json({"error": "No model loaded"}, 503)
+            return
+
+        max_tokens = data.get("max_tokens", 32)
+        prompt_text = data.get("prompt", "def binary_search(arr, target):\n    ")
+
+        prompt_tokens = mx.array(state.tokenizer.encode(prompt_text))
+        mem_before = get_memory_state()
+        t0 = time.monotonic()
+
+        output = generate(
+            state.model,
+            state.tokenizer,
+            prompt=prompt_text,
+            max_tokens=max_tokens,
+            verbose=False,
+        )
+        mx.synchronize()
+
+        elapsed = time.monotonic() - t0
+        out_tokens = len(state.tokenizer.encode(output))
+        mem_after = get_memory_state()
+
+        self._send_json(
+            {
+                "model": state.model_name,
+                "prompt_tokens": len(prompt_tokens),
+                "output_tokens": out_tokens,
+                "elapsed_secs": round(elapsed, 3),
+                "tokens_per_sec": round(out_tokens / elapsed, 1) if elapsed > 0 else 0,
+                "memory_before_gb": round(mem_before.available_gb, 2),
+                "memory_after_gb": round(mem_after.available_gb, 2),
+            }
+        )
+
+    def _handle_profile_models(self):
+        """Return the model registry from models.yaml without profiling."""
+        try:
+            registry = load_model_registry()
+        except Exception as e:
+            self._send_json({"error": f"Cannot read models.yaml: {e}"}, 500)
+            return
+
+        models = []
+        for m in registry.get("models", []):
+            models.append(
+                {
+                    "id": m.get("id", ""),
+                    "category_expected": m.get("category_expected", "unknown"),
+                    "size_gb_approx": m.get("size_gb_approx", 0),
+                    "skip": m.get("skip", False),
+                    "notes": m.get("notes", ""),
+                    "drafter": m.get("drafter"),
+                }
+            )
+
+        self._send_json(
+            {
+                "models": models,
+                "cache_dir": registry.get("cache_dir", "~/.cache/huggingface/hub"),
+                "total_models": len(models),
+            }
+        )
+
+    def _handle_profile_batch(self):
+        """Profile multiple models from the registry sequentially."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+
+        max_tokens = data.get("max_tokens", 32)
+        prompt_text = data.get("prompt", "def binary_search(arr, target):\n    ")
+        requested_models = data.get("models", [])
+
+        # Load registry
+        try:
+            registry = load_model_registry()
+        except Exception as e:
+            self._send_json({"error": f"Cannot read models.yaml: {e}"}, 500)
+            return
+
+        # Build the list of models to profile
+        registry_models = registry.get("models", [])
+        if requested_models:
+            # Filter to only requested models
+            models_to_profile = [m for m in registry_models if m.get("id") in requested_models]
+        else:
+            # Profile all non-skipped models
+            models_to_profile = [m for m in registry_models if not m.get("skip", False)]
+
+        log = logger or __import__("logging").getLogger("mlx_flash")
+        state = self.server_state
+        original_model = state.model_name
+        results = []
+
+        for entry in models_to_profile:
+            model_id = entry.get("id", "")
+            category = entry.get("category_expected", "unknown")
+            log.info(
+                f"Batch profiling model: {model_id}",
+                extra={"action": "batch_profile_start", "model": model_id},
+            )
+
+            result = {"model": model_id, "category": category}
+
+            try:
+                # Unload any currently loaded model
+                state.model = None
+                state.tokenizer = None
+                gc.collect()
+                try:
+                    mx.clear_cache()
+                except AttributeError:
+                    pass
+
+                # Load target model
+                state.model_name = model_id
+                t_load = time.monotonic()
+                state.model, state.tokenizer = load(model_id)
+                mx.synchronize()
+                load_time = time.monotonic() - t_load
+
+                # Profile: generate tokens and measure
+                mem_before = get_memory_state()
+                t0 = time.monotonic()
+                output = generate(
+                    state.model,
+                    state.tokenizer,
+                    prompt=prompt_text,
+                    max_tokens=max_tokens,
+                    verbose=False,
+                )
+                mx.synchronize()
+                elapsed = time.monotonic() - t0
+                out_tokens = len(state.tokenizer.encode(output))
+                mem_after = get_memory_state()
+
+                result["tokens_per_sec"] = round(out_tokens / elapsed, 1) if elapsed > 0 else 0
+                result["memory_gb"] = round(mem_before.available_gb - mem_after.available_gb, 2)
+                result["load_time_s"] = round(load_time, 2)
+
+            except Exception as e:
+                result["error"] = str(e)
+
+            results.append(result)
+
+        # Restore original model name (leave model unloaded to save memory)
+        state.model = None
+        state.tokenizer = None
+        gc.collect()
+        try:
+            mx.clear_cache()
+        except AttributeError:
+            pass
+        state.model_name = original_model
+
+        self._send_json(results)
+
     def _handle_chat(self):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
@@ -515,8 +867,11 @@ class ChatHandler(BaseHTTPRequestHandler):
             "mlx_flash_compress": {
                 "tok_per_s": result["tok_per_s"],
                 "memory_pressure": result["memory_pressure"],
+                "speculative_engine": state.speculative,
             },
         }
+        if "speculative_stats" in result:
+            response["mlx_flash_compress"]["speculative_stats"] = result["speculative_stats"]
         self._send_json(response)
 
     def _handle_stream(self, messages, max_tokens, temperature):
@@ -891,6 +1246,30 @@ def main():
         action="store_true",
         help="Enable continuous batching engine for concurrent request handling",
     )
+    parser.add_argument(
+        "--speculative",
+        default="none",
+        choices=list(SPECULATIVE_ENGINES),
+        help="Speculative decoding engine (default: none)",
+    )
+    parser.add_argument(
+        "--request-timeout",
+        type=float,
+        default=120.0,
+        help="Request timeout in seconds (default: 120)",
+    )
+    parser.add_argument(
+        "--cache-budget-pct",
+        type=float,
+        default=0.8,
+        help="Cache budget as fraction of available memory (default: 0.8)",
+    )
+    parser.add_argument(
+        "--safety-margin-gb",
+        type=float,
+        default=2.0,
+        help="Safety margin in GB for memory management (default: 2.0)",
+    )
     args = parser.parse_args()
 
     # Initialize structured logging
@@ -915,13 +1294,22 @@ def main():
         else:
             args.model = "mlx-community/Qwen3-4B-4bit"  # 4B dense, ~2.5GB
 
-    state = InferenceState(args.model, kv_bits=args.kv_bits, batching=args.batching)
+    state = InferenceState(
+        args.model,
+        cache_budget_pct=args.cache_budget_pct,
+        kv_bits=args.kv_bits,
+        batching=args.batching,
+        speculative=args.speculative,
+        request_timeout=args.request_timeout,
+        safety_margin_gb=args.safety_margin_gb,
+    )
 
     logger.info(
         "MLX-Flash inference server starting",
         extra={
             "model": args.model,
             "port": args.port,
+            "speculative": args.speculative,
         },
     )
 
@@ -948,6 +1336,16 @@ def main():
             "model": args.model,
         },
     )
+
+    def _graceful_shutdown(signum, frame):
+        sig_name = signal.Signals(signum).name
+        logger.info(
+            f"Received {sig_name}, shutting down gracefully", extra={"action": "server_stop", "signal": sig_name}
+        )
+        server.shutdown()
+
+    signal.signal(signal.SIGTERM, _graceful_shutdown)
+    signal.signal(signal.SIGINT, _graceful_shutdown)
 
     try:
         server.serve_forever()

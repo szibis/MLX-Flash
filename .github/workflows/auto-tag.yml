@@ -1,10 +1,13 @@
 name: Auto-Tag Release
 
-# Triggers on merge to main. Determines version bump from PR labels:
-#   release:major → X.0.0 (breaking changes)
-#   release:minor → 0.X.0 (new features)
-#   release:patch → 0.0.X (bug fixes)
-#   no label      → no release
+# Triggers on merge to main. If the PR has a release label, creates a tag
+# for the version already in pyproject.toml and triggers the release workflow.
+#
+# Labels:
+#   release:major, release:minor, release:patch → create release
+#   no label → no release
+#
+# The version in pyproject.toml must be bumped IN the PR (pre-bump pattern).
 on:
   push:
     branches: [main]
@@ -12,16 +15,17 @@ on:
 permissions:
   contents: write
   actions: write
-  pull-requests: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   auto-tag:
     name: Determine version and tag
     runs-on: ubuntu-latest
-    # Skip if commit message starts with "chore:" or has [skip release]
     if: "!contains(github.event.head_commit.message, '[skip release]') && !startsWith(github.event.head_commit.message, 'chore:') && !startsWith(github.event.head_commit.message, 'release:')"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -31,12 +35,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
-          # Method 1: Parse PR number from squash merge commit message "(#N)"
-          # COMMIT_MSG is passed via env to avoid bash interpreting parentheses
           PR_NUM=$(echo "$COMMIT_MSG" | grep -oE '#[0-9]+' | head -1 | tr -d '#')
           echo "From commit message: PR #${PR_NUM:-none}"
 
-          # Method 2: Fallback to API (may fail due to indexing delay)
           if [ -z "$PR_NUM" ]; then
             sleep 5
             PR_NUM=$(gh api repos/${{ github.repository }}/commits/${{ github.sha }}/pulls --jq '.[0].number // empty' 2>/dev/null || echo "")
@@ -55,99 +56,38 @@ jobs:
           echo "labels=${LABELS}" >> $GITHUB_OUTPUT
           echo "PR #${PR_NUM} labels: ${LABELS}"
 
-          if echo "$LABELS" | grep -q "release:major"; then
-            echo "bump=major" >> $GITHUB_OUTPUT
-          elif echo "$LABELS" | grep -q "release:minor"; then
-            echo "bump=minor" >> $GITHUB_OUTPUT
-          elif echo "$LABELS" | grep -q "release:patch"; then
-            echo "bump=patch" >> $GITHUB_OUTPUT
+          if echo "$LABELS" | grep -qE "release:(major|minor|patch)"; then
+            BUMP=$(echo "$LABELS" | grep -oE "release:(major|minor|patch)" | head -1 | cut -d: -f2)
+            echo "bump=${BUMP}" >> $GITHUB_OUTPUT
           else
             echo "bump=none" >> $GITHUB_OUTPUT
             echo "No release label found — skipping release"
           fi
 
-      - name: Calculate next version
+      - name: Read version from pyproject.toml
         if: steps.pr.outputs.bump != 'none'
         id: version
         run: |
-          CURRENT=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-          echo "current=${CURRENT}" >> $GITHUB_OUTPUT
-
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          BUMP="${{ steps.pr.outputs.bump }}"
-
-          if [ "$BUMP" = "major" ]; then
-            MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
-          elif [ "$BUMP" = "minor" ]; then
-            MINOR=$((MINOR + 1)); PATCH=0
-          elif [ "$BUMP" = "patch" ]; then
-            PATCH=$((PATCH + 1))
-          fi
-
-          NEXT="${MAJOR}.${MINOR}.${PATCH}"
-          echo "next=${NEXT}" >> $GITHUB_OUTPUT
-          echo "Version: ${CURRENT} → ${NEXT} (${BUMP})"
+          VERSION=$(grep '^version = ' pyproject.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Release version: ${VERSION} (bump type: ${{ steps.pr.outputs.bump }})"
 
       - name: Check tag doesn't exist
         if: steps.pr.outputs.bump != 'none'
         id: check_tag
         run: |
-          TAG="v${{ steps.version.outputs.next }}"
+          TAG="v${{ steps.version.outputs.version }}"
           if git ls-remote --tags origin | grep -q "refs/tags/${TAG}$"; then
             echo "exists=true" >> $GITHUB_OUTPUT
+            echo "Tag ${TAG} already exists — skipping"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
           fi
 
-      # Create a release PR to bump version files (doesn't push directly to main)
-      - name: Create version bump PR
-        if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
-        id: bump_pr
-        run: |
-          NEXT="${{ steps.version.outputs.next }}"
-          BRANCH="release/v${NEXT}"
-
-          # Clean up stale release branch from previous failed run
-          git push origin --delete "${BRANCH}" 2>/dev/null || true
-
-          # Create release branch
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git checkout -b "${BRANCH}"
-
-          # Bump version in files
-          sed -i "s/^version = \".*\"/version = \"${NEXT}\"/" pyproject.toml
-          sed -i "s/__version__ = \".*\"/__version__ = \"${NEXT}\"/" mlx_flash_compress/__init__.py
-
-          git add pyproject.toml mlx_flash_compress/__init__.py
-          git diff --cached --quiet && echo "No version change needed" && exit 0
-
-          git commit -m "release: v${NEXT} [skip release]"
-          git push origin "${BRANCH}"
-
-          # Create PR (label added separately to avoid failure if label doesn't exist)
-          PR_URL=$(gh pr create \
-            --title "release: v${NEXT}" \
-            --body "Automated version bump: ${{ steps.version.outputs.current }} → ${NEXT} (${{ steps.pr.outputs.bump }})" \
-            --head "${BRANCH}" \
-            --base main)
-          echo "pr_url=${PR_URL}" >> $GITHUB_OUTPUT
-
-          # Best-effort label — don't fail if label doesn't exist
-          gh pr edit "${PR_URL}" --add-label "release:automated" 2>/dev/null || true
-
-          echo "Version bump PR created: ${PR_URL}"
-          echo "Approve and merge to update version files."
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      # Tag the CURRENT commit (before version bump) — the tag points to the actual code
       - name: Create and push tag
         if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
         run: |
-          TAG="v${{ steps.version.outputs.next }}"
-          # Tag the main branch commit (the merged PR), not the bump commit
-          git checkout main
+          TAG="v${{ steps.version.outputs.version }}"
           git tag -a "${TAG}" -m "Release ${TAG}"
           git push origin "${TAG}"
           echo "Tagged ${TAG}"
@@ -155,7 +95,7 @@ jobs:
       - name: Trigger release workflow
         if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
         run: |
-          TAG="v${{ steps.version.outputs.next }}"
+          TAG="v${{ steps.version.outputs.version }}"
           gh workflow run release.yml -f tag="${TAG}"
         env:
           GH_TOKEN: ${{ github.token }}
@@ -163,19 +103,18 @@ jobs:
       - name: Summary
         if: steps.pr.outputs.bump != 'none' && steps.check_tag.outputs.exists == 'false'
         run: |
-          echo "### Release v${{ steps.version.outputs.next }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Release v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Tag: v${{ steps.version.outputs.next }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Bump: ${{ steps.pr.outputs.bump }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Version PR: ${{ steps.bump_pr.outputs.pr_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Tag: v${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Bump type: ${{ steps.pr.outputs.bump }}" >> $GITHUB_STEP_SUMMARY
           echo "- Release workflow triggered" >> $GITHUB_STEP_SUMMARY
 
       - name: No release label
         if: steps.pr.outputs.bump == 'none' && steps.pr.outputs.number != ''
         run: |
           echo "PR #${{ steps.pr.outputs.number }} has no release label. Add one of:"
-          echo "  release:major — breaking changes (X.0.0)"
-          echo "  release:minor — new features (0.X.0)"
-          echo "  release:patch — bug fixes (0.0.X)"
+          echo "  release:major — breaking changes"
+          echo "  release:minor — new features"
+          echo "  release:patch — bug fixes"
           echo ""
           echo "No release will be created for this merge."

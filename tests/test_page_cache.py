@@ -167,3 +167,60 @@ class TestPageCacheStats:
         assert stats.free_bytes == 0
         assert stats.sequential_calls == 0
         assert stats.errors == 0
+
+
+class TestPageCacheEdgeCases:
+    """Additional coverage for edge cases."""
+
+    def test_get_libc_on_macos(self):
+        """_get_libc should return a value on macOS."""
+        from mlx_flash_compress.page_cache import _libc
+
+        if sys.platform == "darwin":
+            assert _libc is not None
+        # Non-darwin may be None
+
+    def test_mmap_base_address_invalid(self):
+        """_mmap_base_address with invalid input returns None."""
+        result = _mmap_base_address(None)
+        assert result is None
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="macOS only")
+    def test_advise_free_reusable(self, advisor, temp_mmap):
+        """Test macOS-specific MADV_FREE_REUSABLE."""
+        ok = advisor.advise_free_reusable(temp_mmap, 0, 4096)
+        assert isinstance(ok, bool)
+        if ok:
+            assert advisor.stats.free_calls == 1
+
+    def test_advisor_not_available_on_none_strategy(self):
+        """NONE strategy should not call madvise."""
+        adv = PageCacheAdvisor(strategy=EvictionStrategy.NONE)
+        # Even on macOS, NONE strategy skips madvise
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            data = os.urandom(4096)
+            f.write(data)
+            path = f.name
+
+        with open(path, "r+b") as f:
+            mm = mmap.mmap(f.fileno(), 0)
+            ok = adv.advise_will_need(mm, 0, 4096)
+            assert ok is False
+            assert adv.stats.will_need_calls == 0
+            mm.close()
+
+        os.unlink(path)
+
+    def test_page_alignment_small_offset(self, advisor):
+        """Test alignment with very small offset."""
+        offset, length = advisor._align_range(1, 1)
+        assert offset == 0  # aligned down
+        assert length >= 1
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="macOS only")
+    def test_evict_then_prefetch(self, advisor, temp_mmap):
+        """Evict and then prefetch same region."""
+        advisor.evict_expert(temp_mmap, 0, 4096)
+        advisor.prefetch_expert(temp_mmap, 0, 4096)
+        assert advisor.stats.free_calls == 1
+        assert advisor.stats.will_need_calls == 1

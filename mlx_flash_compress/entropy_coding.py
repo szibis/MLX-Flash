@@ -57,7 +57,7 @@ class HuffmanCodebook:
             return cls()
 
         # Build priority queue of leaf nodes
-        heap = []
+        heap: list[_HuffmanNode] = []
         for symbol, count in counts.items():
             heapq.heappush(heap, _HuffmanNode(symbol=symbol, freq=count))
 
@@ -197,7 +197,7 @@ def decode_weights(data: bytes, count: int, codebook: HuffmanCodebook, shape: tu
     # Convert bytes to bit string
     bitstring = "".join(f"{byte:08b}" for byte in data)
 
-    values = []
+    values: list[int] = []
     pos = 0
     while len(values) < count and pos < len(bitstring):
         # Try to match prefix codes (greedy — Huffman codes are prefix-free)

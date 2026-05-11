@@ -55,10 +55,10 @@ def estimate_model(
     # Auto-fill from known models
     if model_name in KNOWN_MODELS:
         info = KNOWN_MODELS[model_name]
-        total_params_b = info["total_b"]
-        active_params_b = info["active_b"]
-        num_experts = info["experts"]
-        num_layers = info["layers"]
+        total_params_b = float(info["total_b"])  # type: ignore[arg-type]
+        active_params_b = float(info["active_b"])  # type: ignore[arg-type]
+        num_experts = int(info["experts"])  # type: ignore[call-overload]
+        num_layers = int(info["layers"])  # type: ignore[call-overload]
 
     if total_params_b == 0:
         total_params_b = 7  # default

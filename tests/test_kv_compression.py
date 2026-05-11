@@ -13,6 +13,7 @@ from mlx_flash_compress.kv_compression import (
     AttentionScoreTracker,
     CompressedKVCache,
     KVCompressionConfig,
+    apply_kv_compression,
 )
 
 pytestmark = pytest.mark.skipif(not HAS_MLX, reason="MLX required")
@@ -471,3 +472,294 @@ class TestCompressedKVCacheEdgeCases:
         sh_sum = float(mx.sum(sh_imp).item())
         # H2O should have accumulated much higher total
         assert h2o_sum > sh_sum * 2
+
+
+# ── Additional coverage tests ───────────────────────────────────
+
+try:
+    import mlx.nn as nn
+
+    HAS_NN = True
+except ImportError:
+    HAS_NN = False
+
+
+class TestAttentionScoreTrackerAdditional:
+    def test_truncate_updates_importance(self):
+        """Truncate should reindex importance arrays to match kept tokens."""
+        tracker = AttentionScoreTracker(NUM_LAYERS, scoring="h2o")
+        weights = _make_attention_weights(NUM_HEADS, 10)
+        tracker.record_attention(0, weights)
+
+        importance_before = tracker.get_token_importance(0)
+        mx.eval(importance_before)
+        assert importance_before.shape[0] == 10
+
+        # Keep only tokens 0, 2, 5, 9
+        keep = mx.array([0, 2, 5, 9], dtype=mx.int32)
+        tracker.truncate(keep)
+
+        importance_after = tracker.get_token_importance(0)
+        mx.eval(importance_after)
+        assert importance_after.shape[0] == 4
+
+    def test_truncate_with_no_recorded_data(self):
+        """Truncate on empty tracker should not crash."""
+        tracker = AttentionScoreTracker(NUM_LAYERS, scoring="h2o")
+        keep = mx.array([0, 1], dtype=mx.int32)
+        tracker.truncate(keep)  # should be a no-op
+
+    def test_truncate_with_out_of_range_indices(self):
+        """Truncate with indices beyond seq_len should skip them."""
+        tracker = AttentionScoreTracker(NUM_LAYERS, scoring="h2o")
+        weights = _make_attention_weights(NUM_HEADS, 5)
+        tracker.record_attention(0, weights)
+
+        keep = mx.array([0, 1, 10, 20], dtype=mx.int32)  # 10, 20 out of range
+        tracker.truncate(keep)
+
+        importance = tracker.get_token_importance(0)
+        mx.eval(importance)
+        assert importance.shape[0] == 2  # only indices 0, 1 valid
+
+    def test_scissorhands_per_layer_importance(self):
+        """ScissorHands should track per-layer importance, not global."""
+        tracker = AttentionScoreTracker(NUM_LAYERS, scoring="scissorhands")
+
+        # Record different weights for different layers
+        w0 = _make_attention_weights(NUM_HEADS, 10, seed=0)
+        w1 = _make_attention_weights(NUM_HEADS, 10, seed=42)
+
+        tracker.record_attention(0, w0)
+        tracker.record_attention(1, w1)
+
+        imp0 = tracker.get_token_importance(0)
+        imp1 = tracker.get_token_importance(1)
+        mx.eval(imp0, imp1)
+
+        # Per-layer, so they should generally differ
+        diff = float(mx.sum(mx.abs(imp0 - imp1)).item())
+        assert diff > 0
+
+    def test_h2o_global_importance_grows_with_seq(self):
+        """H2O global importance should grow as sequence length increases."""
+        tracker = AttentionScoreTracker(NUM_LAYERS, scoring="h2o")
+
+        # First: 5 tokens
+        w1 = _make_attention_weights(NUM_HEADS, 5, seed=0)
+        tracker.record_attention(0, w1)
+        imp1 = tracker.get_token_importance(0)
+        mx.eval(imp1)
+        assert imp1.shape[0] == 5
+
+        # Then: 10 tokens (padded)
+        w2 = _make_attention_weights(NUM_HEADS, 10, seed=1)
+        tracker.record_attention(0, w2)
+        imp2 = tracker.get_token_importance(0)
+        mx.eval(imp2)
+        assert imp2.shape[0] == 10
+
+    def test_get_heavy_hitters_empty_importance(self):
+        """Heavy hitters on unrecorded layer should return something valid."""
+        tracker = AttentionScoreTracker(NUM_LAYERS, scoring="h2o")
+        top = tracker.get_heavy_hitters(0, top_k=5)
+        mx.eval(top)
+        # Default importance is [0.0], so top_k clamped to 1
+        assert top.shape[0] == 1
+
+
+class TestCompressedKVCacheAdditional:
+    def test_incremental_updates_build_cache(self, h2o_cache):
+        """Multiple small updates should build up the cache (within budget)."""
+        # Budget = max(sink+window, ratio*seq) = max(12, 0.2*seq)
+        # Add 4 updates of 3 = 12 tokens, which equals min budget
+        for i in range(4):
+            k, v = _make_kv(3, seed=i)
+            h2o_cache.update(0, k, v)
+
+        assert h2o_cache.current_length == 12  # 4 * 3, at min budget
+
+    def test_stats_after_compression(self, h2o_cache):
+        """Stats should reflect compression operations."""
+        k, v = _make_kv(100)
+        weights = _make_attention_weights(NUM_HEADS, 100)
+        h2o_cache.update(0, k, v, attention_weights=weights)
+
+        stats = h2o_cache.get_stats()
+        assert stats["total_tokens_seen"] == 100
+        assert stats["compression_count"] >= 1
+        assert stats["total_evicted"] > 0
+
+    def test_compute_budget_respects_minimum(self, h2o_cache):
+        """Budget should never be less than sink + window."""
+        budget = h2o_cache._compute_budget(5)
+        # sink=4, window=8, min_budget=12
+        assert budget == 12
+
+    def test_compute_budget_ratio_dominates(self, h2o_cache):
+        """For long sequences, ratio budget should dominate."""
+        budget = h2o_cache._compute_budget(1000)
+        # 0.2 * 1000 = 200, which > 12
+        assert budget == 200
+
+    def test_multi_layer_independent_compression(self, h2o_cache):
+        """Each layer should compress independently."""
+        # Layer 0: 100 tokens (should compress)
+        k0, v0 = _make_kv(100, seed=0)
+        weights0 = _make_attention_weights(NUM_HEADS, 100, seed=0)
+        h2o_cache.update(0, k0, v0, attention_weights=weights0)
+
+        # Layer 1: 5 tokens (under budget)
+        k1, v1 = _make_kv(5, seed=1)
+        h2o_cache.update(1, k1, v1)
+
+        out_k0, _ = h2o_cache.get_kv(0)
+        out_k1, _ = h2o_cache.get_kv(1)
+        mx.eval(out_k0, out_k1)
+
+        assert out_k0.shape[1] < 100  # compressed
+        assert out_k1.shape[1] == 5  # untouched
+
+    def test_compression_ratio_increases(self, h2o_cache):
+        """Compression ratio should increase with more tokens."""
+        for i in range(20):
+            k, v = _make_kv(10, seed=i)
+            seq_len = h2o_cache.current_length + 10
+            weights = _make_attention_weights(NUM_HEADS, seq_len, seed=i)
+            h2o_cache.update(0, k, v, attention_weights=weights)
+
+        ratio = h2o_cache.get_compression_ratio()
+        assert ratio >= 2.0  # 200 tokens seen, budget ~40
+
+    def test_get_kv_after_reset(self, h2o_cache):
+        """After reset, get_kv should return empty tensors."""
+        k, v = _make_kv(10)
+        h2o_cache.update(0, k, v)
+        h2o_cache.reset()
+
+        keys, values = h2o_cache.get_kv(0)
+        assert keys.shape == (NUM_HEADS, 0, HEAD_DIM)
+
+    def test_scissorhands_multi_step(self, scissorhands_cache):
+        """ScissorHands should work correctly across multiple generation steps."""
+        for i in range(15):
+            k, v = _make_kv(8, seed=i)
+            seq_len = scissorhands_cache.current_length + 8
+            weights = _make_attention_weights(NUM_HEADS, seq_len, seed=i)
+            scissorhands_cache.update(0, k, v, attention_weights=weights)
+
+        stats = scissorhands_cache.get_stats()
+        assert stats["total_tokens_seen"] == 120  # 15 * 8
+        assert stats["current_length"] <= 120
+
+
+class TestApplyKVCompression:
+    def test_basic_creation(self):
+        """apply_kv_compression should create a CompressedKVCache."""
+
+        class MockAttn:
+            num_heads = 8
+            head_dim = 64
+
+        class MockLayer:
+            self_attn = MockAttn()
+
+        class MockTransformer:
+            layers = [MockLayer() for _ in range(4)]
+
+        model = MockTransformer()
+        cache = apply_kv_compression(model)
+
+        assert isinstance(cache, CompressedKVCache)
+        assert cache.num_layers == 4
+        assert cache.num_heads == 8
+        assert cache.head_dim == 64
+
+    def test_custom_config(self):
+        """apply_kv_compression should accept custom config."""
+
+        class MockAttn:
+            num_heads = 4
+            head_dim = 32
+
+        class MockLayer:
+            self_attn = MockAttn()
+
+        class MockTransformer:
+            layers = [MockLayer(), MockLayer()]
+
+        config = KVCompressionConfig(budget_ratio=0.5, scoring="scissorhands")
+        model = MockTransformer()
+        cache = apply_kv_compression(model, config)
+
+        assert cache.config.budget_ratio == 0.5
+        assert cache.config.scoring == "scissorhands"
+        assert cache.num_layers == 2
+
+    def test_attention_attribute_fallback(self):
+        """Should fall back to .attention if .self_attn not found."""
+
+        class MockAttn:
+            num_heads = 16
+            head_dim = 128
+
+        class MockLayer:
+            self_attn = None
+            attention = MockAttn()
+
+        class MockTransformer:
+            layers = [MockLayer()]
+
+        model = MockTransformer()
+        cache = apply_kv_compression(model)
+
+        assert cache.num_heads == 16
+        assert cache.head_dim == 128
+
+    def test_no_attention_raises(self):
+        """Should raise ValueError if no attention module found."""
+
+        class MockLayer:
+            pass
+
+        class MockTransformer:
+            layers = [MockLayer()]
+
+        model = MockTransformer()
+        with pytest.raises(ValueError, match="Cannot find attention module"):
+            apply_kv_compression(model)
+
+    def test_missing_num_heads_raises(self):
+        """Should raise ValueError if num_heads/head_dim not found."""
+
+        class MockAttn:
+            pass  # No num_heads or head_dim
+
+        class MockLayer:
+            self_attn = MockAttn()
+
+        class MockTransformer:
+            layers = [MockLayer()]
+
+        model = MockTransformer()
+        with pytest.raises(ValueError, match="Cannot determine num_heads"):
+            apply_kv_compression(model)
+
+    def test_n_heads_fallback(self):
+        """Should use n_heads/d_head as fallback attribute names."""
+
+        class MockAttn:
+            n_heads = 12
+            d_head = 96
+
+        class MockLayer:
+            self_attn = MockAttn()
+
+        class MockTransformer:
+            layers = [MockLayer()]
+
+        model = MockTransformer()
+        cache = apply_kv_compression(model)
+
+        assert cache.num_heads == 12
+        assert cache.head_dim == 96

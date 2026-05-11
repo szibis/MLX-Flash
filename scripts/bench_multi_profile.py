@@ -35,6 +35,7 @@ def load_model_registry():
 def get_system_ram_gb():
     try:
         import subprocess
+
         out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True)
         return int(out.strip()) / (1024**3)
     except Exception:
@@ -50,9 +51,7 @@ def cleanup_models(registry):
         dir_name = "models--" + model_id.replace("/", "--")
         model_path = os.path.join(cache_dir, dir_name)
         if os.path.exists(model_path):
-            size = sum(
-                f.stat().st_size for f in Path(model_path).rglob("*") if f.is_file()
-            ) / (1024**3)
+            size = sum(f.stat().st_size for f in Path(model_path).rglob("*") if f.is_file()) / (1024**3)
             removed.append((model_id, size))
             print(f"  Removing {model_id} ({size:.1f} GB)...")
             shutil.rmtree(model_path)
@@ -74,9 +73,7 @@ def list_models(registry):
         model_path = os.path.join(cache_dir, dir_name)
         cached = "yes" if os.path.exists(model_path) else "no"
         if cached == "yes":
-            size = sum(
-                f.stat().st_size for f in Path(model_path).rglob("*") if f.is_file()
-            ) / (1024**3)
+            size = sum(f.stat().st_size for f in Path(model_path).rglob("*") if f.is_file()) / (1024**3)
             size_str = f"{size:.1f} GB"
         else:
             size_str = f"~{m.get('size_gb_approx', '?')} GB"
@@ -88,17 +85,20 @@ def profile_model(model_id, prompt, max_tokens, priority="auto"):
     import mlx.core as mx
 
     from mlx_flash_compress.dflash_profile import (
-        detect_model, measure_ar_baseline, select_profile,
+        detect_model,
+        measure_ar_baseline,
+        select_profile,
     )
 
     print(f"\n  Loading {model_id}...")
     t0 = time.perf_counter()
     from mlx_lm import load
+
     model, tokenizer = load(model_id)
     load_time = time.perf_counter() - t0
     print(f"  Loaded in {load_time:.1f}s")
 
-    print(f"  Detecting model characteristics...")
+    print("  Detecting model characteristics...")
     profile = detect_model(model, tokenizer)
 
     print(f"  Measuring AR baseline ({max_tokens} tokens)...")
@@ -128,7 +128,7 @@ def profile_model(model_id, prompt, max_tokens, priority="auto"):
 
     del model, tokenizer
     gc.collect()
-    clear = getattr(mx, 'clear_cache', None) or getattr(mx.metal, 'clear_cache', None)
+    clear = getattr(mx, "clear_cache", None) or getattr(mx.metal, "clear_cache", None)
     if clear:
         clear()
 
@@ -141,9 +141,11 @@ def print_summary(results):
     print("MODEL PROFILING MATRIX")
     print("=" * 120)
 
-    header = (f"  {'Model':40s} | {'Category':12s} | {'Params':>7s} | {'Active':>7s} | "
-              f"{'Layers':>8s} | {'SSM%':>5s} | {'Quant':>5s} | {'AR tok/s':>9s} | "
-              f"{'DFlash':>10s} | Profile")
+    header = (
+        f"  {'Model':40s} | {'Category':12s} | {'Params':>7s} | {'Active':>7s} | "
+        f"{'Layers':>8s} | {'SSM%':>5s} | {'Quant':>5s} | {'AR tok/s':>9s} | "
+        f"{'DFlash':>10s} | Profile"
+    )
     print(header)
     print("-" * 120)
 
@@ -159,11 +161,13 @@ def print_summary(results):
         quant_str = f"{r['quant_bits']}bit" if r["is_quantized"] else "bf16"
         moe_marker = " MoE" if r["is_moe"] else ""
 
-        print(f"  {model_short:40s} | {r['category']:12s} | "
-              f"{r['total_params_b']:6.1f}B | {r['active_params_b']:6.1f}B | "
-              f"{layers_str:>8s} | {r['ssm_ratio']:4.0%} | {quant_str:>5s} | "
-              f"{r['ar_tok_s']:8.1f} | "
-              f"{r['recommendation']:>10s} | {r['profile_name']}")
+        print(
+            f"  {model_short:40s} | {r['category']:12s} | "
+            f"{r['total_params_b']:6.1f}B | {r['active_params_b']:6.1f}B | "
+            f"{layers_str:>8s} | {r['ssm_ratio']:4.0%} | {quant_str:>5s} | "
+            f"{r['ar_tok_s']:8.1f} | "
+            f"{r['recommendation']:>10s} | {r['profile_name']}"
+        )
 
     print("=" * 120)
 
@@ -182,18 +186,18 @@ def print_summary(results):
 
 def main():
     parser = argparse.ArgumentParser(description="Profile multiple models for DFlash")
-    parser.add_argument("--models", nargs="*",
-                        help="Filter models by substring match (e.g. 'Qwen3.5' 'gemma')")
-    parser.add_argument("--max-ram", type=int, default=None,
-                        help="Max RAM in GB (auto-detected if not set)")
+    parser.add_argument("--models", nargs="*", help="Filter models by substring match (e.g. 'Qwen3.5' 'gemma')")
+    parser.add_argument("--max-ram", type=int, default=None, help="Max RAM in GB (auto-detected if not set)")
     parser.add_argument("--prompt", default="def binary_search(arr, target):\n    ")
     parser.add_argument("--max-tokens", type=int, default=32)
-    parser.add_argument("--priority", choices=["auto", "quality", "speed", "balanced"],
-                        default="auto", help="Profile priority (default: auto)")
-    parser.add_argument("--cleanup", action="store_true",
-                        help="Remove all cached models from the registry")
-    parser.add_argument("--list", action="store_true",
-                        help="List all models with cache status")
+    parser.add_argument(
+        "--priority",
+        choices=["auto", "quality", "speed", "balanced"],
+        default="auto",
+        help="Profile priority (default: auto)",
+    )
+    parser.add_argument("--cleanup", action="store_true", help="Remove all cached models from the registry")
+    parser.add_argument("--list", action="store_true", help="List all models with cache status")
     args = parser.parse_args()
 
     registry = load_model_registry()
@@ -220,7 +224,7 @@ def main():
 
         approx_size = m.get("size_gb_approx", 0)
         if approx_size > ram_gb * 0.85:
-            print(f"  Skipping {m['id']} (~{approx_size}GB > {ram_gb*0.85:.0f}GB limit)")
+            print(f"  Skipping {m['id']} (~{approx_size}GB > {ram_gb * 0.85:.0f}GB limit)")
             continue
 
         if args.models:
@@ -235,36 +239,40 @@ def main():
 
     results = []
     for i, m in enumerate(models_to_test):
-        print(f"\n{'='*80}")
-        print(f"[{i+1}/{len(models_to_test)}] {m['id']}")
-        print(f"{'='*80}")
+        print(f"\n{'=' * 80}")
+        print(f"[{i + 1}/{len(models_to_test)}] {m['id']}")
+        print(f"{'=' * 80}")
 
         try:
             r = profile_model(m["id"], args.prompt, args.max_tokens, args.priority)
             r["expected_category"] = m.get("category_expected", "unknown")
             results.append(r)
-            print(f"  ✓ {r['category']} | AR={r['ar_tok_s']} tok/s | "
-                  f"DFlash={r['recommendation']} | Profile={r['profile_name']}")
+            print(
+                f"  ✓ {r['category']} | AR={r['ar_tok_s']} tok/s | "
+                f"DFlash={r['recommendation']} | Profile={r['profile_name']}"
+            )
         except Exception as e:
             print(f"  ✗ FAILED: {e}")
-            results.append({
-                "model_id": m["id"],
-                "category": "error",
-                "total_params_b": 0,
-                "active_params_b": 0,
-                "num_layers": 0,
-                "num_ssm_layers": 0,
-                "num_attn_layers": 0,
-                "is_moe": False,
-                "is_quantized": False,
-                "quant_bits": None,
-                "ssm_ratio": 0,
-                "ar_tok_s": 0,
-                "recommendation": "error",
-                "profile_name": "error",
-                "profile_desc": str(e)[:80],
-                "load_time": 0,
-            })
+            results.append(
+                {
+                    "model_id": m["id"],
+                    "category": "error",
+                    "total_params_b": 0,
+                    "active_params_b": 0,
+                    "num_layers": 0,
+                    "num_ssm_layers": 0,
+                    "num_attn_layers": 0,
+                    "is_moe": False,
+                    "is_quantized": False,
+                    "quant_bits": None,
+                    "ssm_ratio": 0,
+                    "ar_tok_s": 0,
+                    "recommendation": "error",
+                    "profile_name": "error",
+                    "profile_desc": str(e)[:80],
+                    "load_time": 0,
+                }
+            )
 
     print_summary(results)
 
@@ -283,7 +291,7 @@ def main():
         total += 1
         print(f"    {match} {r['model_id'].split('/')[-1]:40s} expected={expected:15s} actual={actual}")
     if total > 0:
-        print(f"    Accuracy: {correct}/{total} ({correct/total:.0%})")
+        print(f"    Accuracy: {correct}/{total} ({correct / total:.0%})")
 
 
 if __name__ == "__main__":

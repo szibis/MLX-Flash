@@ -13,8 +13,9 @@ from mlx_flash_compress.dflash_model import DFlashDraftModel, DFlashModelConfig,
 
 def main():
     print("Loading models...")
-    from mlx_lm import load
     from huggingface_hub import snapshot_download
+    from mlx_lm import load
+
     model, tokenizer = load("mlx-community/Qwen3.6-35B-A3B-4bit")
     drafter_path = snapshot_download("z-lab/Qwen3.6-35B-A3B-DFlash")
     print("  Done.\n")

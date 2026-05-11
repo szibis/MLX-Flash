@@ -24,6 +24,7 @@ pub enum PressureLevel {
 }
 
 impl PressureLevel {
+    #[allow(dead_code)]
     pub fn from_free_pct(pct: f64) -> Self {
         if pct >= 40.0 {
             PressureLevel::Normal
@@ -202,7 +203,6 @@ pub fn get_memory_state() -> Result<MemoryState, String> {
 
 fn get_swap_used_gb() -> f64 {
     // sysctl vm.swapusage — best-effort, returns 0.0 on failure
-    use std::ffi::CStr;
     let name = b"vm.swapusage\0";
     let mut xsw: XswUsage = unsafe { mem::zeroed() };
     let mut size = mem::size_of::<XswUsage>();

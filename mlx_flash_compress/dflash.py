@@ -30,7 +30,7 @@ Usage:
 """
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -186,8 +186,8 @@ class DFlashEngine:
         self.tokenizer = tokenizer
         self.stats = DFlashStats()
 
-        self._hidden_state_hooks = []
-        self._captured_hidden_states = {}
+        self._hidden_state_hooks: list = []
+        self._captured_hidden_states: dict[int, Any] = {}
 
         if not config.checkpoint_layers:
             self._auto_detect_checkpoints()
@@ -368,7 +368,7 @@ class DFlashEngine:
         self.stats = DFlashStats()
         self.install_hidden_state_hooks()
 
-        generated = list(prompt_tokens.tolist()) if hasattr(prompt_tokens, "tolist") else list(prompt_tokens)
+        generated: list = list(prompt_tokens.tolist()) if hasattr(prompt_tokens, "tolist") else list(prompt_tokens)  # type: ignore[arg-type]
         tokens_generated = 0
 
         while tokens_generated < max_tokens:
@@ -387,7 +387,7 @@ class DFlashEngine:
                 break
 
             # Append accepted tokens
-            accepted_list = accepted.tolist() if hasattr(accepted, "tolist") else list(accepted)
+            accepted_list: list = list(accepted.tolist()) if hasattr(accepted, "tolist") else list(accepted)  # type: ignore[arg-type]
             generated.extend(accepted_list)
             tokens_generated += num_accepted
 
@@ -433,10 +433,39 @@ class DFlashEngine:
 
     def _generate_fallback(self, prompt_tokens: mx.array, max_tokens: int, callback: Optional[Callable]) -> mx.array:
         """Fallback to standard autoregressive generation when no drafter available."""
-        from mlx_lm import generate
+        generated: list = list(prompt_tokens.tolist()) if hasattr(prompt_tokens, "tolist") else list(prompt_tokens)  # type: ignore[arg-type]
+        tokens_generated = 0
 
-        # Standard generation without speculation
-        return prompt_tokens
+        while tokens_generated < max_tokens:
+            input_ids = mx.array(generated)
+            input_2d = mx.expand_dims(input_ids, axis=0)
+
+            logits = self._target_forward(input_2d)
+
+            # Get last position logits
+            if len(logits.shape) == 3:
+                last_logits = logits[0, -1, :]
+            else:
+                last_logits = logits[-1, :]
+
+            if self.config.temperature == 0:
+                next_token = int(mx.argmax(last_logits).item())
+            else:
+                probs = mx.softmax(last_logits / self.config.temperature, axis=-1)
+                next_token = int(mx.random.categorical(mx.expand_dims(probs, 0)).item())
+
+            generated.append(next_token)
+            tokens_generated += 1
+
+            if callback:
+                callback([next_token], self.stats)
+
+            # Check for EOS
+            if self.tokenizer and hasattr(self.tokenizer, "eos_token_id"):
+                if next_token == self.tokenizer.eos_token_id:
+                    break
+
+        return mx.array(generated)
 
     def get_stats_summary(self) -> dict:
         """Return summary statistics for the DFlash session."""

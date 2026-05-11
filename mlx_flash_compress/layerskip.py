@@ -26,6 +26,7 @@ Usage:
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -40,6 +41,15 @@ class LayerSkipConfig:
     temperature: float = 0.0  # greedy by default
     confidence_threshold: float = 0.9  # early exit if top-1 prob > this
     adaptive_exit: bool = True  # dynamically choose exit layer based on confidence
+
+    def __post_init__(self):
+        if self.num_speculative_tokens < 1:
+            raise ValueError(f"num_speculative_tokens must be >= 1, got {self.num_speculative_tokens}")
+        if self.temperature < 0.0:
+            raise ValueError(f"temperature must be >= 0.0, got {self.temperature}")
+        if self.confidence_threshold < 0.0 or self.confidence_threshold > 1.0:
+            raise ValueError(f"confidence_threshold must be in [0.0, 1.0], got {self.confidence_threshold}")
+        # exit_layer validated later when num_layers is known; -1 is auto
 
 
 class LayerSkipDrafter:
@@ -56,10 +66,10 @@ class LayerSkipDrafter:
         self.config = config
 
         # Detect model components (same pattern as DFlashRunner)
-        self._embed_fn = None
-        self._layers = None
-        self._norm_fn = None
-        self._lm_head_fn = None
+        self._embed_fn: Any = None
+        self._layers: Any = None
+        self._norm_fn: Any = None
+        self._lm_head_fn: Any = None
         self._detect_components()
 
         # Resolve exit layer
@@ -136,6 +146,11 @@ class LayerSkipDrafter:
         logits, then greedily select tokens. Repeats autoregressively for
         num_speculative_tokens.
 
+        When adaptive_exit is enabled, the exit layer is adjusted per token:
+        - High confidence (above threshold): use fewer layers (exit_layer - 1)
+        - Low confidence (below threshold): use more layers (exit_layer + 1)
+        The exit layer is clamped to [1, total_layers - 1].
+
         Args:
             input_ids: Context token IDs [B, seq_len]
             cache: Optional KV cache
@@ -143,15 +158,20 @@ class LayerSkipDrafter:
         Returns:
             (draft_token_ids [B, num_spec], draft_logits_list)
         """
-        exit_layer = self.config.exit_layer
+        base_exit_layer = self.config.exit_layer
+        current_exit_layer = base_exit_layer
         num_draft = self.config.num_speculative_tokens
+        total_layers = len(self._layers)
+        min_exit = max(1, base_exit_layer // 2)
+        max_exit = min(total_layers - 1, base_exit_layer + base_exit_layer // 2)
 
         draft_ids = []
         draft_logits_list = []
         current_ids = input_ids
+        self._draft_exit_layers = []  # track per-token exit layers for stats
 
         for _ in range(num_draft):
-            h = self._forward_partial(current_ids, exit_layer, cache=cache)
+            h = self._forward_partial(current_ids, current_exit_layer, cache=cache)
 
             # Apply norm and LM head to intermediate hidden states
             if self._norm_fn is not None:
@@ -169,17 +189,20 @@ class LayerSkipDrafter:
                 next_token = mx.random.categorical(mx.log(probs + 1e-10).squeeze(1)).reshape(-1, 1)
 
             draft_ids.append(next_token)
+            self._draft_exit_layers.append(current_exit_layer)
 
-            # Adaptive exit: if confidence is very high, we could use an
-            # even earlier layer; if low, use a later layer. For simplicity
-            # in this implementation, we track confidence for stats but
-            # keep the exit layer fixed within a draft cycle.
+            # Adaptive exit: adjust exit layer for next token based on confidence
             if self.config.adaptive_exit:
                 top_prob = mx.max(mx.softmax(last_logits, axis=-1))
                 mx.eval(top_prob)
-                # Could adjust exit_layer here for next token, but the
-                # overhead of switching layers mid-draft is not worth it
-                # on Apple Silicon's unified memory architecture.
+                top_prob_val = float(top_prob.item())
+
+                if top_prob_val >= self.config.confidence_threshold:
+                    # High confidence: use fewer layers next time
+                    current_exit_layer = max(min_exit, current_exit_layer - 1)
+                else:
+                    # Low confidence: use more layers next time
+                    current_exit_layer = min(max_exit, current_exit_layer + 1)
 
             # Next iteration: predict from the drafted token only
             current_ids = next_token
@@ -202,7 +225,7 @@ class LayerSkipEngine:
         self.config = config or LayerSkipConfig()
         self.drafter = LayerSkipDrafter(model, self.config)
 
-        self.stats = {
+        self.stats: dict[str, Any] = {
             "total_draft_tokens": 0,
             "total_accepted": 0,
             "total_verify_steps": 0,
@@ -211,93 +234,124 @@ class LayerSkipEngine:
             "acceptance_counts": [],
         }
 
-    def _draft_step(self, input_ids: mx.array) -> tuple[mx.array, mx.array]:
-        """Draft num_speculative_tokens using partial forward pass.
+    def _draft_step_cached(self, last_token: mx.array, cache: list, exit_layer: int) -> tuple[list[int], float]:
+        """Draft K tokens using partial layers with KV cache.
 
-        Args:
-            input_ids: Current context token IDs [B, seq_len]
-
-        Returns:
-            (draft_token_ids [B, num_spec], draft_logits [B, num_spec, vocab])
+        Forwards last_token + K-1 autoregressive steps through layers
+        0..exit_layer. Returns draft token IDs and elapsed time.
         """
         t0 = time.perf_counter()
+        K = self.config.num_speculative_tokens
+        draft_ids: list[int] = []
 
-        draft_ids, draft_logits_list = self.drafter.draft(input_ids)
-        # Stack logits: each is [B, 1, vocab] -> [B, num_spec, vocab]
-        draft_logits = mx.concatenate(draft_logits_list, axis=1)
-        mx.eval(draft_ids, draft_logits)
+        current = last_token  # [1, 1]
+        for _ in range(K):
+            h = self.drafter._forward_partial(current, exit_layer, cache=cache)
+            if self.drafter._norm_fn is not None:
+                h = self.drafter._norm_fn(h)
+            logits = self.drafter._lm_head_fn(h)
+            next_id = int(mx.argmax(logits[:, -1, :], axis=-1).item())
+            draft_ids.append(next_id)
+            current = mx.array([[next_id]])
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
         self.stats["draft_times_ms"].append(elapsed_ms)
-        self.stats["total_draft_tokens"] += self.config.num_speculative_tokens
+        self.stats["total_draft_tokens"] += K
+        return draft_ids, elapsed_ms
 
+    def _verify_and_accept(self, last_token_id: int, draft_ids: list[int], cache: list) -> tuple[list[int], int]:
+        """Verify draft tokens with full model forward + accept prefix.
+
+        Feeds [last_token, draft_1, ..., draft_K] through all layers.
+        Compares full-model greedy predictions against drafts.
+        Returns accepted new tokens (excluding last_token, including bonus).
+        """
+        t0 = time.perf_counter()
+        K = len(draft_ids)
+
+        verify_input = mx.array([[last_token_id] + draft_ids])
+        logits = self.model(verify_input, cache=cache)
+        mx.eval(logits)
+
+        # logits[:, i, :] predicts token at position (cache_start + i + 1)
+        # logits[:, 0] predicts what should come after last_token → draft_ids[0]
+        # logits[:, k] predicts what should come after draft_ids[k-1] → draft_ids[k]
+        # logits[:, K] predicts bonus token after draft_ids[K-1]
+        target_preds = mx.argmax(logits[:, :K, :], axis=-1)
+        mx.eval(target_preds)
+        target_list: list = list(target_preds[0].tolist())  # type: ignore[arg-type]
+
+        num_accepted = 0
+        for draft_tok, target_tok in zip(draft_ids, target_list):
+            if draft_tok == target_tok:
+                num_accepted += 1
+            else:
+                break
+
+        # Bonus: full model's prediction at the first rejection/end point
+        bonus_id = int(mx.argmax(logits[:, num_accepted, :], axis=-1).item())
+
+        # New tokens: accepted drafts + bonus (NOT including last_token)
+        new_tokens = draft_ids[:num_accepted] + [bonus_id]
+
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        self.stats["verify_times_ms"].append(elapsed_ms)
+        self.stats["total_verify_steps"] += 1
+        self.stats["total_accepted"] += len(new_tokens)
+        self.stats["acceptance_counts"].append(num_accepted)
+
+        return new_tokens, num_accepted
+
+    def _draft_step(self, input_ids: mx.array) -> tuple[mx.array, mx.array]:
+        """Non-cached draft step (for testing). Processes full context."""
+        t0 = time.perf_counter()
+        draft_ids, draft_logits_list = self.drafter.draft(input_ids)
+        draft_logits = mx.concatenate(draft_logits_list, axis=1)
+        mx.eval(draft_ids, draft_logits)
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+        self.stats["draft_times_ms"].append(elapsed_ms)
+        self.stats["total_draft_tokens"] += self.config.num_speculative_tokens
         return draft_ids, draft_logits
 
     def _verify_step(self, input_ids: mx.array, draft_tokens: mx.array) -> tuple[mx.array, int]:
-        """Verify drafts with full forward pass.
-
-        Runs the full target model on [context + draft_tokens] and compares
-        the greedy predictions against the draft tokens.
-
-        Args:
-            input_ids: Context token IDs [B, seq_len]
-            draft_tokens: Draft token IDs [B, num_draft]
-
-        Returns:
-            (accepted_tokens [1D], num_accepted)
-        """
+        """Non-cached verify step (for testing). Processes full context."""
         t0 = time.perf_counter()
-
-        # Concatenate context + drafts for one full forward pass
         full_ids = mx.concatenate([input_ids, draft_tokens], axis=-1)
         logits = self.model(full_ids)
-
         ctx_len = input_ids.shape[-1]
         n_draft = draft_tokens.shape[-1]
-
-        # Logits at position i predict token i+1.
-        # So logits[:, ctx_len-1 : ctx_len-1+n_draft] predict
-        # the tokens at positions ctx_len .. ctx_len+n_draft-1,
-        # which are exactly our draft tokens.
         verify_logits = logits[:, ctx_len - 1 : ctx_len - 1 + n_draft, :]
         target_ids = mx.argmax(verify_logits, axis=-1)
         mx.eval(target_ids)
-
-        # Compare draft vs target token by token
-        draft_np = draft_tokens[0].tolist()
-        target_np = target_ids[0].tolist()
-
+        draft_np: list = list(draft_tokens[0].tolist())  # type: ignore[arg-type]
+        target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
         num_accepted = 0
         for d, t in zip(draft_np, target_np):
             if d == t:
                 num_accepted += 1
             else:
                 break
-
-        # Bonus token: the target model's prediction at the first rejection point
         bonus_idx = num_accepted
         if bonus_idx < len(target_np):
             accepted = draft_np[:num_accepted] + [target_np[bonus_idx]]
         else:
             accepted = draft_np[:num_accepted]
-
         elapsed_ms = (time.perf_counter() - t0) * 1000
         self.stats["verify_times_ms"].append(elapsed_ms)
         self.stats["total_verify_steps"] += 1
         self.stats["total_accepted"] += len(accepted)
         self.stats["acceptance_counts"].append(num_accepted)
-
         accepted_arr = mx.array(accepted, dtype=mx.int32)
         return accepted_arr, len(accepted)
 
     def generate(self, prompt_tokens: mx.array, max_tokens: int = 100, callback=None) -> mx.array:
-        """Generate tokens using self-speculative decoding.
+        """Generate tokens using self-speculative decoding with KV caching.
 
-        Loop:
-          1. Draft K tokens using early exit (layers 0..N/2)
-          2. Verify all K+1 tokens in one full model forward pass
-          3. Accept longest matching prefix + bonus token
-          4. Repeat
+        Uses KV cache to avoid reprocessing the full context each iteration:
+          1. Prefill: full model forward on prompt, cache all layers
+          2. Draft: forward last token through layers 0..exit (K tokens)
+          3. Roll back partial caches, verify [last + drafts] through full model
+          4. Accept prefix + bonus, trim rejected entries, repeat
 
         Args:
             prompt_tokens: Input token IDs [seq_len] or [1, seq_len]
@@ -307,7 +361,6 @@ class LayerSkipEngine:
         Returns:
             All tokens (prompt + generated) as mx.array
         """
-        # Reset stats
         self.stats = {
             "total_draft_tokens": 0,
             "total_accepted": 0,
@@ -317,37 +370,67 @@ class LayerSkipEngine:
             "acceptance_counts": [],
         }
 
-        # Normalize input shape to [1, seq_len]
         if prompt_tokens.ndim == 1:
             prompt_tokens = prompt_tokens.reshape(1, -1)
 
-        prompt_len = prompt_tokens.shape[-1]
-        generated = list(prompt_tokens[0].tolist())
+        generated: list = list(prompt_tokens[0].tolist())  # type: ignore[arg-type]
         tokens_generated = 0
 
+        if max_tokens <= 0:
+            return mx.array(generated)
+
+        if hasattr(self.model, "make_cache"):
+            cache = self.model.make_cache()
+        else:
+            from mlx_lm.models.cache import make_prompt_cache
+
+            cache = make_prompt_cache(self.model)
+        prefill_logits = self.model(prompt_tokens, cache=cache)
+        mx.eval(prefill_logits)
+
+        first_token = int(mx.argmax(prefill_logits[:, -1, :], axis=-1).item())
+        generated.append(first_token)
+        tokens_generated += 1
+
+        eos = getattr(self.tokenizer, "eos_token_id", None)
+        if eos is not None and first_token == eos:
+            return mx.array(generated)
+
+        exit_layer = self.drafter.get_exit_layer()
+        K = self.config.num_speculative_tokens
+
         while tokens_generated < max_tokens:
-            input_ids = mx.array([generated])
+            last_token_id = generated[-1]
 
-            # Step 1: Draft tokens using early exit
-            draft_ids, _ = self._draft_step(input_ids)
+            # Draft K tokens through partial layers (0..exit_layer)
+            draft_cache = [cache[i] for i in range(exit_layer)]
+            last_tok_arr = mx.array([[last_token_id]])
+            draft_ids, _ = self._draft_step_cached(last_tok_arr, draft_cache, exit_layer)
 
-            # Step 2: Verify with full model
-            accepted, num_accepted = self._verify_step(input_ids, draft_ids)
+            # Roll back: draft extended cache[0..exit] by K entries
+            for i in range(exit_layer):
+                cache[i].trim(K)
 
-            if num_accepted == 0 and len(accepted) == 0:
+            # Verify: full model processes [last_token, draft_1..K]
+            new_tokens, num_accepted = self._verify_and_accept(last_token_id, draft_ids, cache)
+
+            # Trim rejected entries: verify fed K+1 tokens, we keep 1+num_accepted
+            # (last_token + accepted drafts); bonus is NOT in cache
+            n_to_trim = K - num_accepted
+            if n_to_trim > 0:
+                for c in cache:
+                    c.trim(n_to_trim)
+
+            if len(new_tokens) == 0:
                 break
 
-            # Append accepted tokens
-            accepted_list = accepted.tolist()
-            generated.extend(accepted_list)
-            tokens_generated += len(accepted_list)
+            generated.extend(new_tokens)
+            tokens_generated += len(new_tokens)
 
             if callback:
-                callback(accepted_list)
+                callback(new_tokens)
 
-            # Check EOS
-            eos = getattr(self.tokenizer, "eos_token_id", None)
-            if eos is not None and eos in accepted_list:
+            if eos is not None and eos in new_tokens:
                 break
 
         return mx.array(generated)
@@ -369,7 +452,11 @@ class LayerSkipEngine:
         effective_passes = 1.0 + draft_cost_fraction  # verify + draft cost
         speedup = tokens_per_step / effective_passes if effective_passes > 0 else 1.0
 
-        import numpy as np
+        draft_times = self.stats["draft_times_ms"]
+        verify_times = self.stats["verify_times_ms"]
+
+        # Collect adaptive exit layer info if available
+        draft_exit_layers = getattr(self.drafter, "_draft_exit_layers", [])
 
         return {
             "exit_layer": exit_layer,
@@ -380,12 +467,12 @@ class LayerSkipEngine:
             "acceptance_rate": round(acceptance_rate, 3),
             "tokens_per_step": round(tokens_per_step, 1),
             "speedup_factor": round(speedup, 2),
-            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1)
-            if self.stats["draft_times_ms"]
-            else 0,
-            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1)
-            if self.stats["verify_times_ms"]
-            else 0,
+            "avg_draft_ms": round(sum(draft_times) / len(draft_times), 1) if draft_times else 0,
+            "avg_verify_ms": round(sum(verify_times) / len(verify_times), 1) if verify_times else 0,
+            "adaptive_exit_enabled": self.config.adaptive_exit,
+            "avg_adaptive_exit_layer": round(sum(draft_exit_layers) / len(draft_exit_layers), 1)
+            if draft_exit_layers
+            else exit_layer,
         }
 
 

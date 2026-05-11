@@ -228,7 +228,7 @@ def load_model(model_name: str):
     print(f"  {c(C.YELLOW, '⏳')} Loading {c(C.BOLD, model_name.split('/')[-1])}...")
     mem_before = get_memory_state()
     t0 = time.monotonic()
-    model, tokenizer = load(model_name)
+    model, tokenizer = load(model_name)  # type: ignore[misc]
     mx.synchronize()
     load_time = time.monotonic() - t0
 

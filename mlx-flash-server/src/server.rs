@@ -16,6 +16,7 @@ use crate::worker_pool::WorkerPool;
 
 #[derive(Clone)]
 pub struct AppState {
+    #[allow(dead_code)]
     pub python_port: u16,
     pub model_name: Arc<RwLock<String>>,
     pub start_time: Instant,
@@ -67,6 +68,12 @@ pub fn create_router(state: AppState) -> Router {
         .route("/gpu", get(handle_gpu))
         .route("/commands", get(handle_commands_list))
         .route("/commands/run", axum::routing::post(handle_command_run))
+        .route("/v1/models/registry", get(handle_model_registry))
+        .route("/v1/models/registry/cleanup", axum::routing::post(handle_model_cleanup))
+        .route("/v1/models/profile", axum::routing::post(handle_model_profile))
+        .route("/v1/models/profile/batch", axum::routing::post(handle_model_profile_batch))
+        .route("/v1/models/profile/list", get(handle_model_profile_list))
+        .route("/v1/config", get(handle_config_get).post(handle_config_set))
         .with_state(state)
         .layer(cors)
 }
@@ -726,6 +733,329 @@ async fn handle_command_run(
     axum::Json(json!({
         "type": "error",
         "error": format!("Unknown command: {}. Type /help for available commands.", cmd),
+    }))
+}
+
+async fn handle_model_registry(State(state): State<AppState>) -> axum::Json<Value> {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    // Read models.yaml from project root (next to mlx-flash-server/)
+    let registry_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("scripts/models.yaml");
+
+    let yaml_content = match std::fs::read_to_string(&registry_path) {
+        Ok(c) => c,
+        Err(e) => {
+            return axum::Json(json!({
+                "error": format!("Cannot read models.yaml: {e}"),
+                "path": registry_path.to_string_lossy(),
+            }));
+        }
+    };
+
+    let registry: Value = match serde_yaml::from_str(&yaml_content) {
+        Ok(v) => v,
+        Err(e) => {
+            return axum::Json(json!({"error": format!("Invalid YAML: {e}")}));
+        }
+    };
+
+    let cache_dir = registry["cache_dir"]
+        .as_str()
+        .unwrap_or("~/.cache/huggingface/hub");
+    let cache_dir_expanded = cache_dir.replace(
+        '~',
+        &std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
+    );
+
+    let mut models = Vec::new();
+    if let Some(model_list) = registry["models"].as_array() {
+        for m in model_list {
+            let model_id = m["id"].as_str().unwrap_or("");
+            let dir_name = format!("models--{}", model_id.replace('/', "--"));
+            let model_path = std::path::PathBuf::from(&cache_dir_expanded).join(&dir_name);
+            let cached = model_path.exists();
+            let size_gb: f64 = if cached {
+                walkdir_size(&model_path) as f64 / 1073741824.0
+            } else {
+                m["size_gb_approx"].as_f64().unwrap_or(0.0)
+            };
+
+            models.push(json!({
+                "id": model_id,
+                "category_expected": m["category_expected"].as_str().unwrap_or("unknown"),
+                "size_gb": (size_gb * 10.0).round() / 10.0,
+                "cached": cached,
+                "skip": m["skip"].as_bool().unwrap_or(false),
+                "notes": m["notes"].as_str().unwrap_or(""),
+                "drafter": m["drafter"].as_str(),
+            }));
+        }
+    }
+
+    axum::Json(json!({
+        "models": models,
+        "cache_dir": cache_dir_expanded,
+        "total_models": models.len(),
+        "cached_models": models.iter().filter(|m| m["cached"].as_bool().unwrap_or(false)).count(),
+    }))
+}
+
+fn walkdir_size(path: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let ft = entry.file_type().unwrap_or_else(|_| std::fs::metadata(entry.path()).unwrap().file_type());
+            if ft.is_file() {
+                total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+            } else if ft.is_dir() {
+                total += walkdir_size(&entry.path());
+            }
+        }
+    }
+    total
+}
+
+async fn handle_model_cleanup(State(state): State<AppState>) -> axum::Json<Value> {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    let registry_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .join("scripts/models.yaml");
+
+    let yaml_content = match std::fs::read_to_string(&registry_path) {
+        Ok(c) => c,
+        Err(e) => return axum::Json(json!({"error": format!("Cannot read models.yaml: {e}")})),
+    };
+
+    let registry: Value = match serde_yaml::from_str(&yaml_content) {
+        Ok(v) => v,
+        Err(e) => return axum::Json(json!({"error": format!("Invalid YAML: {e}")})),
+    };
+
+    let cache_dir = registry["cache_dir"]
+        .as_str()
+        .unwrap_or("~/.cache/huggingface/hub")
+        .replace('~', &std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()));
+
+    let mut removed = Vec::new();
+    if let Some(model_list) = registry["models"].as_array() {
+        for m in model_list {
+            let model_id = m["id"].as_str().unwrap_or("");
+            let dir_name = format!("models--{}", model_id.replace('/', "--"));
+            let model_path = std::path::PathBuf::from(&cache_dir).join(&dir_name);
+            if model_path.exists() {
+                let size_gb = walkdir_size(&model_path) as f64 / 1073741824.0;
+                match std::fs::remove_dir_all(&model_path) {
+                    Ok(_) => removed.push(json!({"id": model_id, "size_gb": (size_gb * 10.0).round() / 10.0})),
+                    Err(e) => removed.push(json!({"id": model_id, "error": format!("{e}")})),
+                }
+            }
+        }
+    }
+
+    let total_freed: f64 = removed.iter()
+        .filter_map(|r| r["size_gb"].as_f64())
+        .sum();
+
+    axum::Json(json!({
+        "removed": removed,
+        "total_freed_gb": (total_freed * 10.0).round() / 10.0,
+    }))
+}
+
+async fn handle_model_profile(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::Json<Value> {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    let parsed: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+    let filter: Vec<String> = parsed["models"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let max_tokens = parsed["max_tokens"].as_u64().unwrap_or(32);
+    let prompt = parsed["prompt"]
+        .as_str()
+        .unwrap_or("def binary_search(arr, target):\n    ")
+        .to_string();
+
+    // Forward to first healthy Python worker
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .unwrap();
+
+    let worker = match state.pool.next_worker() {
+        Some(w) => w,
+        None => return axum::Json(json!({"error": "No healthy workers available"})),
+    };
+    let url = format!("http://127.0.0.1:{}/profile", worker.port);
+    let profile_body = json!({
+        "models": filter,
+        "max_tokens": max_tokens,
+        "prompt": prompt,
+    });
+
+    match client.post(&url).json(&profile_body).send().await {
+        Ok(resp) => {
+            if let Ok(result) = resp.json::<Value>().await {
+                axum::Json(result)
+            } else {
+                axum::Json(json!({"error": "Invalid response from Python worker"}))
+            }
+        }
+        Err(e) => axum::Json(json!({
+            "error": format!("Python worker unreachable: {e}"),
+            "hint": "Ensure a Python worker is running. Use GET /v1/models/registry to list models without profiling.",
+        })),
+    }
+}
+
+async fn handle_model_profile_batch(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::Json<Value> {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    let parsed: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+
+    // Forward to first healthy Python worker's /profile/batch endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(1800)) // batch profiling can be very slow
+        .build()
+        .unwrap();
+
+    let worker = match state.pool.next_worker() {
+        Some(w) => w,
+        None => return axum::Json(json!({"error": "No healthy workers available"})),
+    };
+    let url = format!("http://127.0.0.1:{}/profile/batch", worker.port);
+
+    match client.post(&url).json(&parsed).send().await {
+        Ok(resp) => {
+            if let Ok(result) = resp.json::<Value>().await {
+                axum::Json(result)
+            } else {
+                axum::Json(json!({"error": "Invalid response from Python worker"}))
+            }
+        }
+        Err(e) => axum::Json(json!({
+            "error": format!("Python worker unreachable: {e}"),
+            "hint": "Ensure a Python worker is running.",
+        })),
+    }
+}
+
+async fn handle_model_profile_list(State(state): State<AppState>) -> axum::Json<Value> {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    // Forward to first healthy Python worker's /profile/models endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let worker = match state.pool.next_worker() {
+        Some(w) => w,
+        None => return axum::Json(json!({"error": "No healthy workers available"})),
+    };
+    let url = format!("http://127.0.0.1:{}/profile/models", worker.port);
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if let Ok(result) = resp.json::<Value>().await {
+                axum::Json(result)
+            } else {
+                axum::Json(json!({"error": "Invalid response from Python worker"}))
+            }
+        }
+        Err(e) => axum::Json(json!({
+            "error": format!("Python worker unreachable: {e}"),
+            "hint": "Ensure a Python worker is running.",
+        })),
+    }
+}
+
+async fn handle_config_get(State(state): State<AppState>) -> axum::Json<Value> {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    // Gather config from first healthy Python worker
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    let worker = match state.pool.next_worker() {
+        Some(w) => w,
+        None => return axum::Json(json!({
+            "server": { "error": "No healthy workers" },
+            "worker": null,
+        })),
+    };
+    let url = format!("http://127.0.0.1:{}/config", worker.port);
+
+    let worker_config = match client.get(&url).send().await {
+        Ok(resp) => resp.json::<Value>().await.unwrap_or(json!({"error": "parse failed"})),
+        Err(_) => json!({"error": "worker unreachable"}),
+    };
+
+    let model_name = state.model_name.read().await.clone();
+
+    axum::Json(json!({
+        "server": {
+            "model": model_name,
+            "workers": state.pool.len(),
+            "workers_healthy": state.pool.healthy_count(),
+            "uptime_secs": state.start_time.elapsed().as_secs_f64(),
+            "cache_enabled": state.cache.is_some(),
+        },
+        "worker": worker_config,
+    }))
+}
+
+async fn handle_config_set(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::Json<Value> {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    let parsed: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return axum::Json(json!({"error": format!("Invalid JSON: {e}")})),
+    };
+
+    // Propagate config to ALL Python workers
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let mut successes = 0;
+    let mut failures = Vec::new();
+
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/config");
+        match client.post(&url).json(&parsed).send().await {
+            Ok(resp) if resp.status().is_success() => successes += 1,
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                failures.push(json!({"port": port, "status": status}));
+            }
+            Err(e) => failures.push(json!({"port": port, "error": format!("{e}")})),
+        }
+    }
+
+    axum::Json(json!({
+        "applied": successes > 0,
+        "workers_updated": successes,
+        "workers_failed": failures.len(),
+        "failures": failures,
+        "config": parsed,
     }))
 }
 

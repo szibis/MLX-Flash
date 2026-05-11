@@ -23,7 +23,7 @@ With 8.7% per-position acceptance and tree_width=5:
 
 import heapq
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import mlx.core as mx
 import numpy as np
@@ -74,7 +74,7 @@ class DDTreeBuilder:
 
     def __init__(self, config: DDTreeConfig | None = None):
         self.config = config or DDTreeConfig()
-        self._stats = {
+        self._stats: dict[str, Any] = {
             "trees_built": 0,
             "total_nodes": 0,
             "total_accepted": 0,
@@ -263,9 +263,7 @@ class DDTreeBuilder:
         }
 
 
-def sequoia_optimal_tree(
-    budget: int, acceptance_probs: list[float], max_depth: int | None = None
-) -> list[tuple[int, int]]:
+def sequoia_optimal_tree(budget: int, acceptance_probs: list[float], max_depth: int | None = None) -> dict[str, Any]:
     """Compute Sequoia-optimal tree topology via DP.
 
     Given a token budget and per-position acceptance probabilities,

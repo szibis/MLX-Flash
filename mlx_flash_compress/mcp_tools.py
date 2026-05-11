@@ -106,7 +106,7 @@ def get_mcp_manifest() -> dict:
 
 def get_tool_names() -> list[str]:
     """Return list of available tool names."""
-    return [t["name"] for t in MCP_TOOLS]
+    return [str(t["name"]) for t in MCP_TOOLS]
 
 
 def format_mcp_response(tool_name: str, result: dict) -> dict:

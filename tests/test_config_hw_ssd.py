@@ -160,3 +160,99 @@ class TestSSDProtection:
         health = check_ssd_health()
         # May or may not work depending on permissions
         assert isinstance(health.available, bool)
+
+
+class TestConfigEdgeCases:
+    """Cover lines 141-144, 153, 158-161, 198, 254-266 in config.py."""
+
+    def test_from_file_not_found(self):
+        with pytest.raises(FileNotFoundError):
+            FlashConfig.from_file("/nonexistent/path/config.json")
+
+    def test_from_yaml_without_pyyaml(self):
+        """YAML file loading without PyYAML should raise ImportError or work."""
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write("cache:\n  ram_mb: 1024\n")
+            path = f.name
+
+        try:
+            # This either works (if pyyaml installed) or raises ImportError
+            try:
+                cfg = FlashConfig.from_file(path)
+                assert cfg.cache.ram_mb == 1024
+            except ImportError:
+                pass  # Expected if pyyaml not installed
+        finally:
+            os.unlink(path)
+
+    def test_from_env_with_bool_values(self):
+        os.environ["FLASH_MIXED_PRECISION"] = "true"
+        os.environ["FLASH_SKIP_FALLBACK"] = "yes"
+        try:
+            cfg = FlashConfig.from_env()
+            assert cfg.mixed_precision.enable is True
+            assert cfg.skip_fallback.enable is True
+        finally:
+            del os.environ["FLASH_MIXED_PRECISION"]
+            del os.environ["FLASH_SKIP_FALLBACK"]
+
+    def test_from_env_with_string_values(self):
+        os.environ["FLASH_ENGINE"] = "c_gcd"
+        os.environ["FLASH_CACHE_HOT_ALGO"] = "lzfse"
+        try:
+            cfg = FlashConfig.from_env()
+            assert cfg.engine.backend == "c_gcd"
+            assert cfg.cache.hot_algo == "lzfse"
+        finally:
+            del os.environ["FLASH_ENGINE"]
+            del os.environ["FLASH_CACHE_HOT_ALGO"]
+
+    def test_get_config_with_explicit_path(self):
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump({"cache": {"ram_mb": 8192}}, f)
+            path = f.name
+        try:
+            cfg = get_config(config_path=path)
+            assert cfg.cache.ram_mb == 8192
+        finally:
+            os.unlink(path)
+
+    def test_get_config_with_env(self):
+        os.environ["FLASH_CACHE_RAM_MB"] = "4096"
+        try:
+            cfg = get_config()
+            assert cfg.cache.ram_mb == 4096
+        finally:
+            del os.environ["FLASH_CACHE_RAM_MB"]
+
+    def test_get_config_auto_detect(self):
+        # Ensure no FLASH_ env vars
+        flash_keys = [k for k in os.environ if k.startswith("FLASH_")]
+        for k in flash_keys:
+            del os.environ[k]
+        cfg = get_config()
+        assert isinstance(cfg, FlashConfig)
+
+    def test_from_dict_unknown_section_ignored(self):
+        data = {"cache": {"ram_mb": 512}, "unknown_section": {"foo": "bar"}}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            path = f.name
+        try:
+            cfg = FlashConfig.from_file(path)
+            assert cfg.cache.ram_mb == 512
+        finally:
+            os.unlink(path)
+
+    def test_from_dict_unknown_field_ignored(self):
+        data = {"cache": {"ram_mb": 512, "unknown_field": 42}}
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            path = f.name
+        try:
+            cfg = FlashConfig.from_file(path)
+            assert cfg.cache.ram_mb == 512
+        finally:
+            os.unlink(path)

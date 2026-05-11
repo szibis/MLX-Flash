@@ -103,7 +103,7 @@ impl LcpCache {
         self.step.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Return the current step counter value.
+    #[allow(dead_code)]
     pub fn current_step(&self) -> u64 {
         self.step.load(Ordering::Relaxed)
     }

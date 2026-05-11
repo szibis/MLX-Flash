@@ -246,7 +246,7 @@ def simulate_prefetch(
             predictor.observe(layer, experts)
 
     # Evaluation phase
-    prev_experts = []
+    prev_experts: list[int] = []
     for token in range(warmup, num_tokens):
         for layer in range(num_layers):
             actual = rng.choice(num_experts, size=top_k, replace=False, p=expert_probs).tolist()

@@ -18,7 +18,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # MLX imports
 import mlx.core as mx
@@ -108,7 +108,7 @@ def extract_expert_weights_to_disk(model, work_dir: str):
     if not experts:
         experts = find_expert_params(model)
 
-    metadata = {
+    metadata: dict[str, Any] = {
         "num_experts_found": len(experts),
         "layers": set(),
         "expert_ids": set(),
@@ -234,7 +234,7 @@ def benchmark_real_compression(expert_dir: Path, max_files: int = 20):
     if native_available():
         for name, algo in [("LZFSE (native)", Algorithm.LZFSE), ("LZ4_RAW (native)", Algorithm.LZ4_RAW)]:
             c = NativeCompressor(algo)
-            compressors.append((name, lambda d, _c=c: _c.compress(d), lambda b, _c=c: _c.decompress(b)))
+            compressors.append((name, lambda d, _c=c: _c.compress(d), lambda b, _c=c: _c.decompress(b)))  # type: ignore[misc]
 
     headers = ["Algorithm", "Ratio", "Compress MB/s", "Decompress MB/s"]
     rows = []

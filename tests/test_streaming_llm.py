@@ -295,3 +295,104 @@ class TestStreamingLLMEdgeCases:
         stats = cache.get_stats()
         assert stats["eviction_count"] == 1
         assert stats["total_evicted_tokens"] == 1
+
+
+class TestApplyStreamingLLM:
+    """Cover lines 244-265: apply_streaming_llm function."""
+
+    def test_basic_apply(self):
+        from mlx_flash_compress.streaming_llm import apply_streaming_llm
+
+        class MockAttn:
+            num_heads = 8
+            head_dim = 64
+
+        class MockLayer:
+            def __init__(self):
+                self.self_attn = MockAttn()
+
+        class MockModel:
+            layers = [MockLayer(), MockLayer(), MockLayer()]
+
+        model = MockModel()
+        cache = apply_streaming_llm(model)
+        assert isinstance(cache, StreamingLLMCache)
+        assert cache.num_layers == 3
+        assert cache.num_heads == 8
+
+    def test_apply_with_attention_attr(self):
+        from mlx_flash_compress.streaming_llm import apply_streaming_llm
+
+        class MockAttn:
+            n_heads = 4
+            d_head = 32
+
+        class MockLayer:
+            def __init__(self):
+                self.attention = MockAttn()
+
+        class MockModel:
+            layers = [MockLayer()]
+
+        model = MockModel()
+        cache = apply_streaming_llm(model)
+        assert cache.num_heads == 4
+
+    def test_apply_with_custom_config(self):
+        from mlx_flash_compress.streaming_llm import apply_streaming_llm
+
+        class MockAttn:
+            num_heads = 8
+            head_dim = 64
+
+        class MockLayer:
+            def __init__(self):
+                self.self_attn = MockAttn()
+
+        class MockModel:
+            layers = [MockLayer()]
+
+        config = StreamingLLMConfig(num_sink_tokens=8, window_size=512)
+        cache = apply_streaming_llm(MockModel(), config)
+        assert cache.config.num_sink_tokens == 8
+        assert cache.config.window_size == 512
+
+    def test_apply_no_attention_raises(self):
+        from mlx_flash_compress.streaming_llm import apply_streaming_llm
+
+        class MockLayer:
+            pass
+
+        class MockModel:
+            layers = [MockLayer()]
+
+        with pytest.raises(ValueError, match="Cannot find attention"):
+            apply_streaming_llm(MockModel())
+
+    def test_apply_no_heads_raises(self):
+        from mlx_flash_compress.streaming_llm import apply_streaming_llm
+
+        class MockAttn:
+            pass  # no num_heads or head_dim
+
+        class MockLayer:
+            def __init__(self):
+                self.self_attn = MockAttn()
+
+        class MockModel:
+            layers = [MockLayer()]
+
+        with pytest.raises(ValueError, match="Cannot determine num_heads"):
+            apply_streaming_llm(MockModel())
+
+
+class TestEvictNoopWhenFits:
+    """Cover line 141: no eviction when cur_len <= sink + window."""
+
+    def test_no_eviction_when_under_capacity(self, cache):
+        """If total length fits, _evict_layer should be a no-op."""
+        k, v = _make_kv(10)
+        cache.update(0, k, v)
+        # 10 <= 4 + 16 = 20, so no eviction
+        stats = cache.get_stats()
+        assert stats["eviction_count"] == 0

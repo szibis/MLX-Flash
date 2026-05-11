@@ -114,7 +114,8 @@ def estimate_tier_savings(
     # Calculate total bytes
     baseline_bytes = num_experts * expert_params * 0.5  # Q4 baseline
     tiered_bytes = sum(
-        tier_counts[tier] * expert_params * PRECISION_TIERS[tier]["bytes_per_param"] for tier in tier_counts
+        tier_counts[tier] * expert_params * float(PRECISION_TIERS[tier]["bytes_per_param"])  # type: ignore[arg-type, misc]
+        for tier in tier_counts
     )
 
     return {

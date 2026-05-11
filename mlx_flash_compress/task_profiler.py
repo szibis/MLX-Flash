@@ -157,10 +157,10 @@ def get_predefined_profile(
         task_name=task,
         num_layers=num_layers,
         num_experts=num_experts,
-        hot_fraction=info["hot_fraction"],
-        seed=info["seed"],
+        hot_fraction=float(info["hot_fraction"]),  # type: ignore[arg-type]
+        seed=int(info["seed"]),  # type: ignore[call-overload]
     )
-    profile.description = info["description"]
+    profile.description = str(info["description"])
     return profile
 
 
@@ -184,8 +184,8 @@ class ProfileCalibrator:
     def __init__(self, num_layers: int, num_experts: int):
         self.num_layers = num_layers
         self.num_experts = num_experts
-        self._counts = defaultdict(lambda: defaultdict(int))
-        self._total_per_layer = defaultdict(int)
+        self._counts: defaultdict[int, defaultdict[int, int]] = defaultdict(lambda: defaultdict(int))
+        self._total_per_layer: defaultdict[int, int] = defaultdict(int)
 
     def record(self, layer_idx: int, expert_ids: list[int]):
         """Record which experts were activated at this layer."""

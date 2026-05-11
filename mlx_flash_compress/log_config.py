@@ -30,7 +30,7 @@ class JsonFormatter(logging.Formatter):
         self.worker_port = worker_port
 
     def format(self, record: logging.LogRecord) -> str:
-        entry = {
+        entry: dict[str, object] = {
             "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
             "level": record.levelname.lower(),
             "component": self.component,
@@ -119,6 +119,7 @@ def setup_logging(
     logger.setLevel(getattr(logging, level, logging.INFO))
     logger.handlers.clear()
 
+    formatter: logging.Formatter
     if json_format:
         formatter = JsonFormatter(component=component, worker_port=port)
     else:
