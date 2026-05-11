@@ -78,6 +78,18 @@ DRAFTER_PRESETS = {
         "recommended_lr": 3e-4,
         "notes": "284B total / 13B active MoE. Use 2-bit on 64GB, 4-bit on 128GB+.",
     },
+    "deepseek-v4-flash-mini": {
+        "target_2bit": "mlx-community/DeepSeek-V4-Flash-2bit-DQ",
+        "target_4bit": "mlx-community/DeepSeek-V4-Flash-4bit",
+        "drafter_layers": 3,
+        "drafter_hidden": 1024,
+        "block_size": 16,
+        "recommended_steps": 8000,
+        "recommended_samples": 800,
+        "recommended_lr": 4e-4,
+        "notes": "Mini drafter (3 layers, 1024 hidden) for RAM-constrained setups. "
+        "Trades ~5-10% acceptance for ~60% less drafter memory.",
+    },
     "qwen3.6-35b-a3b": {
         "target_4bit": "mlx-community/Qwen3.6-35B-A3B-4bit",
         "drafter_hub": "z-lab/Qwen3.6-35B-A3B-DFlash",
@@ -90,6 +102,64 @@ DRAFTER_PRESETS = {
         "notes": "35B hybrid SSM+attention MoE, 3B active. z-lab drafter available.",
     },
 }
+
+
+def _get_available_ram_gb() -> float:
+    """Return available system RAM in GB (best-effort)."""
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip()) / (1024**3)
+    except Exception:
+        pass
+    # Fallback: try psutil
+    try:
+        import psutil
+
+        return psutil.virtual_memory().total / (1024**3)
+    except Exception:
+        pass
+    return 0.0
+
+
+def auto_select_preset(target_model: str | None = None) -> str:
+    """Automatically select the best drafter preset based on available RAM.
+
+    Heuristic:
+    - If target is DeepSeek V4 Flash:
+      - >= 96 GB RAM: deepseek-v4-flash (full drafter)
+      - < 96 GB RAM: deepseek-v4-flash-mini (smaller drafter)
+    - Otherwise defaults to qwen3.6-35b-a3b
+
+    Args:
+        target_model: Optional target model path/name to help select.
+
+    Returns:
+        Preset name string.
+    """
+    ram_gb = _get_available_ram_gb()
+
+    # Detect DeepSeek V4 Flash from target model name
+    is_deepseek_v4 = False
+    if target_model:
+        lower = target_model.lower()
+        if "deepseek" in lower and ("v4" in lower or "flash" in lower):
+            is_deepseek_v4 = True
+
+    if is_deepseek_v4:
+        if ram_gb >= 96:
+            return "deepseek-v4-flash"
+        else:
+            return "deepseek-v4-flash-mini"
+
+    # Default
+    return "qwen3.6-35b-a3b"
 
 
 def detect_target(model_path: str):
@@ -185,45 +255,76 @@ def collect_hidden_states(args):
     }
     (output_dir / "model_info.json").write_text(json.dumps(model_info, indent=2))
 
-    # Diverse prompts covering code, math, reasoning, prose, dialogue
-    prompts = [
-        # Code (Python, JS, Rust, SQL, shell)
-        "def fibonacci(n):\n    ",
-        "import torch\nimport torch.nn as nn\n\nclass",
-        "async def fetch_data(url: str) -> dict:\n    ",
-        "def merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n",
-        "class BinaryTree:\n    def __init__(self, value):\n",
-        "SELECT u.name, COUNT(o.id) FROM users u JOIN",
-        "function debounce(fn, delay) {\n  let timer;\n  return function(",
-        "fn main() -> Result<(), Box<dyn std::error::Error>> {\n    let client =",
-        "#!/bin/bash\nset -euo pipefail\n\nfor file in",
-        "def train_step(model, optimizer, batch):\n    optimizer.zero_grad()\n",
-        "class LRUCache:\n    def __init__(self, capacity: int):\n",
-        "@app.route('/api/users', methods=['POST'])\ndef create_user():\n",
-        # Math & reasoning
-        "To solve the quadratic equation ax^2 + bx + c = 0,",
-        "Given a matrix A of size m x n, the transpose A^T is",
-        "The gradient descent algorithm works by iteratively",
-        "Prove by induction that the sum of the first n natural numbers is",
-        "The eigenvalues of a 2x2 matrix can be found by solving",
-        "Using the chain rule, the derivative of f(g(x)) is",
-        # Technical prose
-        "The transformer architecture consists of an encoder and decoder, where",
-        "The attention mechanism allows the model to focus on",
-        "In Python, list comprehensions provide a concise way to",
-        "The CAP theorem states that a distributed system cannot simultaneously",
-        "Garbage collection in modern languages uses either reference counting or",
-        "The difference between TCP and UDP is that TCP provides",
-        # Dialogue & instruction following
-        "User: How do I implement a binary search?\nAssistant:",
-        "Explain the difference between a stack and a queue to",
-        "Write a Python function that takes a list of integers and returns",
-        "Summarize the key advantages of using a hash table for",
-        # Structured output
-        '{"name": "John", "age": 30, "skills": [',
-        "# README\n\n## Installation\n\n```bash\npip install",
-        "| Column A | Column B | Column C |\n|----------|----------|----------|\n|",
-    ]
+    # Load calibration prompts from file if provided, otherwise use built-in defaults
+    if getattr(args, "calibration_prompts", None):
+        prompts_path = Path(args.calibration_prompts)
+        if not prompts_path.exists():
+            print(f"Error: calibration prompts file not found: {prompts_path}")
+            sys.exit(1)
+        prompts = []
+        with open(prompts_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    # Support {"prompt": "..."} or {"text": "..."} or plain string
+                    if isinstance(data, dict):
+                        prompt_text = data.get("prompt") or data.get("text") or ""
+                    elif isinstance(data, str):
+                        prompt_text = data
+                    else:
+                        continue
+                    if prompt_text:
+                        prompts.append(prompt_text)
+                except json.JSONDecodeError:
+                    # Treat as plain text line
+                    prompts.append(line)
+        print(f"  Loaded {len(prompts)} calibration prompts from {prompts_path}")
+        if not prompts:
+            print("Error: no valid prompts found in calibration file")
+            sys.exit(1)
+    else:
+        # Diverse prompts covering code, math, reasoning, prose, dialogue
+        prompts = [
+            # Code (Python, JS, Rust, SQL, shell)
+            "def fibonacci(n):\n    ",
+            "import torch\nimport torch.nn as nn\n\nclass",
+            "async def fetch_data(url: str) -> dict:\n    ",
+            "def merge_sort(arr):\n    if len(arr) <= 1:\n        return arr\n",
+            "class BinaryTree:\n    def __init__(self, value):\n",
+            "SELECT u.name, COUNT(o.id) FROM users u JOIN",
+            "function debounce(fn, delay) {\n  let timer;\n  return function(",
+            "fn main() -> Result<(), Box<dyn std::error::Error>> {\n    let client =",
+            "#!/bin/bash\nset -euo pipefail\n\nfor file in",
+            "def train_step(model, optimizer, batch):\n    optimizer.zero_grad()\n",
+            "class LRUCache:\n    def __init__(self, capacity: int):\n",
+            "@app.route('/api/users', methods=['POST'])\ndef create_user():\n",
+            # Math & reasoning
+            "To solve the quadratic equation ax^2 + bx + c = 0,",
+            "Given a matrix A of size m x n, the transpose A^T is",
+            "The gradient descent algorithm works by iteratively",
+            "Prove by induction that the sum of the first n natural numbers is",
+            "The eigenvalues of a 2x2 matrix can be found by solving",
+            "Using the chain rule, the derivative of f(g(x)) is",
+            # Technical prose
+            "The transformer architecture consists of an encoder and decoder, where",
+            "The attention mechanism allows the model to focus on",
+            "In Python, list comprehensions provide a concise way to",
+            "The CAP theorem states that a distributed system cannot simultaneously",
+            "Garbage collection in modern languages uses either reference counting or",
+            "The difference between TCP and UDP is that TCP provides",
+            # Dialogue & instruction following
+            "User: How do I implement a binary search?\nAssistant:",
+            "Explain the difference between a stack and a queue to",
+            "Write a Python function that takes a list of integers and returns",
+            "Summarize the key advantages of using a hash table for",
+            # Structured output
+            '{"name": "John", "age": 30, "skills": [',
+            "# README\n\n## Installation\n\n```bash\npip install",
+            "| Column A | Column B | Column C |\n|----------|----------|----------|\n|",
+        ]
 
     from mlx_lm import generate
 
@@ -533,8 +634,21 @@ def show_preset(args):
         for name, cfg in DRAFTER_PRESETS.items():
             print(f"\n  {name}:")
             print(f"    {cfg['notes']}")
+        print("\n  auto:")
+        print("    Automatically selects preset based on available RAM and target model.")
         print("\nUsage: python scripts/train_dflash_drafter.py preset <name>")
         return
+
+    if args.name == "auto":
+        target = getattr(args, "target_model", None)
+        selected = auto_select_preset(target)
+        ram_gb = _get_available_ram_gb()
+        print(f"Auto-selected preset: {selected}")
+        print(f"  Available RAM: {ram_gb:.0f} GB")
+        if target:
+            print(f"  Target model: {target}")
+        print(f"\nShowing configuration for '{selected}':\n")
+        args.name = selected
 
     cfg = DRAFTER_PRESETS[args.name]
     target_key = f"target_{args.quant}"
@@ -599,6 +713,13 @@ def main():
     collect_p.add_argument(
         "--checkpoint-layers", type=str, default=None, help="Comma-separated checkpoint layer IDs (e.g. 1,10,19,28,37)"
     )
+    collect_p.add_argument(
+        "--calibration-prompts",
+        type=str,
+        default=None,
+        help="Path to a .jsonl file of custom prompts for calibration data collection. "
+        'Each line: {"prompt": "..."} or plain text. If omitted, uses built-in diverse prompts.',
+    )
 
     train_p = subparsers.add_parser("train", help="Train DFlash drafter")
     train_p.add_argument("--training-data", type=str, required=True)
@@ -625,8 +746,14 @@ def main():
         type=str,
         nargs="?",
         default=None,
-        choices=list(DRAFTER_PRESETS.keys()),
-        help="Preset name (omit to list all)",
+        choices=list(DRAFTER_PRESETS.keys()) + ["auto"],
+        help="Preset name (omit to list all, 'auto' to auto-select based on RAM)",
+    )
+    preset_p.add_argument(
+        "--target-model",
+        type=str,
+        default=None,
+        help="Target model name (used by 'auto' to pick the best preset)",
     )
     preset_p.add_argument("--quant", type=str, default="4bit", choices=["2bit", "4bit"], help="Quantization level")
 

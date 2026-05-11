@@ -86,6 +86,13 @@ LAZY_IMPORTS = {
     "HybridKVCache": ("mlx_flash_compress.kv_cache_backend", "HybridKVCache"),
     "create_kv_cache": ("mlx_flash_compress.kv_cache_backend", "create_kv_cache"),
     "install_kv_cache": ("mlx_flash_compress.kv_cache_backend", "install_kv_cache"),
+    # ssd_kv_cache.py
+    "SSDKVCache": ("mlx_flash_compress.ssd_kv_cache", "SSDKVCache"),
+    # prefix_cache.py
+    "PrefixCacheTrie": ("mlx_flash_compress.prefix_cache", "PrefixCacheTrie"),
+    "get_or_compute_prefix": ("mlx_flash_compress.prefix_cache", "get_or_compute_prefix"),
+    # draft_expert_prefetch.py
+    "DraftExpertPrefetcher": ("mlx_flash_compress.draft_expert_prefetch", "DraftExpertPrefetcher"),
 }
 
 

@@ -19,7 +19,10 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from mlx_flash_compress.draft_expert_prefetch import DraftExpertPrefetcher
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -284,6 +287,10 @@ class DFlashRunner:
         draft_temperature: float | None = None,
         num_active_layers: int | None = None,
         quantize_drafter: int | None = None,
+        acceptance_threshold: float = 0.0,
+        normalize_hidden: bool = False,
+        auto_block_size: bool = False,
+        expert_prefetcher: Optional["DraftExpertPrefetcher"] = None,
     ):
         self.target = target_model
         self.tokenizer = tokenizer
@@ -295,6 +302,16 @@ class DFlashRunner:
         self._num_denoise_steps = num_denoise_steps
         self._draft_temperature = draft_temperature
         self._num_active_layers = num_active_layers
+        self._acceptance_threshold = acceptance_threshold
+        self._normalize_hidden = normalize_hidden
+        self._auto_block_size = auto_block_size
+        self._expert_prefetcher = expert_prefetcher
+
+        # Auto block-size tuning state
+        self._auto_bs_rounds: int = 0
+        self._auto_bs_accepted: int = 0
+        self._auto_bs_drafted: int = 0
+        self._auto_bs_initial = self.block_size
 
         if quantize_drafter is not None:
             nn.quantize(self.drafter, group_size=64, bits=quantize_drafter)
@@ -352,6 +369,16 @@ class DFlashRunner:
 
         raise RuntimeError("Cannot detect target model's embed_tokens/layers")
 
+    @staticmethod
+    def _apply_hidden_normalization(h: mx.array) -> mx.array:
+        """Normalize hidden states to unit norm along the last dimension.
+
+        Bridges the scale gap between 4-bit quantized target and fp16 drafter
+        by ensuring hidden states have consistent magnitude.
+        """
+        norm = mx.sqrt(mx.sum(h * h, axis=-1, keepdims=True)) + 1e-6
+        return h / norm
+
     def _forward_target(self, input_ids: mx.array) -> tuple[mx.array, mx.array]:
         """Single target forward pass returning both logits and checkpoint hidden states.
 
@@ -372,7 +399,10 @@ class DFlashRunner:
             mask = ssm_mask if is_linear else fa_mask
             h = layer(h, mask=mask, cache=None)
             if i in self.config.target_layer_ids:
-                checkpoint_hiddens.append(h)
+                ch = h
+                if self._normalize_hidden:
+                    ch = self._apply_hidden_normalization(ch)
+                checkpoint_hiddens.append(ch)
 
         if self.hidden_dtype is not None:
             checkpoint_hiddens = [c.astype(self.hidden_dtype) for c in checkpoint_hiddens]
@@ -569,7 +599,10 @@ class DFlashRunner:
             mask = ssm_mask if is_linear else fa_mask
             h = layer(h, mask=mask, cache=cache[i])
             if i in self.config.target_layer_ids:
-                checkpoint_hiddens.append(h)
+                ch = h
+                if self._normalize_hidden:
+                    ch = self._apply_hidden_normalization(ch)
+                checkpoint_hiddens.append(ch)
 
         if self.hidden_dtype is not None:
             checkpoint_hiddens = [c.astype(self.hidden_dtype) for c in checkpoint_hiddens]
@@ -620,8 +653,97 @@ class DFlashRunner:
         logits = self._lm_head_fn(h)
         return logits
 
+    def _auto_tune_block_size(self, num_accepted: int, n_draft: int) -> None:
+        """Adaptively tune block size based on observed acceptance rates.
+
+        After 10 verification rounds, adjusts block_size:
+        - acceptance_rate > 40% and block_size < 16: try doubling (up to 16)
+        - acceptance_rate < 15% and block_size > 2: halve (down to 2)
+        """
+        if not self._auto_block_size:
+            return
+
+        self._auto_bs_rounds += 1
+        self._auto_bs_accepted += num_accepted
+        self._auto_bs_drafted += n_draft
+
+        if self._auto_bs_rounds >= 10:
+            rate = self._auto_bs_accepted / max(1, self._auto_bs_drafted)
+            old_bs = self.block_size
+
+            if rate > 0.40 and self.block_size < 16:
+                self.block_size = min(self.block_size * 2, 16)
+            elif rate < 0.15 and self.block_size > 2:
+                self.block_size = max(self.block_size // 2, 2)
+
+            # Reset counters for next tuning window
+            self._auto_bs_rounds = 0
+            self._auto_bs_accepted = 0
+            self._auto_bs_drafted = 0
+
+    def _verify_with_threshold(
+        self,
+        predictions: mx.array,
+        draft_np: list,
+        accept_top_k: int,
+        acceptance_threshold: float,
+    ) -> int:
+        """Unified verification logic supporting greedy, top-K, and soft threshold.
+
+        Args:
+            predictions: [1, n_draft, vocab] logits from target model
+            draft_np: List of draft token IDs
+            accept_top_k: Accept if draft is in target's top-K
+            acceptance_threshold: If > 0, accept if target assigns probability >= threshold
+
+        Returns:
+            Number of consecutive accepted tokens.
+        """
+        if acceptance_threshold > 0:
+            # Soft acceptance: accept if target probability >= threshold
+            probs = mx.softmax(predictions[0], axis=-1)
+            mx.eval(probs)
+            num_accepted = 0
+            for i, d in enumerate(draft_np):
+                prob_for_draft = float(probs[i, d].item())
+                if prob_for_draft >= acceptance_threshold:
+                    num_accepted += 1
+                else:
+                    break
+            return num_accepted
+        elif accept_top_k > 1:
+            # Multi-candidate: accept if draft is in target's top-K
+            mx.eval(predictions)
+            pred_np = predictions[0]
+            num_accepted = 0
+            for i, d in enumerate(draft_np):
+                top_k_ids = mx.argpartition(pred_np[i], kth=-accept_top_k)[-accept_top_k:]
+                mx.eval(top_k_ids)
+                if d in list(top_k_ids.tolist()):  # type: ignore[arg-type]
+                    num_accepted += 1
+                else:
+                    break
+            return num_accepted
+        else:
+            # Strict greedy matching
+            target_ids = mx.argmax(predictions, axis=-1)
+            mx.eval(target_ids)
+            target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
+            num_accepted = 0
+            for d, t in zip(draft_np, target_np):
+                if d == t:
+                    num_accepted += 1
+                else:
+                    break
+            return num_accepted
+
     def generate(
-        self, prompt: str, max_tokens: int = 128, use_cache: bool = True, accept_top_k: int = 1
+        self,
+        prompt: str,
+        max_tokens: int = 128,
+        use_cache: bool = True,
+        accept_top_k: int = 1,
+        acceptance_threshold: float | None = None,
     ) -> tuple[str, dict]:
         """Generate text with DFlash speculative decoding.
 
@@ -632,17 +754,29 @@ class DFlashRunner:
         Args:
             accept_top_k: Accept draft if in target's top-k (default 1 = strict
                 greedy matching). Higher values trade quality for speed.
+            acceptance_threshold: If > 0, accept draft token when target assigns
+                it probability >= threshold (soft matching). Overrides strict
+                greedy. Default None uses the instance-level setting.
 
         Returns (generated_text, stats_summary).
         """
+        threshold = acceptance_threshold if acceptance_threshold is not None else self._acceptance_threshold
         if use_cache:
             try:
-                return self._generate_cached(prompt, max_tokens, accept_top_k=accept_top_k)
+                return self._generate_cached(
+                    prompt, max_tokens, accept_top_k=accept_top_k, acceptance_threshold=threshold
+                )
             except Exception:
                 pass
-        return self._generate_no_cache(prompt, max_tokens, accept_top_k=accept_top_k)
+        return self._generate_no_cache(prompt, max_tokens, accept_top_k=accept_top_k, acceptance_threshold=threshold)
 
-    def _generate_cached(self, prompt: str, max_tokens: int = 128, accept_top_k: int = 1) -> tuple[str, dict]:
+    def _generate_cached(
+        self,
+        prompt: str,
+        max_tokens: int = 128,
+        accept_top_k: int = 1,
+        acceptance_threshold: float = 0.0,
+    ) -> tuple[str, dict]:
         """Cached DFlash generation — processes only new tokens per step."""
         import copy
         import time
@@ -677,6 +811,11 @@ class DFlashRunner:
             n_draft = draft_ids.shape[-1]
             self.stats["draft_times_ms"].append((time.perf_counter() - t_draft) * 1000)
 
+            # Expert prefetch: predict and preload MoE experts from draft tokens
+            if self._expert_prefetcher is not None:
+                draft_id_list = list(draft_ids[0].tolist())  # type: ignore[arg-type]
+                self._expert_prefetcher.prefetch_from_drafts(draft_id_list, self._embed_fn)
+
             t_verify = time.perf_counter()
             cache_snapshot = copy.deepcopy(cache)
 
@@ -695,27 +834,12 @@ class DFlashRunner:
 
             draft_np: list = list(draft_ids[0].tolist())  # type: ignore[arg-type]
 
-            if accept_top_k <= 1:
-                target_ids = mx.argmax(predictions, axis=-1)
-                mx.eval(target_ids)
-                target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
-                num_accepted = 0
-                for d, t in zip(draft_np, target_np):
-                    if d == t:
-                        num_accepted += 1
-                    else:
-                        break
-            else:
-                mx.eval(predictions)
-                pred_np = predictions[0]
-                num_accepted = 0
-                for i, d in enumerate(draft_np):
-                    top_k_ids = mx.argpartition(pred_np[i], kth=-accept_top_k)[-accept_top_k:]
-                    mx.eval(top_k_ids)
-                    if d in list(top_k_ids.tolist()):  # type: ignore[arg-type]
-                        num_accepted += 1
-                    else:
-                        break
+            num_accepted = self._verify_with_threshold(
+                predictions,
+                draft_np,
+                accept_top_k,
+                acceptance_threshold,
+            )
 
             if num_accepted == n_draft:
                 bonus = int(mx.argmax(verify_logits[0, -1]).item())
@@ -730,6 +854,9 @@ class DFlashRunner:
             self.stats["total_drafts"] += n_draft
             self.stats["total_accepted"] += len(accepted)
             self.stats["verify_steps"] += 1
+
+            # Auto-tune block size based on observed acceptance rates
+            self._auto_tune_block_size(num_accepted, n_draft)
 
             # Rollback cache to pre-draft state, replay accepted + bonus
             for i in range(len(cache)):
@@ -778,7 +905,13 @@ class DFlashRunner:
         text = self.tokenizer.decode(generated[len(tokens) :])
         return text, summary
 
-    def _generate_no_cache(self, prompt: str, max_tokens: int = 128, accept_top_k: int = 1) -> tuple[str, dict]:
+    def _generate_no_cache(
+        self,
+        prompt: str,
+        max_tokens: int = 128,
+        accept_top_k: int = 1,
+        acceptance_threshold: float = 0.0,
+    ) -> tuple[str, dict]:
         """Non-cached DFlash generation — reprocesses full context each step."""
         import time
 
@@ -805,6 +938,11 @@ class DFlashRunner:
             draft_ids, _ = self.draft_tokens(input_ids, target_hidden=target_hidden)
             self.stats["draft_times_ms"].append((time.perf_counter() - t_draft) * 1000)
 
+            # Expert prefetch: predict and preload MoE experts from draft tokens
+            if self._expert_prefetcher is not None:
+                draft_id_list = list(draft_ids[0].tolist())  # type: ignore[arg-type]
+                self._expert_prefetcher.prefetch_from_drafts(draft_id_list, self._embed_fn)
+
             t_verify = time.perf_counter()
             full_ids = mx.concatenate([input_ids, draft_ids], axis=-1)
             verify_logits, new_hidden = self._forward_target(full_ids)
@@ -816,26 +954,12 @@ class DFlashRunner:
 
             draft_np: list = list(draft_ids[0].tolist())  # type: ignore[arg-type]
 
-            if accept_top_k <= 1:
-                target_ids = mx.argmax(pred_logits, axis=-1)
-                mx.eval(target_ids)
-                target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
-                num_accepted = 0
-                for d, t in zip(draft_np, target_np):
-                    if d == t:
-                        num_accepted += 1
-                    else:
-                        break
-            else:
-                mx.eval(pred_logits)
-                num_accepted = 0
-                for i, d in enumerate(draft_np):
-                    top_k_ids = mx.argpartition(pred_logits[0, i], kth=-accept_top_k)[-accept_top_k:]
-                    mx.eval(top_k_ids)
-                    if d in list(top_k_ids.tolist()):  # type: ignore[arg-type]
-                        num_accepted += 1
-                    else:
-                        break
+            num_accepted = self._verify_with_threshold(
+                pred_logits,
+                draft_np,
+                accept_top_k,
+                acceptance_threshold,
+            )
 
             target_greedy = mx.argmax(pred_logits, axis=-1)
             mx.eval(target_greedy)
@@ -849,6 +973,9 @@ class DFlashRunner:
             self.stats["verify_times_ms"].append((time.perf_counter() - t_verify) * 1000)
             self.stats["total_drafts"] += n_draft
             self.stats["total_accepted"] += len(accepted)
+
+            # Auto-tune block size based on observed acceptance rates
+            self._auto_tune_block_size(num_accepted, n_draft)
 
             if len(accepted) == 0:
                 break

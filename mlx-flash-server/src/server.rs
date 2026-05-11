@@ -66,6 +66,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/shutdown", axum::routing::post(handle_shutdown))
         .route("/workers/restart", axum::routing::post(handle_workers_restart))
         .route("/gpu", get(handle_gpu))
+        .route("/telemetry", get(handle_telemetry))
+        .route("/telemetry/current", get(handle_telemetry_current))
         .route("/commands", get(handle_commands_list))
         .route("/commands/run", axum::routing::post(handle_command_run))
         .route("/v1/models/registry", get(handle_model_registry))
@@ -169,6 +171,44 @@ fn extract_ioreg_int(line: &str, key: &str) -> Option<u64> {
     } else {
         None
     }
+}
+
+async fn handle_telemetry(State(state): State<AppState>) -> axum::Json<Value> {
+    // Proxy to first healthy Python worker's /telemetry endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/telemetry");
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(body) = resp.json::<Value>().await {
+                return axum::Json(body);
+            }
+        }
+    }
+
+    axum::Json(json!({"error": "No healthy worker available for telemetry"}))
+}
+
+async fn handle_telemetry_current(State(state): State<AppState>) -> axum::Json<Value> {
+    // Proxy to first healthy Python worker's /telemetry/current endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/telemetry/current");
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(body) = resp.json::<Value>().await {
+                return axum::Json(body);
+            }
+        }
+    }
+
+    axum::Json(json!({"error": "No healthy worker available for telemetry"}))
 }
 
 async fn handle_release(State(state): State<AppState>) -> axum::Json<Value> {
