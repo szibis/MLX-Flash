@@ -382,7 +382,7 @@ def generate_with_warmup(
         display_every = max(1, len(token_metrics) // 25)
         for i, m in enumerate(token_metrics):
             if i % display_every == 0 or i == len(token_metrics) - 1:
-                hr = m["cumulative_hit_rate"]
+                hr = float(m["cumulative_hit_rate"])  # type: ignore[arg-type]
                 bar_len = int(hr * 20)
                 bar = "#" * bar_len + "." * (20 - bar_len)
 

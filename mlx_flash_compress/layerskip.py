@@ -26,6 +26,7 @@ Usage:
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -65,10 +66,10 @@ class LayerSkipDrafter:
         self.config = config
 
         # Detect model components (same pattern as DFlashRunner)
-        self._embed_fn = None
-        self._layers = None
-        self._norm_fn = None
-        self._lm_head_fn = None
+        self._embed_fn: Any = None
+        self._layers: Any = None
+        self._norm_fn: Any = None
+        self._lm_head_fn: Any = None
         self._detect_components()
 
         # Resolve exit layer
@@ -224,7 +225,7 @@ class LayerSkipEngine:
         self.config = config or LayerSkipConfig()
         self.drafter = LayerSkipDrafter(model, self.config)
 
-        self.stats = {
+        self.stats: dict[str, Any] = {
             "total_draft_tokens": 0,
             "total_accepted": 0,
             "total_verify_steps": 0,
@@ -286,8 +287,8 @@ class LayerSkipEngine:
         mx.eval(target_ids)
 
         # Compare draft vs target token by token
-        draft_np = draft_tokens[0].tolist()
-        target_np = target_ids[0].tolist()
+        draft_np: list = list(draft_tokens[0].tolist())  # type: ignore[arg-type]
+        target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
 
         num_accepted = 0
         for d, t in zip(draft_np, target_np):
@@ -344,7 +345,7 @@ class LayerSkipEngine:
             prompt_tokens = prompt_tokens.reshape(1, -1)
 
         prompt_len = prompt_tokens.shape[-1]
-        generated = list(prompt_tokens[0].tolist())
+        generated: list = list(prompt_tokens[0].tolist())  # type: ignore[arg-type]
         tokens_generated = 0
 
         while tokens_generated < max_tokens:
@@ -360,7 +361,7 @@ class LayerSkipEngine:
                 break
 
             # Append accepted tokens
-            accepted_list = accepted.tolist()
+            accepted_list: list = list(accepted.tolist())  # type: ignore[arg-type]
             generated.extend(accepted_list)
             tokens_generated += len(accepted_list)
 

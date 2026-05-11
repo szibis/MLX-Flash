@@ -158,7 +158,7 @@ def get_predefined_profile(
         num_layers=num_layers,
         num_experts=num_experts,
         hot_fraction=float(info["hot_fraction"]),  # type: ignore[arg-type]
-        seed=int(info["seed"]),  # type: ignore[arg-type]
+        seed=int(info["seed"]),  # type: ignore[call-overload]
     )
     profile.description = str(info["description"])
     return profile

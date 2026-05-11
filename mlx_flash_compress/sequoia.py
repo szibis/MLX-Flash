@@ -332,7 +332,7 @@ class LayerOffloader:
             except (OSError, json.JSONDecodeError, struct.error):
                 continue
 
-    def load_layer(self, layer_idx: int) -> Optional[nn.Module]:
+    def load_layer(self, layer_idx: int) -> Optional[nn.Module | dict]:  # type: ignore[override]
         """Load a single transformer layer from SSD into RAM.
 
         Returns the loaded layer module, or None if the layer cannot be loaded.

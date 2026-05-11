@@ -334,8 +334,8 @@ class EAGLE3Engine:
         target_ids = mx.argmax(verify_logits, axis=-1)
         mx.eval(target_ids)
 
-        draft_np = draft_tokens[0].tolist()
-        target_np = target_ids[0].tolist()
+        draft_np: list = list(draft_tokens[0].tolist())  # type: ignore[arg-type]
+        target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
 
         num_accepted = 0
         for d, t in zip(draft_np, target_np):
@@ -371,7 +371,7 @@ class EAGLE3Engine:
             All tokens (prompt + generated) as mx.array
         """
         # Reset stats
-        self.stats: dict[str, Any] = {
+        self.stats = {
             "total_draft_tokens": 0,
             "total_accepted": 0,
             "total_verify_steps": 0,
@@ -384,7 +384,7 @@ class EAGLE3Engine:
             prompt_tokens = prompt_tokens.reshape(1, -1)
 
         prompt_len = prompt_tokens.shape[-1]
-        generated = list(prompt_tokens[0].tolist())
+        generated: list = list(prompt_tokens[0].tolist())  # type: ignore[arg-type]
         tokens_generated = 0
 
         # Initial forward pass to get hidden states for last context token
@@ -405,7 +405,7 @@ class EAGLE3Engine:
             if num_accepted == 0 and len(accepted) == 0:
                 break
 
-            accepted_list = accepted.tolist()
+            accepted_list: list = list(accepted.tolist())  # type: ignore[arg-type]
             generated.extend(accepted_list)
             tokens_generated += len(accepted_list)
 
@@ -645,7 +645,7 @@ class EAGLE3Trainer:
             path: File path (typically .safetensors or .npz)
         """
         weights = dict(draft_head.parameters())
-        flat = {}
+        flat: dict[str, Any] = {}
         _flatten_dict(weights, "", flat)
         mx.save_safetensors(path, flat)
 
@@ -668,7 +668,7 @@ class EAGLE3Trainer:
             num_layers=num_layers,
         )
         weights = mx.load(path)
-        draft_head.load_weights(list(weights.items()))
+        draft_head.load_weights(list(weights.items()))  # type: ignore[union-attr]
         return draft_head
 
 

@@ -649,15 +649,17 @@ class ChatHandler(BaseHTTPRequestHandler):
         out_tokens = len(state.tokenizer.encode(output))
         mem_after = get_memory_state()
 
-        self._send_json({
-            "model": state.model_name,
-            "prompt_tokens": len(prompt_tokens),
-            "output_tokens": out_tokens,
-            "elapsed_secs": round(elapsed, 3),
-            "tokens_per_sec": round(out_tokens / elapsed, 1) if elapsed > 0 else 0,
-            "memory_before_gb": round(mem_before.available_gb, 2),
-            "memory_after_gb": round(mem_after.available_gb, 2),
-        })
+        self._send_json(
+            {
+                "model": state.model_name,
+                "prompt_tokens": len(prompt_tokens),
+                "output_tokens": out_tokens,
+                "elapsed_secs": round(elapsed, 3),
+                "tokens_per_sec": round(out_tokens / elapsed, 1) if elapsed > 0 else 0,
+                "memory_before_gb": round(mem_before.available_gb, 2),
+                "memory_after_gb": round(mem_after.available_gb, 2),
+            }
+        )
 
     def _handle_chat(self):
         content_length = int(self.headers.get("Content-Length", 0))

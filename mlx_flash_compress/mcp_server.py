@@ -64,6 +64,7 @@ def _ensure_model(model_name: Optional[str] = None):
 
 def handle_tool_call(name: str, arguments: dict) -> dict:
     """Execute an MCP tool and return the result."""
+    global _model, _tokenizer, _model_name
 
     if name == "generate":
         _ensure_model()
@@ -113,7 +114,6 @@ def handle_tool_call(name: str, arguments: dict) -> dict:
         return {"type": "text", "text": f"Switched to {model_name}"}
 
     elif name == "release_memory":
-        global _model, _tokenizer, _model_name
         fraction = arguments.get("fraction", 0.5)
         if fraction >= 1.0:
             _model = None
