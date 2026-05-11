@@ -120,9 +120,7 @@ class TestDistributedConfig:
 
 class TestPlanExpertDistribution:
     def test_two_nodes(self):
-        plan = plan_expert_distribution(
-            num_experts=60, num_layers=24, world_size=2, expert_size_mb=50.0
-        )
+        plan = plan_expert_distribution(num_experts=60, num_layers=24, world_size=2, expert_size_mb=50.0)
         assert plan["world_size"] == 2
         assert plan["num_experts"] == 60
         assert plan["experts_per_node"] == 30
@@ -131,24 +129,18 @@ class TestPlanExpertDistribution:
         assert len(plan["nodes"]) == 2
 
     def test_single_node_no_savings(self):
-        plan = plan_expert_distribution(
-            num_experts=60, num_layers=24, world_size=1
-        )
+        plan = plan_expert_distribution(num_experts=60, num_layers=24, world_size=1)
         assert plan["memory_savings_pct"] == 0.0
         assert plan["comm_latency_ms"] == 0.0
 
     def test_four_nodes(self):
-        plan = plan_expert_distribution(
-            num_experts=60, num_layers=24, world_size=4
-        )
+        plan = plan_expert_distribution(num_experts=60, num_layers=24, world_size=4)
         assert plan["experts_per_node"] == 15
         assert plan["memory_savings_pct"] == 75.0
         assert len(plan["nodes"]) == 4
 
     def test_total_memory(self):
-        plan = plan_expert_distribution(
-            num_experts=10, num_layers=2, world_size=1, expert_size_mb=100.0
-        )
+        plan = plan_expert_distribution(num_experts=10, num_layers=2, world_size=1, expert_size_mb=100.0)
         # 10 experts * 2 layers * 100MB / 1024 = 1.953125 GB
         expected = 10 * 2 * 100.0 / 1024
         assert abs(plan["total_memory_gb"] - round(expected, 1)) < 0.2
@@ -161,16 +153,17 @@ class TestPlanExpertDistribution:
 
 class TestEstimateDistributedSpeedup:
     def test_single_node_speedup_one(self):
-        result = estimate_distributed_speedup(
-            num_experts=10, num_layers=2, world_size=1
-        )
+        result = estimate_distributed_speedup(num_experts=10, num_layers=2, world_size=1)
         assert abs(result["speedup"] - 1.0) < 0.05
         assert abs(result["efficiency"] - 1.0) < 0.05
 
     def test_two_nodes_speedup(self):
         result = estimate_distributed_speedup(
-            num_experts=10, num_layers=2, world_size=2,
-            expert_compute_ms=1.0, comm_overhead_ms=0.0,
+            num_experts=10,
+            num_layers=2,
+            world_size=2,
+            expert_compute_ms=1.0,
+            comm_overhead_ms=0.0,
         )
         # With zero comm overhead, speedup should be 2.0
         assert result["speedup"] == 2.0
@@ -178,26 +171,33 @@ class TestEstimateDistributedSpeedup:
 
     def test_comm_overhead_reduces_speedup(self):
         result_low = estimate_distributed_speedup(
-            num_experts=10, num_layers=2, world_size=2,
-            expert_compute_ms=1.0, comm_overhead_ms=0.01,
+            num_experts=10,
+            num_layers=2,
+            world_size=2,
+            expert_compute_ms=1.0,
+            comm_overhead_ms=0.01,
         )
         result_high = estimate_distributed_speedup(
-            num_experts=10, num_layers=2, world_size=2,
-            expert_compute_ms=1.0, comm_overhead_ms=1.0,
+            num_experts=10,
+            num_layers=2,
+            world_size=2,
+            expert_compute_ms=1.0,
+            comm_overhead_ms=1.0,
         )
         assert result_high["speedup"] < result_low["speedup"]
 
     def test_efficiency_below_one_with_overhead(self):
         result = estimate_distributed_speedup(
-            num_experts=10, num_layers=2, world_size=4,
-            expert_compute_ms=1.0, comm_overhead_ms=0.5,
+            num_experts=10,
+            num_layers=2,
+            world_size=4,
+            expert_compute_ms=1.0,
+            comm_overhead_ms=0.5,
         )
         assert result["efficiency"] < 1.0
 
     def test_output_fields(self):
-        result = estimate_distributed_speedup(
-            num_experts=10, num_layers=2, world_size=2
-        )
+        result = estimate_distributed_speedup(num_experts=10, num_layers=2, world_size=2)
         assert "world_size" in result
         assert "single_node_ms" in result
         assert "distributed_ms" in result
@@ -207,6 +207,7 @@ class TestEstimateDistributedSpeedup:
 
 
 # -- Helpers --
+
 
 class _env_vars:
     """Context manager to temporarily set/clear env vars."""

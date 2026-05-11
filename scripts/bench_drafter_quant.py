@@ -26,8 +26,9 @@ def main():
     args = parser.parse_args()
 
     print("Loading models...")
-    from mlx_lm import load
     from huggingface_hub import snapshot_download
+    from mlx_lm import load
+
     model, tokenizer = load(args.target)
     drafter_path = snapshot_download(args.drafter)
     drafter, config = DFlashDraftModel.from_pretrained(drafter_path)
@@ -53,17 +54,21 @@ def main():
         if baseline_tok and baseline_tok > 0:
             ratio = s["tok_per_sec"] / baseline_tok
             sign = "+" if ratio >= 1 else ""
-            delta = f" | {sign}{(ratio-1)*100:.0f}%"
-        print(f"  {label:30s} | {s['tok_per_sec']:6.1f} tok/s | "
-              f"accept={s['acceptance_rate']:5.1%} | tok/step={s['tokens_per_step']:.1f} | "
-              f"draft={s['avg_draft_ms']:.0f}ms | verify={s['avg_verify_ms']:.0f}ms{delta}")
+            delta = f" | {sign}{(ratio - 1) * 100:.0f}%"
+        print(
+            f"  {label:30s} | {s['tok_per_sec']:6.1f} tok/s | "
+            f"accept={s['acceptance_rate']:5.1%} | tok/step={s['tokens_per_step']:.1f} | "
+            f"draft={s['avg_draft_ms']:.0f}ms | verify={s['avg_verify_ms']:.0f}ms{delta}"
+        )
 
     # Warmup
     runner = DFlashRunner(model, tokenizer, drafter, config)
     runner.generate(args.prompt, max_tokens=4, use_cache=True)
 
-    print(f"  {'Config':30s} | {'tok/s':>8s} | {'accept':>7s} | {'tok/step':>8s} | "
-          f"{'draft':>7s} | {'verify':>10s} | delta")
+    print(
+        f"  {'Config':30s} | {'tok/s':>8s} | {'accept':>7s} | {'tok/step':>8s} | "
+        f"{'draft':>7s} | {'verify':>10s} | delta"
+    )
     print("-" * 95)
 
     # Baseline: bf16 drafter, 8 layers
@@ -94,9 +99,7 @@ def main():
     nn.quantize(drafter_combo, group_size=64, bits=4)
     mx.eval(drafter_combo.parameters())
 
-    s_combo = run_trial(
-        DFlashRunner(model, tokenizer, drafter_combo, config_combo, num_active_layers=4),
-        args.trials)
+    s_combo = run_trial(DFlashRunner(model, tokenizer, drafter_combo, config_combo, num_active_layers=4), args.trials)
     print_stats("4-bit drafter, 4 layers", s_combo, base_tok)
 
     # Combo: 4-bit + 2 layers
@@ -105,8 +108,8 @@ def main():
     mx.eval(drafter_combo2.parameters())
 
     s_combo2 = run_trial(
-        DFlashRunner(model, tokenizer, drafter_combo2, config_combo2, num_active_layers=2),
-        args.trials)
+        DFlashRunner(model, tokenizer, drafter_combo2, config_combo2, num_active_layers=2), args.trials
+    )
     print_stats("4-bit drafter, 2 layers", s_combo2, base_tok)
 
     print()

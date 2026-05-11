@@ -13,7 +13,10 @@ import mlx.nn as nn
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from mlx_flash_compress.dflash_model import (
-    DFlashAttention, DFlashDraftModel, DFlashModelConfig, _apply_rotary_emb,
+    DFlashAttention,
+    DFlashDraftModel,
+    DFlashModelConfig,
+    _apply_rotary_emb,
 )
 
 
@@ -91,57 +94,10 @@ def _run_comparison(drafter, config, ctx_len, B=1):
     speedup = m2 / m1 if m1 > 0 else 0
     delta_pct = (speedup - 1) * 100
     sign = "+" if delta_pct >= 0 else ""
-    print(f"  ctx={ctx_len:4d}: SDPA={m1*1000:.2f}ms  Manual={m2*1000:.2f}ms  "
-          f"| {speedup:.2f}x ({sign}{delta_pct:.1f}%)")
-
-
-def _old_main():
-    """Kept for reference."""
-    ctx_len = 32
-    block_size = config.block_size
-    hidden_dim = config.hidden_size
-    num_ckpt = len(config.target_layer_ids)
-    B = 1
-
-    target_hidden = mx.random.normal((B, ctx_len, num_ckpt * hidden_dim))
-    noise_embedding = mx.random.normal((B, block_size, hidden_dim))
-
-    print("=" * 60)
-    print("DFlash Drafter Forward Pass: SDPA vs Manual Attention")
-    print("=" * 60)
-    print(f"Config: {config.num_hidden_layers} layers, "
-          f"{config.num_attention_heads} heads, "
-          f"{config.num_key_value_heads} KV heads (GQA {config.num_attention_heads // config.num_key_value_heads}x), "
-          f"head_dim={config.head_dim}")
-    print(f"Input: ctx_len={ctx_len}, block_size={block_size}")
-    print()
-
-    # --- SDPA (current) ---
-    m1, b1, w1 = bench_drafter_forward(drafter, noise_embedding, target_hidden)
-    print(f"SDPA (Metal kernel):   median={m1*1000:.2f}ms  "
-          f"best={b1*1000:.2f}ms  worst={w1*1000:.2f}ms")
-
-    # --- Manual attention (old code) ---
-    original_calls = {}
-    for layer in drafter.layers:
-        original_calls[id(layer.self_attn)] = layer.self_attn.__class__.__call__
-        layer.self_attn.__class__.__call__ = manual_attention_call
-
-    m2, b2, w2 = bench_drafter_forward(drafter, noise_embedding, target_hidden)
-    print(f"Manual (matmul+GQA):   median={m2*1000:.2f}ms  "
-          f"best={b2*1000:.2f}ms  worst={w2*1000:.2f}ms")
-
-    # Restore
-    for layer in drafter.layers:
-        layer.self_attn.__class__.__call__ = original_calls[id(layer.self_attn)]
-
-    # --- Summary ---
-    print()
-    speedup = m2 / m1 if m1 > 0 else 0
-    delta_pct = (speedup - 1) * 100
-    sign = "+" if delta_pct >= 0 else ""
-    print(f"SDPA speedup: {speedup:.2f}x ({sign}{delta_pct:.1f}%)")
-    print(f"Per-step savings: {(m2 - m1)*1000:.2f}ms")
+    print(
+        f"  ctx={ctx_len:4d}: SDPA={m1 * 1000:.2f}ms  Manual={m2 * 1000:.2f}ms  "
+        f"| {speedup:.2f}x ({sign}{delta_pct:.1f}%)"
+    )
 
 
 if __name__ == "__main__":

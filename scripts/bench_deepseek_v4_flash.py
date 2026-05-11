@@ -42,7 +42,7 @@ import numpy as np
 
 try:
     import mlx.core as mx
-    from mlx_lm import load, generate
+    from mlx_lm import generate, load
 except ImportError:
     print("Error: mlx-lm not installed. Run: pip install mlx-lm")
     sys.exit(1)
@@ -65,6 +65,7 @@ NUM_RUNS = 3
 @dataclass
 class BenchResult:
     """Result from a single benchmark run."""
+
     config_name: str
     prompt_type: str
     tokens_generated: int
@@ -80,6 +81,7 @@ class BenchResult:
 @dataclass
 class BenchSuite:
     """Complete benchmark results across all configs."""
+
     model_name: str
     hardware: str
     results: list[BenchResult] = field(default_factory=list)
@@ -131,8 +133,9 @@ def get_memory_usage_gb() -> float:
     """Get current process memory usage in GB."""
     try:
         import resource
+
         usage = resource.getrusage(resource.RUSAGE_SELF)
-        return usage.ru_maxrss / (1024 ** 3)  # macOS reports in bytes
+        return usage.ru_maxrss / (1024**3)  # macOS reports in bytes
     except Exception:
         return 0.0
 
@@ -141,19 +144,17 @@ def detect_hardware() -> str:
     """Detect Apple Silicon hardware."""
     try:
         import subprocess
-        result = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"],
-                               capture_output=True, text=True)
+
+        result = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True)
         chip = result.stdout.strip()
-        result2 = subprocess.run(["sysctl", "-n", "hw.memsize"],
-                                 capture_output=True, text=True)
-        ram_gb = int(result2.stdout.strip()) / (1024 ** 3)
+        result2 = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True, text=True)
+        ram_gb = int(result2.stdout.strip()) / (1024**3)
         return f"{chip}, {ram_gb:.0f} GB RAM"
     except Exception:
         return "Apple Silicon (unknown)"
 
 
-def bench_baseline(model, tokenizer, prompt: str, prompt_type: str,
-                   max_tokens: int) -> BenchResult:
+def bench_baseline(model, tokenizer, prompt: str, prompt_type: str, max_tokens: int) -> BenchResult:
     """Benchmark: standard mlx-lm generation, no optimizations."""
     # Warmup
     generate(model, tokenizer, prompt="Hello", max_tokens=WARMUP_TOKENS)
@@ -198,13 +199,12 @@ def bench_baseline(model, tokenizer, prompt: str, prompt_type: str,
     )
 
 
-def bench_mlx_flash(model, tokenizer, prompt: str, prompt_type: str,
-                    max_tokens: int) -> BenchResult:
+def bench_mlx_flash(model, tokenizer, prompt: str, prompt_type: str, max_tokens: int) -> BenchResult:
     """Benchmark: MLX-Flash with expert streaming + LCP cache + mixed precision."""
     try:
         from mlx_flash_compress.expert_streaming import enable_expert_streaming
-        from mlx_flash_compress.mixed_precision import apply_mixed_precision
         from mlx_flash_compress.lcp_cache import LCPCache
+        from mlx_flash_compress.mixed_precision import apply_mixed_precision
     except ImportError:
         print("  [SKIP] mlx_flash_compress not available for this config")
         return BenchResult(
@@ -223,7 +223,7 @@ def bench_mlx_flash(model, tokenizer, prompt: str, prompt_type: str,
 
     # Warmup
     generate(model, tokenizer, prompt="Hello", max_tokens=WARMUP_TOKENS)
-    if hasattr(streaming, 'update'):
+    if hasattr(streaming, "update"):
         streaming.update()
     mx.eval(mx.zeros(1))
     gc.collect()
@@ -236,7 +236,7 @@ def bench_mlx_flash(model, tokenizer, prompt: str, prompt_type: str,
         t0 = time.perf_counter()
 
         output = generate(model, tokenizer, prompt=prompt, max_tokens=max_tokens)
-        if hasattr(streaming, 'update'):
+        if hasattr(streaming, "update"):
             streaming.update()
 
         elapsed = time.perf_counter() - t0
@@ -248,7 +248,7 @@ def bench_mlx_flash(model, tokenizer, prompt: str, prompt_type: str,
 
         times.append(elapsed)
         tokens_counts.append(output_tokens)
-        if hasattr(streaming, 'cache_hit_rate'):
+        if hasattr(streaming, "cache_hit_rate"):
             cache_hits.append(streaming.cache_hit_rate())
 
     avg_time = np.mean(times)
@@ -268,10 +268,11 @@ def bench_mlx_flash(model, tokenizer, prompt: str, prompt_type: str,
     )
 
 
-def bench_dflash(model, tokenizer, prompt: str, prompt_type: str,
-                 max_tokens: int, use_ddtree: bool = False) -> BenchResult:
+def bench_dflash(
+    model, tokenizer, prompt: str, prompt_type: str, max_tokens: int, use_ddtree: bool = False
+) -> BenchResult:
     """Benchmark: DFlash speculative decoding (with optional DDTree)."""
-    from mlx_flash_compress.dflash import DFlashEngine, DFlashConfig, NGramDrafter
+    from mlx_flash_compress.dflash import DFlashConfig, DFlashEngine, NGramDrafter
 
     config_name = "dflash+ddtree" if use_ddtree else "dflash"
 
@@ -316,8 +317,7 @@ def bench_dflash(model, tokenizer, prompt: str, prompt_type: str,
             drafts = ngram.draft(generated)
             if not drafts:
                 # Fallback: single token generation
-                output = generate(model, tokenizer, prompt=tokenizer.decode(generated),
-                                  max_tokens=1)
+                output = generate(model, tokenizer, prompt=tokenizer.decode(generated), max_tokens=1)
                 new_tokens = tokenizer.encode(output)
                 if len(new_tokens) > len(generated):
                     generated.append(new_tokens[len(generated)])
@@ -336,12 +336,12 @@ def bench_dflash(model, tokenizer, prompt: str, prompt_type: str,
                 mx.eval(logits)
 
                 ctx_len = len(generated)
-                verify_logits = logits[0, ctx_len - 1:ctx_len + len(drafts) - 1, :]
+                verify_logits = logits[0, ctx_len - 1 : ctx_len + len(drafts) - 1, :]
                 target_tokens = mx.argmax(verify_logits, axis=-1)
                 mx.eval(target_tokens)
 
                 target_np = np.array(target_tokens)
-                drafts_np = np.array(draft_tokens[:len(target_np)])
+                drafts_np = np.array(draft_tokens[: len(target_np)])
 
                 # Count accepted
                 n_accepted = 0
@@ -365,8 +365,7 @@ def bench_dflash(model, tokenizer, prompt: str, prompt_type: str,
 
             except Exception:
                 # Model doesn't support direct call, fall back
-                output = generate(model, tokenizer, prompt=tokenizer.decode(generated),
-                                  max_tokens=1)
+                output = generate(model, tokenizer, prompt=tokenizer.decode(generated), max_tokens=1)
                 new_tokens = tokenizer.encode(output)
                 if len(new_tokens) > len(generated):
                     generated.append(new_tokens[len(generated)])
@@ -378,7 +377,7 @@ def bench_dflash(model, tokenizer, prompt: str, prompt_type: str,
             ngram.observe(generated[-8:])
 
             # Check EOS
-            if hasattr(tokenizer, 'eos_token_id') and tokenizer.eos_token_id in generated[-5:]:
+            if hasattr(tokenizer, "eos_token_id") and tokenizer.eos_token_id in generated[-5:]:
                 break
 
         elapsed = time.perf_counter() - t0
@@ -412,9 +411,9 @@ def bench_dflash(model, tokenizer, prompt: str, prompt_type: str,
 
 def run_full_benchmark(args):
     """Run complete benchmark suite."""
-    print(f"{'='*70}")
-    print(f"DeepSeek V4 Flash MoE — MLX-Flash Benchmark")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
+    print("DeepSeek V4 Flash MoE — MLX-Flash Benchmark")
+    print(f"{'=' * 70}")
 
     hardware = detect_hardware()
     print(f"Hardware: {hardware}")
@@ -465,7 +464,7 @@ def run_full_benchmark(args):
             print(f"{result.tok_per_sec:.1f} tok/s (acceptance: {result.dflash_acceptance:.0%})")
 
     # Print results
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(suite.summary_table())
     print(suite.comparison_summary())
 
@@ -500,21 +499,18 @@ def run_full_benchmark(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark DeepSeek V4 Flash on MLX-Flash")
-    parser.add_argument("--model", type=str,
-                        default="mlx-community/DeepSeek-V4-Flash-2bit-DQ",
-                        help="HuggingFace model ID or local path")
-    parser.add_argument("--full", action="store_true",
-                        help="Run all 4 prompt types (default: code + prose only)")
-    parser.add_argument("--dflash", action="store_true",
-                        help="Include DFlash speculative decoding benchmark")
-    parser.add_argument("--mlx-flash", action="store_true",
-                        help="Include MLX-Flash optimizations benchmark")
-    parser.add_argument("--compare-all", action="store_true",
-                        help="Run all configurations for full comparison")
-    parser.add_argument("--max-tokens", type=int, default=256,
-                        help="Max tokens to generate per prompt")
-    parser.add_argument("--runs", type=int, default=3,
-                        help="Number of runs per configuration")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="mlx-community/DeepSeek-V4-Flash-2bit-DQ",
+        help="HuggingFace model ID or local path",
+    )
+    parser.add_argument("--full", action="store_true", help="Run all 4 prompt types (default: code + prose only)")
+    parser.add_argument("--dflash", action="store_true", help="Include DFlash speculative decoding benchmark")
+    parser.add_argument("--mlx-flash", action="store_true", help="Include MLX-Flash optimizations benchmark")
+    parser.add_argument("--compare-all", action="store_true", help="Run all configurations for full comparison")
+    parser.add_argument("--max-tokens", type=int, default=256, help="Max tokens to generate per prompt")
+    parser.add_argument("--runs", type=int, default=3, help="Number of runs per configuration")
     args = parser.parse_args()
 
     global MAX_TOKENS, NUM_RUNS

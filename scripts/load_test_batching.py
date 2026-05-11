@@ -67,12 +67,14 @@ def send_request(
     timeout: float,
 ) -> RequestResult:
     """Send a single chat completion request to the server."""
-    payload = json.dumps({
-        "model": "local",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-    }).encode()
+    payload = json.dumps(
+        {
+            "model": "local",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+        }
+    ).encode()
 
     headers = {"Content-Type": "application/json"}
     req = urllib.request.Request(
@@ -137,10 +139,7 @@ def run_load_test(
     t_start = time.monotonic()
 
     with ThreadPoolExecutor(max_workers=concurrent) as pool:
-        futures = [
-            pool.submit(send_request, url, prompt, max_tokens, temperature, timeout)
-            for _ in range(total)
-        ]
+        futures = [pool.submit(send_request, url, prompt, max_tokens, temperature, timeout) for _ in range(total)]
 
         completed = 0
         for future in as_completed(futures):
@@ -168,9 +167,7 @@ def run_load_test(
 
     # Token stats
     report.total_tokens = sum(r.tokens for r in successes)
-    report.tokens_per_second = (
-        round(report.total_tokens / total_time, 2) if total_time > 0 else 0.0
-    )
+    report.tokens_per_second = round(report.total_tokens / total_time, 2) if total_time > 0 else 0.0
 
     # Latency percentiles (from successful requests only)
     if successes:
@@ -244,8 +241,7 @@ def check_server(url: str) -> bool:
         req = urllib.request.Request(f"{url}/health", method="GET")
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
-            print(f"Server OK: model={data.get('model', '?')}, "
-                  f"loaded={data.get('model_loaded', '?')}")
+            print(f"Server OK: model={data.get('model', '?')}, loaded={data.get('model_loaded', '?')}")
             return True
     except Exception as e:
         print(f"Server unreachable at {url}: {e}", file=sys.stderr)
@@ -253,9 +249,7 @@ def check_server(url: str) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Load test for MLX-Flash continuous batching engine"
-    )
+    parser = argparse.ArgumentParser(description="Load test for MLX-Flash continuous batching engine")
     parser.add_argument(
         "--url",
         default="http://localhost:8080",

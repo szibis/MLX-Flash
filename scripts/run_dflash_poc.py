@@ -68,7 +68,8 @@ def run_baseline(model, tokenizer, prompts: list[str], max_tokens: int = 64) -> 
     for prompt in prompts:
         t0 = time.perf_counter()
         output = generate(
-            model, tokenizer,
+            model,
+            tokenizer,
             prompt=prompt,
             max_tokens=max_tokens,
             verbose=False,
@@ -77,21 +78,29 @@ def run_baseline(model, tokenizer, prompts: list[str], max_tokens: int = 64) -> 
         n_tokens = len(tokenizer.encode(output)) - len(tokenizer.encode(prompt))
         tok_s = n_tokens / elapsed if elapsed > 0 else 0
 
-        results.append({
-            "prompt": prompt[:50] + "..." if len(prompt) > 50 else prompt,
-            "tokens": n_tokens,
-            "time_s": round(elapsed, 2),
-            "tok_s": round(tok_s, 1),
-        })
+        results.append(
+            {
+                "prompt": prompt[:50] + "..." if len(prompt) > 50 else prompt,
+                "tokens": n_tokens,
+                "time_s": round(elapsed, 2),
+                "tok_s": round(tok_s, 1),
+            }
+        )
         print(f"  {results[-1]['prompt']}: {tok_s:.1f} tok/s ({n_tokens} tokens in {elapsed:.2f}s)")
 
     avg_tok_s = sum(r["tok_s"] for r in results) / len(results) if results else 0
     return {"results": results, "avg_tok_s": round(avg_tok_s, 1)}
 
 
-def run_dflash(runner, prompts: list[str], max_tokens: int = 64,
-               use_ddtree: bool = False, tree_width: int = 5,
-               tree_size: int = 60, use_cache: bool = True) -> dict:
+def run_dflash(
+    runner,
+    prompts: list[str],
+    max_tokens: int = 64,
+    use_ddtree: bool = False,
+    tree_width: int = 5,
+    tree_size: int = 60,
+    use_cache: bool = True,
+) -> dict:
     """Run DFlash speculative decoding."""
     mode = "DFlash + DDTree" if use_ddtree else "DFlash (flat)"
     print(f"\n--- {mode} ---")
@@ -100,26 +109,31 @@ def run_dflash(runner, prompts: list[str], max_tokens: int = 64,
     for prompt in prompts:
         if use_ddtree:
             text, stats = runner.generate_with_tree(
-                prompt, max_tokens=max_tokens,
-                tree_width=tree_width, max_tree_size=tree_size,
+                prompt,
+                max_tokens=max_tokens,
+                tree_width=tree_width,
+                max_tree_size=tree_size,
                 use_cache=use_cache,
             )
         else:
-            text, stats = runner.generate(prompt, max_tokens=max_tokens,
-                                          use_cache=use_cache)
-        results.append({
-            "prompt": prompt[:50] + "..." if len(prompt) > 50 else prompt,
-            "stats": stats,
-            "output_preview": text[:100] + "..." if len(text) > 100 else text,
-        })
+            text, stats = runner.generate(prompt, max_tokens=max_tokens, use_cache=use_cache)
+        results.append(
+            {
+                "prompt": prompt[:50] + "..." if len(prompt) > 50 else prompt,
+                "stats": stats,
+                "output_preview": text[:100] + "..." if len(text) > 100 else text,
+            }
+        )
         print(f"  {results[-1]['prompt']}:")
-        tok_step = stats.get('tokens_per_step', 0)
-        accept = stats.get('acceptance_rate', 0)
+        tok_step = stats.get("tokens_per_step", 0)
+        accept = stats.get("acceptance_rate", 0)
         tree_info = f" | tree={stats.get('avg_tree_size', 'N/A')}" if use_ddtree else ""
-        print(f"    {stats['tok_per_sec']:.1f} tok/s | "
-              f"accepted {accept:.1%} | "
-              f"{tok_step:.1f} tok/step{tree_info} | "
-              f"{stats['tokens_generated']} tokens in {stats['wall_time_s']:.2f}s")
+        print(
+            f"    {stats['tok_per_sec']:.1f} tok/s | "
+            f"accepted {accept:.1%} | "
+            f"{tok_step:.1f} tok/step{tree_info} | "
+            f"{stats['tokens_generated']} tokens in {stats['wall_time_s']:.2f}s"
+        )
 
     avg_tok_s = sum(r["stats"]["tok_per_sec"] for r in results) / len(results) if results else 0
     avg_accept = sum(r["stats"]["acceptance_rate"] for r in results) / len(results) if results else 0
@@ -132,28 +146,30 @@ def run_dflash(runner, prompts: list[str], max_tokens: int = 64,
 
 def main():
     parser = argparse.ArgumentParser(description="DFlash PoC on Apple Silicon")
-    parser.add_argument("--target", type=str, default="mlx-community/Qwen3.6-35B-A3B-4bit",
-                        help="Target model (HuggingFace repo or local path)")
-    parser.add_argument("--drafter", type=str, default="z-lab/Qwen3.6-35B-A3B-DFlash",
-                        help="DFlash drafter model")
-    parser.add_argument("--prompt", type=str, default=None,
-                        help="Custom prompt (otherwise uses built-in test prompts)")
+    parser.add_argument(
+        "--target",
+        type=str,
+        default="mlx-community/Qwen3.6-35B-A3B-4bit",
+        help="Target model (HuggingFace repo or local path)",
+    )
+    parser.add_argument("--drafter", type=str, default="z-lab/Qwen3.6-35B-A3B-DFlash", help="DFlash drafter model")
+    parser.add_argument("--prompt", type=str, default=None, help="Custom prompt (otherwise uses built-in test prompts)")
     parser.add_argument("--max-tokens", type=int, default=64)
-    parser.add_argument("--block-size", type=int, default=None,
-                        help="Override inference block size (drafter trained at 16, can use 8)")
-    parser.add_argument("--hidden-dtype", type=str, default=None,
-                        choices=["float32", "bfloat16"],
-                        help="Cast hidden states to this dtype before drafter")
-    parser.add_argument("--compile", action="store_true",
-                        help="Use mx.compile() on drafter forward pass")
-    parser.add_argument("--ddtree", action="store_true",
-                        help="Use DDTree tree-structured verification")
-    parser.add_argument("--tree-width", type=int, default=5,
-                        help="DDTree branching factor per position")
-    parser.add_argument("--tree-size", type=int, default=60,
-                        help="Maximum DDTree node budget")
-    parser.add_argument("--no-cache", action="store_true",
-                        help="Disable KV cache (reprocess full context each step)")
+    parser.add_argument(
+        "--block-size", type=int, default=None, help="Override inference block size (drafter trained at 16, can use 8)"
+    )
+    parser.add_argument(
+        "--hidden-dtype",
+        type=str,
+        default=None,
+        choices=["float32", "bfloat16"],
+        help="Cast hidden states to this dtype before drafter",
+    )
+    parser.add_argument("--compile", action="store_true", help="Use mx.compile() on drafter forward pass")
+    parser.add_argument("--ddtree", action="store_true", help="Use DDTree tree-structured verification")
+    parser.add_argument("--tree-width", type=int, default=5, help="DDTree branching factor per position")
+    parser.add_argument("--tree-size", type=int, default=60, help="Maximum DDTree node budget")
+    parser.add_argument("--no-cache", action="store_true", help="Disable KV cache (reprocess full context each step)")
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--skip-baseline", action="store_true")
     parser.add_argument("--cache-dir", type=str, default=None)
@@ -188,6 +204,7 @@ def main():
         drafter_path = download_drafter(args.drafter, args.cache_dir)
     else:
         from huggingface_hub import scan_cache_dir
+
         drafter_path = args.drafter
 
     # Step 2: Load target model
@@ -204,15 +221,18 @@ def main():
     drafter_path_resolved = drafter_path
     if not Path(drafter_path).exists():
         from huggingface_hub import snapshot_download
+
         drafter_path_resolved = snapshot_download(args.drafter, cache_dir=args.cache_dir)
 
     t0 = time.perf_counter()
     drafter, drafter_config = DFlashDraftModel.from_pretrained(drafter_path_resolved)
     print(f"  Loaded in {time.perf_counter() - t0:.1f}s")
-    print(f"  Config: {drafter_config.num_hidden_layers} layers, "
-          f"hidden={drafter_config.hidden_size}, "
-          f"block_size={drafter_config.block_size}, "
-          f"target_layers={drafter_config.target_layer_ids}")
+    print(
+        f"  Config: {drafter_config.num_hidden_layers} layers, "
+        f"hidden={drafter_config.hidden_size}, "
+        f"block_size={drafter_config.block_size}, "
+        f"target_layers={drafter_config.target_layer_ids}"
+    )
 
     # Step 4: Check target model compatibility
     target_num_layers = 0
@@ -226,9 +246,11 @@ def main():
 
     max_checkpoint = max(drafter_config.target_layer_ids)
     if max_checkpoint >= target_num_layers:
-        print(f"\n  WARNING: Drafter expects checkpoint layer {max_checkpoint} but target has {target_num_layers} layers.")
+        print(
+            f"\n  WARNING: Drafter expects checkpoint layer {max_checkpoint} but target has {target_num_layers} layers."
+        )
         print(f"  The drafter was trained for a {drafter_config.num_target_layers}-layer target.")
-        print(f"  Results may be poor due to architecture mismatch.")
+        print("  Results may be poor due to architecture mismatch.")
 
     # Step 5: Run baseline
     baseline_stats = None
@@ -243,15 +265,23 @@ def main():
         hidden_dtype = mx.bfloat16
 
     runner = DFlashRunner(
-        target_model, tokenizer, drafter, drafter_config,
+        target_model,
+        tokenizer,
+        drafter,
+        drafter_config,
         inference_block_size=args.block_size,
         hidden_dtype=hidden_dtype,
         compile_drafter=args.compile,
     )
-    dflash_stats = run_dflash(runner, prompts, args.max_tokens,
-                              use_ddtree=args.ddtree, tree_width=args.tree_width,
-                              tree_size=args.tree_size,
-                              use_cache=not args.no_cache)
+    dflash_stats = run_dflash(
+        runner,
+        prompts,
+        args.max_tokens,
+        use_ddtree=args.ddtree,
+        tree_width=args.tree_width,
+        tree_size=args.tree_size,
+        use_cache=not args.no_cache,
+    )
 
     # Step 7: Summary
     print("\n" + "=" * 60)

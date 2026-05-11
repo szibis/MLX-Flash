@@ -170,6 +170,7 @@ class TestHandleToolCall:
         mock_mem.return_value = MagicMock(available_gb=100.0, pressure_level="nominal")
 
         import mlx_flash_compress.mcp_server as srv
+
         srv._model_name = None
 
         result = handle_tool_call("check_memory", {})

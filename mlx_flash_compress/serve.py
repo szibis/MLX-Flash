@@ -687,20 +687,24 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         models = []
         for m in registry.get("models", []):
-            models.append({
-                "id": m.get("id", ""),
-                "category_expected": m.get("category_expected", "unknown"),
-                "size_gb_approx": m.get("size_gb_approx", 0),
-                "skip": m.get("skip", False),
-                "notes": m.get("notes", ""),
-                "drafter": m.get("drafter"),
-            })
+            models.append(
+                {
+                    "id": m.get("id", ""),
+                    "category_expected": m.get("category_expected", "unknown"),
+                    "size_gb_approx": m.get("size_gb_approx", 0),
+                    "skip": m.get("skip", False),
+                    "notes": m.get("notes", ""),
+                    "drafter": m.get("drafter"),
+                }
+            )
 
-        self._send_json({
-            "models": models,
-            "cache_dir": registry.get("cache_dir", "~/.cache/huggingface/hub"),
-            "total_models": len(models),
-        })
+        self._send_json(
+            {
+                "models": models,
+                "cache_dir": registry.get("cache_dir", "~/.cache/huggingface/hub"),
+                "total_models": len(models),
+            }
+        )
 
     def _handle_profile_batch(self):
         """Profile multiple models from the registry sequentially."""
@@ -727,16 +731,10 @@ class ChatHandler(BaseHTTPRequestHandler):
         registry_models = registry.get("models", [])
         if requested_models:
             # Filter to only requested models
-            models_to_profile = [
-                m for m in registry_models
-                if m.get("id") in requested_models
-            ]
+            models_to_profile = [m for m in registry_models if m.get("id") in requested_models]
         else:
             # Profile all non-skipped models
-            models_to_profile = [
-                m for m in registry_models
-                if not m.get("skip", False)
-            ]
+            models_to_profile = [m for m in registry_models if not m.get("skip", False)]
 
         log = logger or __import__("logging").getLogger("mlx_flash")
         state = self.server_state

@@ -690,9 +690,7 @@ class TestBatchingConcurrency:
 
         # Simulate several requests arriving before the scheduler gets a batch
         for i in range(4):
-            sched.add_request(
-                InferenceRequest(request_id=f"batch-{i}", prompt_tokens=[1] * (i + 1))
-            )
+            sched.add_request(InferenceRequest(request_id=f"batch-{i}", prompt_tokens=[1] * (i + 1)))
 
         batch = sched.get_batch()
         # All 4 should be in the same batch
@@ -708,9 +706,7 @@ class TestBatchingConcurrency:
         sched = BatchScheduler(config)
 
         for i in range(6):
-            sched.add_request(
-                InferenceRequest(request_id=f"partial-{i}", prompt_tokens=[1])
-            )
+            sched.add_request(InferenceRequest(request_id=f"partial-{i}", prompt_tokens=[1]))
 
         batch = sched.get_batch()
         assert len(batch) == 3
@@ -742,9 +738,7 @@ class TestBatchingConcurrency:
         config = BatchSchedulerConfig(max_batch_size=4, scheduling_policy="unknown_policy")
         sched = BatchScheduler(config)
         for i in range(3):
-            sched.add_request(
-                InferenceRequest(request_id=f"r{i}", prompt_tokens=[1] * (10 - i))
-            )
+            sched.add_request(InferenceRequest(request_id=f"r{i}", prompt_tokens=[1] * (10 - i)))
         batch = sched.get_batch()
         # Should be in insertion order (FCFS) since unknown policy doesn't sort
         assert [r.request_id for r in batch] == ["r0", "r1", "r2"]

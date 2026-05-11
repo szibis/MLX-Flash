@@ -312,10 +312,6 @@ class TestEstimateProfileGains:
 
     def test_more_cache_slots_higher_hit_rate(self):
         profile = get_predefined_profile("coding", num_layers=4, num_experts=10)
-        gains_low = estimate_profile_gains(
-            profile=profile, cache_slots=5, num_layers=4, num_experts=10
-        )
-        gains_high = estimate_profile_gains(
-            profile=profile, cache_slots=30, num_layers=4, num_experts=10
-        )
+        gains_low = estimate_profile_gains(profile=profile, cache_slots=5, num_layers=4, num_experts=10)
+        gains_high = estimate_profile_gains(profile=profile, cache_slots=30, num_layers=4, num_experts=10)
         assert gains_high["generic_hit_rate"] >= gains_low["generic_hit_rate"]

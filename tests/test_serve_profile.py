@@ -410,7 +410,10 @@ class TestProfileBatch:
 
         # Verify generate was called with the custom prompt and max_tokens
         call_kwargs = mock_gen.call_args
-        assert call_kwargs.kwargs.get("prompt") == "custom prompt here" or call_kwargs[1].get("prompt") == "custom prompt here"
+        assert (
+            call_kwargs.kwargs.get("prompt") == "custom prompt here"
+            or call_kwargs[1].get("prompt") == "custom prompt here"
+        )
         assert call_kwargs.kwargs.get("max_tokens") == 64 or call_kwargs[1].get("max_tokens") == 64
 
     def test_partial_failure_still_returns_all_results(self):

@@ -140,7 +140,7 @@ class TestExpertHotnessRecord:
         h = ExpertHotness()
         h.total_tokens = 100
         h.activation_counts[(0, 0)] = 10  # 10%
-        h.activation_counts[(0, 1)] = 2   # 2%
+        h.activation_counts[(0, 1)] = 2  # 2%
         assert h.classify(0, 0) == "hot"
         assert h.classify(0, 1) == "cold"
 

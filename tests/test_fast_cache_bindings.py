@@ -47,9 +47,15 @@ class TestCStats:
 
     def test_all_zeros(self):
         s = CStats(
-            cache_hits=0, prefetch_hits=0, cold_loads=0,
-            skip_fallbacks=0, total_requests=0, evictions=0,
-            total_lookup_us=0.0, total_read_us=0.0, total_decomp_us=0.0,
+            cache_hits=0,
+            prefetch_hits=0,
+            cold_loads=0,
+            skip_fallbacks=0,
+            total_requests=0,
+            evictions=0,
+            total_lookup_us=0.0,
+            total_read_us=0.0,
+            total_decomp_us=0.0,
         )
         assert s.total_requests == 0
 
@@ -81,10 +87,17 @@ class TestCacheStructure:
 
     def test_structure_fields(self):
         from mlx_flash_compress.fast_cache_bindings import _CacheStats
+
         field_names = [f[0] for f in _CacheStats._fields_]
         expected = [
-            "cache_hits", "prefetch_hits", "cold_loads", "skip_fallbacks",
-            "total_requests", "evictions",
-            "total_lookup_us", "total_read_us", "total_decomp_us",
+            "cache_hits",
+            "prefetch_hits",
+            "cold_loads",
+            "skip_fallbacks",
+            "total_requests",
+            "evictions",
+            "total_lookup_us",
+            "total_read_us",
+            "total_decomp_us",
         ]
         assert field_names == expected

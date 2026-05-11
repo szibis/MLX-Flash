@@ -152,8 +152,14 @@ class TestScoreModel:
         model = KNOWN_MODELS[0]
         score = score_model(model, hw)
         expected_keys = {
-            "fits_ram", "needs_ssd", "base_tps", "optimized_tps",
-            "hit_rate", "optimized_hit_rate", "speedup", "bottleneck",
+            "fits_ram",
+            "needs_ssd",
+            "base_tps",
+            "optimized_tps",
+            "hit_rate",
+            "optimized_hit_rate",
+            "speedup",
+            "bottleneck",
         }
         assert expected_keys <= set(score.keys())
 
@@ -182,6 +188,7 @@ class TestScoreModel:
 class TestRunModel:
     def test_import(self):
         from mlx_flash_compress.model_browser import run_model
+
         assert callable(run_model)
 
     @patch("mlx_flash_compress.model_browser.subprocess.run")

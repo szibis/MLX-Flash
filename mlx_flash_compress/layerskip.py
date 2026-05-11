@@ -259,9 +259,7 @@ class LayerSkipEngine:
         self.stats["total_draft_tokens"] += K
         return draft_ids, elapsed_ms
 
-    def _verify_and_accept(
-        self, last_token_id: int, draft_ids: list[int], cache: list
-    ) -> tuple[list[int], int]:
+    def _verify_and_accept(self, last_token_id: int, draft_ids: list[int], cache: list) -> tuple[list[int], int]:
         """Verify draft tokens with full model forward + accept prefix.
 
         Feeds [last_token, draft_1, ..., draft_K] through all layers.
@@ -385,6 +383,7 @@ class LayerSkipEngine:
             cache = self.model.make_cache()
         else:
             from mlx_lm.models.cache import make_prompt_cache
+
             cache = make_prompt_cache(self.model)
         prefill_logits = self.model(prompt_tokens, cache=cache)
         mx.eval(prefill_logits)
@@ -413,9 +412,7 @@ class LayerSkipEngine:
                 cache[i].trim(K)
 
             # Verify: full model processes [last_token, draft_1..K]
-            new_tokens, num_accepted = self._verify_and_accept(
-                last_token_id, draft_ids, cache
-            )
+            new_tokens, num_accepted = self._verify_and_accept(last_token_id, draft_ids, cache)
 
             # Trim rejected entries: verify fed K+1 tokens, we keep 1+num_accepted
             # (last_token + accepted drafts); bonus is NOT in cache

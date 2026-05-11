@@ -118,16 +118,24 @@ def detect_target(model_path: str):
             hidden_size = test.shape[-1]
 
             checkpoint_ids = select_checkpoint_layers(num_layers)
-            vocab_size = tokenizer.vocab_size if hasattr(tokenizer, 'vocab_size') else embed.weight.shape[0]
+            vocab_size = tokenizer.vocab_size if hasattr(tokenizer, "vocab_size") else embed.weight.shape[0]
 
             print(f"  {num_layers} layers, hidden={hidden_size}, vocab={vocab_size}")
             print(f"  Checkpoint layers: {checkpoint_ids}")
-            return model, tokenizer, embed, layers, norm, lm_head, {
-                "num_layers": num_layers,
-                "hidden_size": hidden_size,
-                "vocab_size": vocab_size,
-                "checkpoint_ids": checkpoint_ids,
-            }
+            return (
+                model,
+                tokenizer,
+                embed,
+                layers,
+                norm,
+                lm_head,
+                {
+                    "num_layers": num_layers,
+                    "hidden_size": hidden_size,
+                    "vocab_size": vocab_size,
+                    "checkpoint_ids": checkpoint_ids,
+                },
+            )
 
     raise RuntimeError("Cannot detect target model architecture")
 
@@ -224,8 +232,7 @@ def collect_hidden_states(args):
     for i in range(args.num_samples):
         prompt = prompts[i % len(prompts)]
         try:
-            output = generate(model, tokenizer, prompt=prompt,
-                              max_tokens=256, verbose=False)
+            output = generate(model, tokenizer, prompt=prompt, max_tokens=256, verbose=False)
             tokens = tokenizer.encode(prompt + output)
             if len(tokens) >= 48:
                 all_sequences.append(tokens)
@@ -235,8 +242,7 @@ def collect_hidden_states(args):
         if (i + 1) % 50 == 0:
             print(f"  Generated {i + 1}/{args.num_samples} sequences")
 
-    print(f"\nCollected {len(all_sequences)} sequences, "
-          f"{sum(len(s) for s in all_sequences)} total tokens")
+    print(f"\nCollected {len(all_sequences)} sequences, {sum(len(s) for s in all_sequences)} total tokens")
 
     # Extract hidden states for each sequence
     data_dir = output_dir / "data"
@@ -263,8 +269,7 @@ def collect_hidden_states(args):
             print(f"  Extracted {i + 1}/{len(all_sequences)}")
 
     print(f"\nSaved {saved} training samples to {data_dir}")
-    print(f"Next: python scripts/train_dflash_drafter.py train "
-          f"--training-data {output_dir}")
+    print(f"Next: python scripts/train_dflash_drafter.py train --training-data {output_dir}")
 
 
 def train_drafter(args):
@@ -290,9 +295,7 @@ def train_drafter(args):
 
     # Load target model (needed for embed_tokens and lm_head)
     print(f"\nLoading target model: {model_info['target_model']}")
-    target_model, tokenizer, embed, layers, norm, lm_head, _ = detect_target(
-        model_info["target_model"]
-    )
+    target_model, tokenizer, embed, layers, norm, lm_head, _ = detect_target(model_info["target_model"])
     target_model.freeze()
 
     checkpoint_ids = model_info["checkpoint_ids"]
@@ -303,6 +306,7 @@ def train_drafter(args):
     if args.pretrained:
         print(f"Loading pre-trained drafter: {args.pretrained}")
         from huggingface_hub import snapshot_download
+
         drafter_path = snapshot_download(args.pretrained)
         drafter, config = DFlashDraftModel.from_pretrained(drafter_path)
     else:
@@ -339,8 +343,7 @@ def train_drafter(args):
     lr_schedule = optim.schedulers.join_schedules(
         [
             optim.schedulers.linear_schedule(1e-7, args.lr, warmup_steps),
-            optim.schedulers.cosine_decay(args.lr, args.steps - warmup_steps,
-                                          end=args.lr * 0.1),
+            optim.schedulers.cosine_decay(args.lr, args.steps - warmup_steps, end=args.lr * 0.1),
         ],
         [warmup_steps],
     )
@@ -384,7 +387,7 @@ def train_drafter(args):
         anchor_id = int(tokens_np[block_start - 1])
         block_ids = [anchor_id] + [config.mask_token_id] * (bs - 1)
         noise_emb = embed(mx.array([block_ids]))
-        target_ids = mx.array([tokens_np[block_start: block_start + bs - 1].tolist()])
+        target_ids = mx.array([tokens_np[block_start : block_start + bs - 1].tolist()])
         return noise_emb, target_hidden, target_ids
 
     def _eval_val_loss():
@@ -398,7 +401,7 @@ def train_drafter(args):
             anchor_id = int(vt[block_start - 1])
             bids = [anchor_id] + [config.mask_token_id] * (block_size - 1)
             ne = embed(mx.array([bids]))
-            ti = mx.array([vt[block_start: block_start + block_size - 1].tolist()])
+            ti = mx.array([vt[block_start : block_start + block_size - 1].tolist()])
             vl = compute_loss(drafter, ne, th, ti)
             mx.eval(vl)
             val_losses.append(vl.item())
@@ -435,8 +438,10 @@ def train_drafter(args):
             elapsed = time.perf_counter() - t_start
             sps = step / elapsed
             current_lr = lr_schedule(step) if callable(lr_schedule) else args.lr
-            print(f"  Step {step:5d}/{args.steps} | loss={avg:.4f} | "
-                  f"lr={current_lr:.2e} | {sps:.1f} steps/s | {elapsed:.0f}s")
+            print(
+                f"  Step {step:5d}/{args.steps} | loss={avg:.4f} | "
+                f"lr={current_lr:.2e} | {sps:.1f} steps/s | {elapsed:.0f}s"
+            )
 
         if step % args.save_every == 0:
             val_loss = _eval_val_loss()
@@ -494,6 +499,7 @@ def eval_drafter(args):
     drafter_path = Path(args.drafter_model)
     if not drafter_path.exists():
         from huggingface_hub import snapshot_download
+
         drafter_path = Path(snapshot_download(args.drafter_model))
 
     drafter, config = DFlashDraftModel.from_pretrained(str(drafter_path))
@@ -510,13 +516,14 @@ def eval_drafter(args):
     for mode_name, use_cache in [("no-cache", False), ("cached", True)]:
         print(f"\n--- Eval: {mode_name} (max_tokens={max_tokens}) ---")
         for prompt in prompts:
-            text, stats = runner.generate(prompt, max_tokens=max_tokens,
-                                          use_cache=use_cache)
+            text, stats = runner.generate(prompt, max_tokens=max_tokens, use_cache=use_cache)
             cached_label = " [cached]" if stats.get("cached") else ""
             print(f"  {prompt[:40]}...{cached_label}")
-            print(f"    accept={stats['acceptance_rate']:.1%} | "
-                  f"tok/step={stats['tokens_per_step']:.1f} | "
-                  f"{stats['tok_per_sec']:.1f} tok/s")
+            print(
+                f"    accept={stats['acceptance_rate']:.1%} | "
+                f"tok/step={stats['tokens_per_step']:.1f} | "
+                f"{stats['tok_per_sec']:.1f} tok/s"
+            )
 
 
 def show_preset(args):
@@ -526,21 +533,23 @@ def show_preset(args):
         for name, cfg in DRAFTER_PRESETS.items():
             print(f"\n  {name}:")
             print(f"    {cfg['notes']}")
-        print(f"\nUsage: python scripts/train_dflash_drafter.py preset <name>")
+        print("\nUsage: python scripts/train_dflash_drafter.py preset <name>")
         return
 
     cfg = DRAFTER_PRESETS[args.name]
     target_key = f"target_{args.quant}"
     target = cfg.get(target_key, cfg.get("target_4bit", "UNKNOWN"))
 
-    print(f"=" * 60)
+    print("=" * 60)
     print(f"DFlash Drafter Training Preset: {args.name}")
-    print(f"=" * 60)
+    print("=" * 60)
     print(f"\n  Target model: {target}")
     print(f"  Drafter: {cfg['drafter_layers']} layers, hidden={cfg['drafter_hidden']}")
     print(f"  Block size: {cfg['block_size']}")
-    print(f"  Recommended: {cfg['recommended_samples']} samples, "
-          f"{cfg['recommended_steps']} steps, lr={cfg['recommended_lr']}")
+    print(
+        f"  Recommended: {cfg['recommended_samples']} samples, "
+        f"{cfg['recommended_steps']} steps, lr={cfg['recommended_lr']}"
+    )
     print(f"  Notes: {cfg['notes']}")
 
     if cfg.get("drafter_hub"):
@@ -549,15 +558,15 @@ def show_preset(args):
     data_dir = f"./{args.name}-training-data"
     out_dir = f"./{args.name}-drafter"
 
-    print(f"\n--- Copy-paste commands ---\n")
+    print("\n--- Copy-paste commands ---\n")
     print(f"# Step 1: Collect training data ({cfg['recommended_samples']} samples)")
-    print(f"python scripts/train_dflash_drafter.py collect \\")
+    print("python scripts/train_dflash_drafter.py collect \\")
     print(f"  --target-model {target} \\")
     print(f"  --output-dir {data_dir} \\")
     print(f"  --num-samples {cfg['recommended_samples']}")
 
-    print(f"\n# Step 2: Train drafter from scratch")
-    print(f"python scripts/train_dflash_drafter.py train \\")
+    print("\n# Step 2: Train drafter from scratch")
+    print("python scripts/train_dflash_drafter.py train \\")
     print(f"  --training-data {data_dir} \\")
     print(f"  --output-dir {out_dir} \\")
     print(f"  --num-layers {cfg['drafter_layers']} \\")
@@ -565,16 +574,16 @@ def show_preset(args):
     print(f"  --steps {cfg['recommended_steps']}")
 
     if cfg.get("drafter_hub"):
-        print(f"\n# Alternative: FC-only calibration of existing drafter")
-        print(f"python scripts/train_dflash_drafter.py train \\")
+        print("\n# Alternative: FC-only calibration of existing drafter")
+        print("python scripts/train_dflash_drafter.py train \\")
         print(f"  --training-data {data_dir} \\")
         print(f"  --pretrained {cfg['drafter_hub']} \\")
-        print(f"  --fc-only \\")
+        print("  --fc-only \\")
         print(f"  --output-dir {out_dir}-calibrated \\")
-        print(f"  --steps 2000 --lr 1e-4")
+        print("  --steps 2000 --lr 1e-4")
 
-    print(f"\n# Step 3: Evaluate")
-    print(f"python scripts/train_dflash_drafter.py eval \\")
+    print("\n# Step 3: Evaluate")
+    print("python scripts/train_dflash_drafter.py eval \\")
     print(f"  --target-model {target} \\")
     print(f"  --drafter-model {out_dir}")
 
@@ -587,24 +596,21 @@ def main():
     collect_p.add_argument("--target-model", type=str, required=True)
     collect_p.add_argument("--output-dir", type=str, default="./dflash-training-data")
     collect_p.add_argument("--num-samples", type=int, default=500)
-    collect_p.add_argument("--checkpoint-layers", type=str, default=None,
-                           help="Comma-separated checkpoint layer IDs (e.g. 1,10,19,28,37)")
+    collect_p.add_argument(
+        "--checkpoint-layers", type=str, default=None, help="Comma-separated checkpoint layer IDs (e.g. 1,10,19,28,37)"
+    )
 
     train_p = subparsers.add_parser("train", help="Train DFlash drafter")
     train_p.add_argument("--training-data", type=str, required=True)
-    train_p.add_argument("--pretrained", type=str, default=None,
-                         help="Pre-trained drafter to fine-tune")
+    train_p.add_argument("--pretrained", type=str, default=None, help="Pre-trained drafter to fine-tune")
     train_p.add_argument("--output-dir", type=str, default="./dflash-drafter")
     train_p.add_argument("--steps", type=int, default=5000)
     train_p.add_argument("--lr", type=float, default=6e-4)
     train_p.add_argument("--block-size", type=int, default=16)
     train_p.add_argument("--num-layers", type=int, default=8)
-    train_p.add_argument("--fc-only", action="store_true",
-                         help="Only train fc + hidden_norm (calibration)")
-    train_p.add_argument("--loss-gamma", type=float, default=7.0,
-                         help="Exponential loss decay gamma")
-    train_p.add_argument("--warmup-steps", type=int, default=100,
-                         help="LR warmup steps (default: 100)")
+    train_p.add_argument("--fc-only", action="store_true", help="Only train fc + hidden_norm (calibration)")
+    train_p.add_argument("--loss-gamma", type=float, default=7.0, help="Exponential loss decay gamma")
+    train_p.add_argument("--warmup-steps", type=int, default=100, help="LR warmup steps (default: 100)")
     train_p.add_argument("--save-every", type=int, default=1000)
     train_p.add_argument("--log-every", type=int, default=10)
 
@@ -614,12 +620,15 @@ def main():
     eval_p.add_argument("--max-tokens", type=int, default=64)
 
     preset_p = subparsers.add_parser("preset", help="Show recommended config for a target model")
-    preset_p.add_argument("name", type=str, nargs="?", default=None,
-                          choices=list(DRAFTER_PRESETS.keys()),
-                          help="Preset name (omit to list all)")
-    preset_p.add_argument("--quant", type=str, default="4bit",
-                          choices=["2bit", "4bit"],
-                          help="Quantization level")
+    preset_p.add_argument(
+        "name",
+        type=str,
+        nargs="?",
+        default=None,
+        choices=list(DRAFTER_PRESETS.keys()),
+        help="Preset name (omit to list all)",
+    )
+    preset_p.add_argument("--quant", type=str, default="4bit", choices=["2bit", "4bit"], help="Quantization level")
 
     args = parser.parse_args()
 
@@ -635,8 +644,7 @@ def main():
         parser.print_help()
         print("\n\nQuick start:")
         print("  python scripts/train_dflash_drafter.py preset deepseek-v4-flash")
-        print("  python scripts/train_dflash_drafter.py collect "
-              "--target-model mlx-community/Qwen3.6-35B-A3B-4bit")
+        print("  python scripts/train_dflash_drafter.py collect --target-model mlx-community/Qwen3.6-35B-A3B-4bit")
 
 
 if __name__ == "__main__":

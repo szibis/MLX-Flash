@@ -16,11 +16,12 @@ import argparse
 import gc
 import json
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 
 try:
     import mlx.core as mx
-    from mlx_lm import load, generate
+    from mlx_lm import generate, load
+
     HAS_MLX = True
 except ImportError:
     HAS_MLX = False
@@ -79,7 +80,8 @@ def main():
     try:
         prompt = tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
-            tokenize=False, add_generation_prompt=True,
+            tokenize=False,
+            add_generation_prompt=True,
         )
     except Exception:
         pass
@@ -95,14 +97,16 @@ def main():
     mem_before = get_memory_state()
     tps = bench_generate(model, tokenizer, prompt, args.max_tokens, args.runs)
     mem_after = get_memory_state()
-    results.append(LayerResult(
-        layer="1-baseline",
-        tok_per_s=round(tps, 1),
-        memory_available_gb=round(mem_after.available_gb, 1),
-        pressure=mem_after.pressure_level,
-        cache_hit_rate=0.0,
-        notes="Standard mlx_lm.generate, no MLX-Flash",
-    ))
+    results.append(
+        LayerResult(
+            layer="1-baseline",
+            tok_per_s=round(tps, 1),
+            memory_available_gb=round(mem_after.available_gb, 1),
+            pressure=mem_after.pressure_level,
+            cache_hit_rate=0.0,
+            notes="Standard mlx_lm.generate, no MLX-Flash",
+        )
+    )
     print(f"  {tps:.1f} tok/s | {mem_after.available_gb:.1f}GB available | {mem_after.pressure_level}")
 
     # --- Layer 2: + Memory management ---
@@ -121,14 +125,16 @@ def main():
     hints = mgr.get_optimization_hints()
     tps = bench_generate(model, tokenizer, prompt, args.max_tokens, args.runs)
     mem_after = get_memory_state()
-    results.append(LayerResult(
-        layer="2-mem-managed",
-        tok_per_s=round(tps, 1),
-        memory_available_gb=round(mem_after.available_gb, 1),
-        pressure=mem_after.pressure_level,
-        cache_hit_rate=0.0,
-        notes=f"Memory management active, {len(hints)} hints",
-    ))
+    results.append(
+        LayerResult(
+            layer="2-mem-managed",
+            tok_per_s=round(tps, 1),
+            memory_available_gb=round(mem_after.available_gb, 1),
+            pressure=mem_after.pressure_level,
+            cache_hit_rate=0.0,
+            notes=f"Memory management active, {len(hints)} hints",
+        )
+    )
     print(f"  {tps:.1f} tok/s | {mem_after.available_gb:.1f}GB available | {mem_after.pressure_level}")
     if hints:
         for h in hints[:3]:
@@ -139,6 +145,7 @@ def main():
     cache_hit = 0.0
     try:
         from mlx_flash_compress.expert_streaming import enable_expert_streaming
+
         streaming = enable_expert_streaming(model, capacity_per_layer=64)
         streaming.warmup()
         tps = bench_generate(model, tokenizer, prompt, args.max_tokens, args.runs)
@@ -153,38 +160,42 @@ def main():
         tps = results[-1].tok_per_s  # Same as previous
 
     mem_after = get_memory_state()
-    results.append(LayerResult(
-        layer="3-expert-cache",
-        tok_per_s=round(tps, 1),
-        memory_available_gb=round(mem_after.available_gb, 1),
-        pressure=mem_after.pressure_level,
-        cache_hit_rate=round(cache_hit, 2),
-        notes="Expert caching + prefetch (helps when model > RAM)",
-    ))
+    results.append(
+        LayerResult(
+            layer="3-expert-cache",
+            tok_per_s=round(tps, 1),
+            memory_available_gb=round(mem_after.available_gb, 1),
+            pressure=mem_after.pressure_level,
+            cache_hit_rate=round(cache_hit, 2),
+            notes="Expert caching + prefetch (helps when model > RAM)",
+        )
+    )
     print(f"  {tps:.1f} tok/s | {mem_after.available_gb:.1f}GB available | {mem_after.pressure_level}")
 
     # --- Layer 4: + SSD streaming ---
     print("\n=== Layer 4: + SSD streaming (for models > RAM) ===")
     try:
         from mlx_flash_compress.expert_streaming import enable_skip_fallback
-        enable_skip_fallback(model, streaming.caches if 'streaming' in dir() else {},
-                            adaptive_skip_threshold=3.0)
+
+        enable_skip_fallback(model, streaming.caches if "streaming" in dir() else {}, adaptive_skip_threshold=3.0)
         tps = bench_generate(model, tokenizer, prompt, args.max_tokens, args.runs)
-        print(f"  SSD streaming + skip fallback enabled")
+        print("  SSD streaming + skip fallback enabled")
     except Exception as e:
         print(f"  SSD streaming not applicable: {e}")
         print("  (Only activates when experts must be paged from SSD)")
         tps = results[-1].tok_per_s
 
     mem_after = get_memory_state()
-    results.append(LayerResult(
-        layer="4-ssd-streaming",
-        tok_per_s=round(tps, 1),
-        memory_available_gb=round(mem_after.available_gb, 1),
-        pressure=mem_after.pressure_level,
-        cache_hit_rate=round(cache_hit, 2),
-        notes="SSD streaming for experts that don't fit in RAM",
-    ))
+    results.append(
+        LayerResult(
+            layer="4-ssd-streaming",
+            tok_per_s=round(tps, 1),
+            memory_available_gb=round(mem_after.available_gb, 1),
+            pressure=mem_after.pressure_level,
+            cache_hit_rate=round(cache_hit, 2),
+            notes="SSD streaming for experts that don't fit in RAM",
+        )
+    )
     print(f"  {tps:.1f} tok/s | {mem_after.available_gb:.1f}GB available | {mem_after.pressure_level}")
 
     # --- Summary ---
@@ -192,7 +203,7 @@ def main():
     print(f"  Optimization Layer Benchmark — {hw.chip}, {hw.total_ram_gb:.0f}GB")
     print("=" * 65)
     print(f"  {'Layer':<25} {'tok/s':>8} {'RAM avail':>10} {'Pressure':>10}")
-    print(f"  {'-'*25} {'-'*8} {'-'*10} {'-'*10}")
+    print(f"  {'-' * 25} {'-' * 8} {'-' * 10} {'-' * 10}")
     baseline = results[0].tok_per_s
     for r in results:
         speedup = r.tok_per_s / baseline if baseline > 0 else 0
@@ -203,8 +214,8 @@ def main():
     if results[-1].tok_per_s > baseline * 1.05:
         print(f"\n  Total speedup: {results[-1].tok_per_s / baseline:.1f}x over baseline")
     else:
-        print(f"\n  Model fits in RAM — optimizations mainly add memory safety.")
-        print(f"  For speedup, test with a model that exceeds your RAM (30B+ on 36GB).")
+        print("\n  Model fits in RAM — optimizations mainly add memory safety.")
+        print("  For speedup, test with a model that exceeds your RAM (30B+ on 36GB).")
 
     if args.save:
         with open(args.save, "w") as f:

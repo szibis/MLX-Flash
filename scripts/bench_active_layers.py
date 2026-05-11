@@ -26,8 +26,9 @@ def main():
     args = parser.parse_args()
 
     print("Loading models...")
-    from mlx_lm import load
     from huggingface_hub import snapshot_download
+    from mlx_lm import load
+
     model, tokenizer = load(args.target)
     drafter_path = snapshot_download(args.drafter)
     drafter, config = DFlashDraftModel.from_pretrained(drafter_path)
@@ -44,8 +45,10 @@ def main():
     runner = DFlashRunner(model, tokenizer, drafter, config)
     runner.generate(args.prompt, max_tokens=4, use_cache=True)
 
-    print(f"  {'Layers':>8s} | {'tok/s':>8s} | {'accept':>8s} | {'tok/step':>8s} | "
-          f"{'draft_ms':>9s} | {'verify_ms':>10s} | {'calls':>5s}")
+    print(
+        f"  {'Layers':>8s} | {'tok/s':>8s} | {'accept':>8s} | {'tok/step':>8s} | "
+        f"{'draft_ms':>9s} | {'verify_ms':>10s} | {'calls':>5s}"
+    )
     print("-" * 80)
 
     for n_layers in [8, 6, 4, 2, 1]:
@@ -54,19 +57,19 @@ def main():
 
         results = []
         for _ in range(args.trials):
-            runner = DFlashRunner(model, tokenizer, drafter, config,
-                                  num_active_layers=active)
-            _, stats = runner.generate(args.prompt, max_tokens=args.max_tokens,
-                                       use_cache=True)
+            runner = DFlashRunner(model, tokenizer, drafter, config, num_active_layers=active)
+            _, stats = runner.generate(args.prompt, max_tokens=args.max_tokens, use_cache=True)
             results.append(stats)
 
         results.sort(key=lambda s: s["tok_per_sec"])
         s = results[len(results) // 2]
 
-        print(f"  {label:>8s} | {s['tok_per_sec']:8.1f} | "
-              f"{s['acceptance_rate']:7.1%} | {s['tokens_per_step']:8.1f} | "
-              f"{s['avg_draft_ms']:9.1f} | {s['avg_verify_ms']:10.1f} | "
-              f"{s['total_target_calls']:>5d}")
+        print(
+            f"  {label:>8s} | {s['tok_per_sec']:8.1f} | "
+            f"{s['acceptance_rate']:7.1%} | {s['tokens_per_step']:8.1f} | "
+            f"{s['avg_draft_ms']:9.1f} | {s['avg_verify_ms']:10.1f} | "
+            f"{s['total_target_calls']:>5d}"
+        )
 
 
 if __name__ == "__main__":

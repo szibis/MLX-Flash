@@ -119,9 +119,13 @@ class TestPlanKVSharing:
 class TestEstimateKVMemory:
     def test_no_sharing_baseline(self):
         result = estimate_kv_memory(
-            num_layers=32, strategy="none",
-            hidden_dim=4096, num_heads=32, head_dim=128,
-            max_seq_len=4096, kv_bits=16,
+            num_layers=32,
+            strategy="none",
+            hidden_dim=4096,
+            num_heads=32,
+            head_dim=128,
+            max_seq_len=4096,
+            kv_bits=16,
         )
         assert result["savings_gb"] == 0.0
         assert result["savings_pct"] == 0.0
@@ -129,9 +133,13 @@ class TestEstimateKVMemory:
 
     def test_pair_saves_half(self):
         result = estimate_kv_memory(
-            num_layers=32, strategy="pair",
-            hidden_dim=4096, num_heads=32, head_dim=128,
-            max_seq_len=4096, kv_bits=16,
+            num_layers=32,
+            strategy="pair",
+            hidden_dim=4096,
+            num_heads=32,
+            head_dim=128,
+            max_seq_len=4096,
+            kv_bits=16,
         )
         assert result["savings_pct"] == 50.0
         assert result["savings_gb"] > 0
@@ -146,12 +154,16 @@ class TestEstimateKVMemory:
 
     def test_kv_per_layer_calculation(self):
         result = estimate_kv_memory(
-            num_layers=1, strategy="none",
-            hidden_dim=4096, num_heads=32, head_dim=128,
-            max_seq_len=4096, kv_bits=16,
+            num_layers=1,
+            strategy="none",
+            hidden_dim=4096,
+            num_heads=32,
+            head_dim=128,
+            max_seq_len=4096,
+            kv_bits=16,
         )
         # 2 * 32 * 128 * 4096 * 2 bytes = 64MB
-        expected_mb = 2 * 32 * 128 * 4096 * 2 / (1024 ** 2)
+        expected_mb = 2 * 32 * 128 * 4096 * 2 / (1024**2)
         assert abs(result["kv_per_layer_mb"] - expected_mb) < 0.1
 
     def test_lower_bits_less_memory(self):
@@ -163,8 +175,14 @@ class TestEstimateKVMemory:
     def test_output_fields(self):
         result = estimate_kv_memory(num_layers=32, strategy="pair")
         expected_keys = {
-            "num_layers", "strategy", "kv_per_layer_mb",
-            "total_no_sharing_gb", "total_with_sharing_gb",
-            "savings_gb", "savings_pct", "kv_bits", "max_seq_len",
+            "num_layers",
+            "strategy",
+            "kv_per_layer_mb",
+            "total_no_sharing_gb",
+            "total_with_sharing_gb",
+            "savings_gb",
+            "savings_pct",
+            "kv_bits",
+            "max_seq_len",
         }
         assert expected_keys <= set(result.keys())
