@@ -127,6 +127,9 @@ class InferenceState:
             try:
                 from huggingface_hub import snapshot_download
 
+                if hasattr(self, "_switch_progress") and self._switch_progress:
+                    self._switch_progress["phase"] = "downloading"
+                    self._switch_progress["percent"] = 15
                 log.info("Downloading model files", extra={"model": self.model_name, "action": "download_start"})
                 snapshot_download(
                     self.model_name,
@@ -135,6 +138,10 @@ class InferenceState:
                 log.info("Download complete", extra={"model": self.model_name, "action": "download_complete"})
             except Exception:
                 pass  # mlx_lm.load will handle download as fallback
+
+        if hasattr(self, "_switch_progress") and self._switch_progress:
+            self._switch_progress["phase"] = "loading"
+            self._switch_progress["percent"] = 50
 
         t0 = time.monotonic()
         self.model, self.tokenizer = load(self.model_name)
@@ -148,6 +155,10 @@ class InferenceState:
                 "action": "model_load_complete",
             },
         )
+
+        if hasattr(self, "_switch_progress") and self._switch_progress:
+            self._switch_progress["phase"] = "warming"
+            self._switch_progress["percent"] = 85
 
         # Warmup: compile Metal shaders and allocate KV cache
         log.info("Warming up (compiling Metal shaders)", extra={"action": "warmup_start"})
@@ -480,6 +491,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._handle_telemetry()
         elif self.path == "/telemetry/current":
             self._handle_telemetry_current()
+        elif self.path == "/switch/progress":
+            self._handle_switch_progress()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -521,6 +534,21 @@ class ChatHandler(BaseHTTPRequestHandler):
         log = logger or __import__("logging").getLogger("mlx_flash")
         log.info("Switching model", extra={"model": new_model, "action": "model_switch"})
 
+        # Check if model is cached before starting
+        is_cached = False
+        cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+        dir_name = f"models--{new_model.replace('/', '--')}"
+        if os.path.isdir(os.path.join(cache_dir, dir_name)):
+            is_cached = True
+
+        # Update switch progress for polling
+        state._switch_progress = {
+            "phase": "unloading",
+            "model": new_model,
+            "cached": is_cached,
+            "percent": 0,
+        }
+
         # Unload current model
         state.model = None
         state.tokenizer = None
@@ -534,8 +562,12 @@ class ChatHandler(BaseHTTPRequestHandler):
 
         # Load new model
         state.model_name = new_model
+        state._switch_progress["phase"] = "downloading" if not is_cached else "loading"
+        state._switch_progress["percent"] = 10
+
         try:
             state.load_model()
+            state._switch_progress = None
             self._send_json(
                 {
                     "switched": True,
@@ -544,6 +576,7 @@ class ChatHandler(BaseHTTPRequestHandler):
                 }
             )
         except Exception as e:
+            state._switch_progress = None
             # Rollback on failure
             state.model_name = old_model
             self._send_json(
@@ -554,6 +587,15 @@ class ChatHandler(BaseHTTPRequestHandler):
                 },
                 500,
             )
+
+    def _handle_switch_progress(self):
+        """Return current model switch progress for UI polling."""
+        state = self.server_state
+        progress = getattr(state, "_switch_progress", None)
+        if progress is None:
+            self._send_json({"switching": False, "model": state.model_name, "model_loaded": state.model is not None})
+        else:
+            self._send_json({"switching": True, **progress})
 
     def _handle_reload(self):
         """Reload: refresh memory state, log status."""

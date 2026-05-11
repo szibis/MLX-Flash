@@ -635,56 +635,67 @@ async function sendMessage() {
 // Dynamic model registry — populated from /v1/models/registry at page load
 let KNOWN_MODELS = [];
 let activeModelId = '';
+let systemRamGb = 0;
 
 async function loadModelRegistry() {
   try {
     const resp = await fetch('/v1/models/registry');
     const data = await resp.json();
+    systemRamGb = data.system_ram_gb || 0;
     const models = data.models || data || [];
-    KNOWN_MODELS = models.map(m => ({
+    KNOWN_MODELS = models.filter(m => m.fits_ram !== false).map(m => ({
       id: m.id || m.model_id || m.name,
-      label: (m.id || m.name || '').split('/').pop() + (m.size_gb_approx ? ' (' + m.size_gb_approx + 'GB)' : ''),
-      size: m.size_gb_approx || 0,
+      label: buildModelLabel(m),
+      size: m.size_gb || m.size_gb_approx || 0,
       category: m.category_expected || '',
+      cached: m.cached || false,
+      isMoe: m.is_moe || false,
+      fitsRam: m.fits_ram !== false,
+      notes: m.notes || '',
     }));
   } catch(e) {
-    // Fallback to a minimal list if registry fails
     KNOWN_MODELS = [
-      {id:'mlx-community/Llama-3.2-3B-Instruct-4bit', label:'Llama 3.2 3B (2GB)', size:2, category:'small_dense'},
-      {id:'mlx-community/Qwen3-30B-A3B-4bit', label:'Qwen3 30B MoE (18GB)', size:18, category:'large_moe'},
-      {id:'mlx-community/Qwen3.6-35B-A3B-4bit', label:'Qwen3.6 35B MoE (20GB)', size:20, category:'large_moe'},
+      {id:'mlx-community/Llama-3.2-3B-Instruct-4bit', label:'Llama 3.2 3B (2GB)', size:2, category:'small_dense', cached:false, isMoe:false, fitsRam:true},
     ];
   }
-  // Also add the currently active model if not in list
   try {
     const st = await fetch('/status');
     const data = await st.json();
     if (data.model) {
       activeModelId = data.model;
       if (!KNOWN_MODELS.some(m => m.id === activeModelId)) {
-        KNOWN_MODELS.unshift({id: activeModelId, label: activeModelId.split('/').pop() + ' (active)', size: 0, category: ''});
+        KNOWN_MODELS.unshift({id: activeModelId, label: activeModelId.split('/').pop() + ' (active)', size: 0, category: '', cached: true, isMoe: false, fitsRam: true});
       }
     }
   } catch(e) {}
   populateModelSelect(activeModelId || localStorage.getItem('mlx-flash-model') || '');
 }
 
+function buildModelLabel(m) {
+  const name = (m.id || m.name || '').split('/').pop();
+  const size = m.size_gb || m.size_gb_approx || 0;
+  let label = name;
+  if (size > 0) label += ' (' + size + 'GB)';
+  if (m.cached) label += ' \u2713';
+  if (m.is_moe) label += ' [MoE]';
+  return label;
+}
+
 const CATEGORY_LABELS = {
-  'small_dense': 'Small Dense',
-  'medium_dense': 'Medium Dense',
-  'large_dense': 'Large Dense',
+  'small_dense': 'Small Dense (\u2264 5GB)',
+  'medium_dense': 'Medium Dense (5-20GB)',
+  'large_dense': 'Large Dense (20GB+)',
   'small_moe': 'Small MoE',
   'medium_moe': 'Medium MoE',
   'large_moe': 'Large MoE',
+  'ssd_small': 'Hybrid SSM+Attn',
   '': 'Other',
 };
 
 function populateModelSelect(currentModel) {
   const sel = document.getElementById('model-select');
-  // Group models by category
   const groups = {};
   const isKnown = KNOWN_MODELS.some(m => m.id === currentModel);
-  // If the active model isn't in the registry, add it at the top
   let topOpts = '';
   if (currentModel && !isKnown) {
     const short = currentModel.split('/').pop() || currentModel;
@@ -696,8 +707,7 @@ function populateModelSelect(currentModel) {
     groups[cat].push(m);
   });
   let html = topOpts;
-  // Sort categories: small_dense, medium_dense, large_dense, small_moe, medium_moe, large_moe, then other
-  const catOrder = ['small_dense','medium_dense','large_dense','small_moe','medium_moe','large_moe',''];
+  const catOrder = ['small_dense','medium_dense','large_dense','small_moe','medium_moe','ssd_small','large_moe',''];
   const sortedCats = Object.keys(groups).sort((a,b) => {
     const ai = catOrder.indexOf(a), bi = catOrder.indexOf(b);
     return (ai===-1?99:ai) - (bi===-1?99:bi);
@@ -708,31 +718,64 @@ function populateModelSelect(currentModel) {
       html += '<optgroup label="'+label+'">';
       groups[cat].forEach(m => {
         const isActive = m.id === currentModel;
-        const displayLabel = isActive ? m.label + ' *' : m.label;
+        let displayLabel = isActive ? '\u25B6 ' + m.label : m.label;
         html += '<option value="'+m.id+'" '+(isActive?'selected':'')+'>'+displayLabel+'</option>';
       });
       html += '</optgroup>';
     });
   } else {
-    // Flat list if all same category
     KNOWN_MODELS.forEach(m => {
       const isActive = m.id === currentModel;
-      const displayLabel = isActive ? m.label + ' *' : m.label;
+      let displayLabel = isActive ? '\u25B6 ' + m.label : m.label;
       html += '<option value="'+m.id+'" '+(isActive?'selected':'')+'>'+displayLabel+'</option>';
     });
   }
-  html += '<option value="_custom">Custom model...</option>';
+  html += '<option value="_custom">Custom model ID...</option>';
   sel.innerHTML = html;
 }
+
+let switchPollInterval = null;
 
 async function switchModel(modelId) {
   if (modelId === '_custom') {
     const custom = prompt('Enter HuggingFace model ID (e.g., mlx-community/gemma-4-31b-it-4bit):');
-    if (!custom) return;
+    if (!custom) { populateModelSelect(activeModelId); return; }
     modelId = custom;
   }
   const shortName = modelId.split('/').pop();
-  document.getElementById('status-text').textContent = 'Switching to ' + shortName + '...';
+  const modelInfo = KNOWN_MODELS.find(m => m.id === modelId);
+  const isCached = modelInfo ? modelInfo.cached : false;
+  const sizeGb = modelInfo ? modelInfo.size : 0;
+
+  // Show initial progress
+  const statusEl = document.getElementById('status-text');
+  const dotEl = document.getElementById('status-dot');
+  dotEl.style.background = 'var(--yellow)';
+  if (!isCached && sizeGb > 0) {
+    statusEl.textContent = 'Downloading ' + shortName + ' (~' + sizeGb + 'GB)...';
+  } else {
+    statusEl.textContent = 'Loading ' + shortName + '...';
+  }
+
+  // Poll progress while switch is happening
+  switchPollInterval = setInterval(async () => {
+    try {
+      const pr = await fetch('/switch/progress').then(r=>r.json());
+      if (pr.switching) {
+        const phase = pr.phase || 'loading';
+        if (phase === 'downloading') {
+          statusEl.textContent = 'Downloading ' + shortName + '...';
+        } else if (phase === 'loading') {
+          statusEl.textContent = 'Loading ' + shortName + ' into GPU memory...';
+        } else if (phase === 'warming') {
+          statusEl.textContent = 'Compiling Metal shaders for ' + shortName + '...';
+        } else {
+          statusEl.textContent = phase + ' ' + shortName + '...';
+        }
+      }
+    } catch(e) {}
+  }, 800);
+
   try {
     const resp = await fetch('/v1/models/switch', {
       method: 'POST',
@@ -740,18 +783,38 @@ async function switchModel(modelId) {
       body: JSON.stringify({model: modelId}),
     });
     const result = await resp.json();
+    clearInterval(switchPollInterval);
+    switchPollInterval = null;
+
     if (result.switched) {
-      document.getElementById('status-text').textContent = 'Switched to ' + shortName;
+      dotEl.style.background = 'var(--green)';
+      statusEl.textContent = 'Switched to ' + shortName;
       localStorage.setItem('mlx-flash-model', modelId);
-    } else if (result.error) {
-      document.getElementById('status-text').textContent = 'Switch failed: ' + result.error;
+      activeModelId = modelId;
+      // Refresh registry to update cached status
+      loadModelRegistry();
     } else {
-      localStorage.setItem('mlx-flash-model', modelId);
-      document.getElementById('status-text').textContent = 'Model set: ' + shortName + ' (restart to apply)';
+      dotEl.style.background = 'var(--red)';
+      // Parse error from nested failures
+      let errMsg = result.error || '';
+      if (!errMsg && result.failures && result.failures.length > 0) {
+        try {
+          const inner = JSON.parse(result.failures[0].error || '{}');
+          errMsg = inner.error || result.failures[0].error || 'Unknown error';
+        } catch(e) { errMsg = result.failures[0].error || 'Unknown error'; }
+      }
+      statusEl.textContent = 'Failed: ' + errMsg;
+      // Restore select to current model
+      populateModelSelect(activeModelId);
+      setTimeout(() => { dotEl.style.background = 'var(--green)'; statusEl.textContent = 'Ready'; }, 8000);
     }
   } catch(e) {
-    localStorage.setItem('mlx-flash-model', modelId);
-    document.getElementById('status-text').textContent = 'Model set: ' + shortName + ' (restart to apply)';
+    clearInterval(switchPollInterval);
+    switchPollInterval = null;
+    dotEl.style.background = 'var(--red)';
+    statusEl.textContent = 'Switch failed: ' + e.message;
+    populateModelSelect(activeModelId);
+    setTimeout(() => { dotEl.style.background = 'var(--green)'; statusEl.textContent = 'Ready'; }, 5000);
   }
 }
 
