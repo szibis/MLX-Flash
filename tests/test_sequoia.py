@@ -589,3 +589,360 @@ class TestSequoiaConfig:
         assert config.tree_width == 5
         assert config.ssd_bandwidth_gbps == 7.0
         assert config.offload_layers is False
+
+    def test_temperature_default(self):
+        config = SequoiaConfig()
+        assert config.temperature == 0.0
+
+    def test_config_with_temperature(self):
+        config = SequoiaConfig(temperature=0.7)
+        assert config.temperature == 0.7
+
+
+# ── Additional SpeculationTree tests ────────────────────────────
+
+
+class TestSpeculationTreeAdditional:
+    def test_compute_optimal_depth_negative_acceptance_clamped(self):
+        """Negative acceptance rates should be clamped to 0."""
+        config = SequoiaConfig(max_draft_tokens=8)
+        tree = SpeculationTree(config)
+        depth = tree.compute_optimal_depth(-0.5)
+        assert depth >= 1
+
+    def test_compute_optimal_depth_above_one_clamped(self):
+        """Acceptance rate above 1.0 should be clamped to 1.0."""
+        config = SequoiaConfig(max_draft_tokens=8)
+        tree = SpeculationTree(config)
+        depth = tree.compute_optimal_depth(1.5)
+        assert 1 <= depth <= config.max_draft_tokens
+
+    def test_build_tree_depth_1(self):
+        """Tree with depth 1 should have only direct children."""
+        config = SequoiaConfig(max_draft_tokens=4, tree_width=2)
+        tree = SpeculationTree(config)
+
+        def mock_draft(ids):
+            return 5, mx.zeros(32)
+
+        root = tree.build_tree(mock_draft, mx.array([1, 2]), depth=1)
+        assert root["token"] is None
+        assert len(root["children"]) > 0
+        for child in root["children"]:
+            assert child["children"] == []
+
+    def test_flatten_empty_tree(self):
+        """Flattening a tree with no children should return empty."""
+        config = SequoiaConfig()
+        tree = SpeculationTree(config)
+        root = {"token": None, "children": [], "logits": None, "depth": 0}
+        result = tree.flatten_for_verification(root)
+        assert result.shape == (1, 0)
+
+    def test_select_accepted_empty_verified(self):
+        """Empty verified tokens should return empty array."""
+        config = SequoiaConfig()
+        tree = SpeculationTree(config)
+        root = {
+            "token": None,
+            "children": [{"token": 5, "children": [], "logits": None, "depth": 1}],
+            "logits": None,
+            "depth": 0,
+        }
+        verified = mx.array([], dtype=mx.int32)
+        accepted = tree.select_accepted(root, verified)
+        assert accepted.size == 0
+
+    def test_record_acceptance_zero_drafted(self):
+        """Recording with zero drafted should not crash."""
+        config = SequoiaConfig()
+        tree = SpeculationTree(config)
+        tree.record_acceptance(accepted=0, drafted=0)
+        # Should not append anything (drafted > 0 guard)
+        assert len(tree._acceptance_history) == 0
+
+    def test_running_acceptance_rate_default(self):
+        config = SequoiaConfig()
+        tree = SpeculationTree(config)
+        assert tree._get_running_acceptance_rate() == 0.5
+
+    def test_running_acceptance_rate_weighted(self):
+        """More recent values should weigh more heavily."""
+        config = SequoiaConfig()
+        tree = SpeculationTree(config)
+        # First record many low rates, then a high rate
+        for _ in range(10):
+            tree.record_acceptance(1, 10)  # 0.1 rate
+        tree.record_acceptance(9, 10)  # 0.9 rate
+        rate = tree._get_running_acceptance_rate()
+        # The weighted rate should be pulled toward 0.9 more than simple average
+        assert rate > np.mean([0.1] * 10 + [0.9])
+
+    def test_collect_paths_multi_branch(self):
+        """Tree with multiple branches should produce multiple paths."""
+        config = SequoiaConfig(tree_width=2)
+        tree = SpeculationTree(config)
+        root = {
+            "token": None,
+            "children": [
+                {
+                    "token": 1,
+                    "children": [{"token": 3, "children": [], "logits": None, "depth": 2}],
+                    "logits": None,
+                    "depth": 1,
+                },
+                {
+                    "token": 2,
+                    "children": [{"token": 4, "children": [], "logits": None, "depth": 2}],
+                    "logits": None,
+                    "depth": 1,
+                },
+            ],
+            "logits": None,
+            "depth": 0,
+        }
+        paths = []
+        tree._collect_paths(root, [], paths)
+        assert len(paths) == 2
+        assert [1, 3] in paths
+        assert [2, 4] in paths
+
+
+# ── Additional LayerOffloader tests ─────────────────────────────
+
+
+class TestLayerOffloaderAdditional:
+    def test_load_layer_weights_missing_index(self):
+        """Loading weights for non-indexed layer returns None."""
+        config = SequoiaConfig()
+        offloader = LayerOffloader("/nonexistent", config)
+        result = offloader._load_layer_weights(999)
+        assert result is None
+
+    def test_evict_multiple_layers(self):
+        """Evicting multiple layers should track each eviction."""
+        config = SequoiaConfig()
+        offloader = LayerOffloader("/nonexistent", config)
+        offloader._loaded_layers[0] = {"fake": True}
+        offloader._loaded_layers[1] = {"fake": True}
+        offloader.evict_layer(0)
+        offloader.evict_layer(1)
+        assert offloader._evict_count == 2
+        assert len(offloader._loaded_layers) == 0
+
+    def test_prefetch_already_loaded_noop(self):
+        """Prefetching a layer already in memory should be a no-op."""
+        config = SequoiaConfig()
+        offloader = LayerOffloader("/nonexistent", config)
+        offloader._loaded_layers[5] = {"fake": True}
+        offloader.prefetch_layer(5)
+        # No new thread should be started
+        assert 5 not in offloader._prefetch_threads or not offloader._prefetch_threads[5].is_alive()
+
+    def test_prefetch_already_prefetched_noop(self):
+        """Prefetching a layer already in prefetch results should be a no-op."""
+        config = SequoiaConfig()
+        offloader = LayerOffloader("/nonexistent", config)
+        offloader._prefetch_results[7] = {"fake": True}
+        offloader.prefetch_layer(7)
+
+    def test_stats_bandwidth_calculation(self):
+        """Effective bandwidth should be calculated from loaded bytes and time."""
+        config = SequoiaConfig()
+        offloader = LayerOffloader("/nonexistent", config)
+        offloader._load_count = 10
+        offloader._total_load_time_ms = 1000.0  # 1 second
+        offloader._total_bytes_loaded = 5 * (1024**3)  # 5 GB
+        stats = offloader.get_stats()
+        assert stats["total_bytes_loaded_gb"] == 5.0
+        assert stats["effective_bandwidth_gbps"] == 5.0
+
+    def test_stats_zero_load_time(self):
+        """When no loads happened, avoid division by zero."""
+        config = SequoiaConfig()
+        offloader = LayerOffloader("/nonexistent", config)
+        stats = offloader.get_stats()
+        assert stats["avg_load_time_ms"] == 0.0
+        assert stats["effective_bandwidth_gbps"] == 0.0
+
+    def test_forward_1d_input(self):
+        """1D input should be expanded to 2D before processing."""
+        config = SequoiaConfig(offload_layers=True)
+        offloader = LayerOffloader("/nonexistent", config)
+
+        model = MockTargetModel(vocab_size=32, hidden_dim=32, num_layers=2)
+        mx.eval(model.parameters())
+
+        input_ids = mx.array([1, 2, 3])
+        output = offloader.forward_with_offloading(input_ids, model)
+        mx.eval(output)
+        assert output.shape[-1] == 32
+
+
+# ── Additional SequoiaEngine tests ──────────────────────────────
+
+
+class TestSequoiaEngineAdditional:
+    def test_init_with_model_path(self):
+        """Engine should create offloader when model path is given."""
+        config = SequoiaConfig(offload_layers=True)
+        draft = MockDraftModel()
+        target = MockTargetModel()
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = SequoiaEngine(
+            draft,
+            target,
+            MockTokenizer(),
+            config=config,
+            target_model_path="/nonexistent/path",
+        )
+        assert engine.offloader is not None
+
+    def test_init_no_offloader_when_disabled(self):
+        """Engine should not create offloader when offload_layers=False."""
+        config = SequoiaConfig(offload_layers=False)
+        draft = MockDraftModel()
+        target = MockTargetModel()
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = SequoiaEngine(
+            draft,
+            target,
+            MockTokenizer(),
+            config=config,
+            target_model_path="/some/path",
+        )
+        assert engine.offloader is None
+
+    def test_draft_fn_greedy(self):
+        """Draft function should return token and logits."""
+        config = SequoiaConfig(temperature=0.0)
+        draft = MockDraftModel(vocab_size=32)
+        target = MockTargetModel(vocab_size=32)
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = SequoiaEngine(draft, target, MockTokenizer(), config=config)
+
+        token_id, logits = engine._draft_fn(mx.array([1, 2, 3]))
+        assert isinstance(token_id, int)
+        assert 0 <= token_id < 32
+        assert logits.shape == (32,)
+
+    def test_draft_fn_with_temperature(self):
+        """Draft function with temperature > 0 should sample."""
+        config = SequoiaConfig(temperature=0.8)
+        draft = MockDraftModel(vocab_size=32)
+        target = MockTargetModel(vocab_size=32)
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = SequoiaEngine(draft, target, MockTokenizer(), config=config)
+
+        token_id, logits = engine._draft_fn(mx.array([1, 2, 3]))
+        assert isinstance(token_id, int)
+        assert 0 <= token_id < 32
+
+    def test_stats_includes_config(self):
+        """Stats should contain config sub-dict."""
+        config = SequoiaConfig(max_draft_tokens=4, ssd_bandwidth_gbps=6.5)
+        draft = MockDraftModel(vocab_size=32)
+        target = MockTargetModel(vocab_size=32, num_layers=2)
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = SequoiaEngine(draft, target, MockTokenizer(), config=config)
+        engine.generate(mx.array([1, 2, 3]), max_tokens=3)
+
+        stats = engine.get_stats()
+        assert stats["config"]["max_draft_tokens"] == 4
+        assert stats["config"]["ssd_bandwidth_gbps"] == 6.5
+
+    def test_stats_with_offloader(self):
+        """Stats should include offloader stats when offloader exists."""
+        config = SequoiaConfig(offload_layers=True)
+        draft = MockDraftModel(vocab_size=32)
+        target = MockTargetModel(vocab_size=32, num_layers=2)
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = SequoiaEngine(
+            draft,
+            target,
+            MockTokenizer(),
+            config=config,
+            target_model_path="/nonexistent",
+        )
+        engine._start_time = 1.0  # fake start time
+        stats = engine.get_stats()
+        assert "offloader" in stats
+
+    def test_apply_sequoia_with_model_path(self):
+        """apply_sequoia with path should set up offloader."""
+        draft = MockDraftModel()
+        target = MockTargetModel()
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = apply_sequoia(
+            draft,
+            target,
+            MockTokenizer(),
+            target_model_path="/nonexistent",
+        )
+        assert engine.offloader is not None
+
+    def test_apply_sequoia_no_path(self):
+        """apply_sequoia without path should have no offloader."""
+        draft = MockDraftModel()
+        target = MockTargetModel()
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = apply_sequoia(draft, target, MockTokenizer())
+        assert engine.offloader is None
+
+    def test_calibrate_no_crash(self):
+        """Calibrate should not crash even if model calls fail."""
+        config = SequoiaConfig()
+        draft = MockDraftModel(vocab_size=32)
+        target = MockTargetModel(vocab_size=32, num_layers=2)
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = SequoiaEngine(draft, target, MockTokenizer(), config=config)
+        # Should not raise
+        engine.calibrate("test text")
+
+    def test_calibrate_updates_latency(self):
+        """Calibrate should update draft_latency_ms."""
+        config = SequoiaConfig(draft_latency_ms=999.0, verify_latency_ms=999.0)
+        draft = MockDraftModel(vocab_size=32)
+        target = MockTargetModel(vocab_size=32, num_layers=2)
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = SequoiaEngine(draft, target, MockTokenizer(), config=config)
+        engine.calibrate("hello world")
+
+        # After calibration, latency should be updated from dummy 999
+        assert config.draft_latency_ms != 999.0
+
+    def test_generate_empty_prompt(self):
+        """Generation with minimal prompt should still work."""
+        config = SequoiaConfig(max_draft_tokens=2, tree_width=1)
+        draft = MockDraftModel(vocab_size=32)
+        target = MockTargetModel(vocab_size=32, num_layers=2)
+        mx.eval(draft.parameters())
+        mx.eval(target.parameters())
+
+        engine = SequoiaEngine(draft, target, MockTokenizer(), config=config)
+        prompt = mx.array([1])
+        result = engine.generate(prompt, max_tokens=3)
+        mx.eval(result)
+
+        result_list = np.array(result).tolist()
+        assert len(result_list) >= 1

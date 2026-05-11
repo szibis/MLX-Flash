@@ -81,7 +81,9 @@ class RouterHook:
     predictor for speculative prefetch.
     """
 
-    def __init__(self, model, num_layers: int = 24, num_experts: int = 60, top_k: int = 4):
+    def __init__(
+        self, model, num_layers: int = 24, num_experts: int = 60, top_k: int = 4, on_event: Optional[Callable] = None
+    ):
         if not HAS_MLX:
             raise RuntimeError("MLX required for router hooking")
 
@@ -89,12 +91,16 @@ class RouterHook:
         self.num_layers = num_layers
         self.num_experts = num_experts
         self.top_k = top_k
+        self._on_event = on_event  # Optional callback for routing events (e.g., prefetcher)
 
         self._routing_log: list[RoutingEvent] = []
         self._token_counter: int = 0
-        self._original_calls: dict[int, Callable] = {}  # layer_idx -> original __call__
         self._installed: bool = False
         self._lock = threading.Lock()
+
+        # Gate replacement tracking (object replacement pattern, same as expert_pruning.py)
+        self._patched_mlps: list = []  # MLP objects whose .gate was replaced
+        self._original_gates: list = []  # original gate objects for uninstall
 
         # Co-occurrence predictor
         self._cooccurrence = np.zeros((num_layers, num_experts, num_experts), dtype=np.float32)
@@ -111,12 +117,11 @@ class RouterHook:
         self._installed = True
 
     def uninstall(self):
-        """Remove all hooks, restore original forward passes."""
-        for layer_idx, original in self._original_calls.items():
-            gate_module = self._gate_modules.get(layer_idx)
-            if gate_module and original:
-                gate_module.__call__ = original
-        self._original_calls.clear()
+        """Remove all hooks, restore original gate modules."""
+        for mlp, orig_gate in zip(self._patched_mlps, self._original_gates):
+            mlp.gate = orig_gate
+        self._patched_mlps.clear()
+        self._original_gates.clear()
         self._installed = False
 
     def _find_and_hook_gates(self, model, prefix=""):
@@ -133,70 +138,20 @@ class RouterHook:
 
         for i, layer in enumerate(layers):
             gate = None
+            parent = None  # the object whose .gate attribute we replace
+
             if hasattr(layer, "mlp") and hasattr(layer.mlp, "gate"):
                 gate = layer.mlp.gate
+                parent = layer.mlp
             elif hasattr(layer, "block_sparse_moe") and hasattr(layer.block_sparse_moe, "gate"):
                 gate = layer.block_sparse_moe.gate
+                parent = layer.block_sparse_moe
 
-            if gate is not None:
-                self._hook_gate(i, gate)
-
-    def _hook_gate(self, layer_idx: int, gate_module):
-        """Hook a single gate module's __call__ to capture routing."""
-        self._gate_modules[layer_idx] = gate_module
-        original_call = gate_module.__call__
-
-        # Store original
-        self._original_calls[layer_idx] = original_call
-
-        # Create hooked version
-        hook_self = self
-
-        class HookedGate:
-            """Wrapper that captures routing decisions."""
-
-            def __init__(self, original, layer_idx):
-                self._original = original
-                self._layer_idx = layer_idx
-                # Copy all attributes from original
-                for attr in dir(original):
-                    if not attr.startswith("_") and attr != "__call__":
-                        try:
-                            setattr(self, attr, getattr(original, attr))
-                        except (AttributeError, TypeError):
-                            pass
-
-            def __call__(self, x):
-                # Run original gate forward
-                result = self._original(x)
-
-                # Capture routing decision (non-blocking)
-                try:
-                    # result is router logits: (batch, seq, num_experts)
-                    # We need to extract top-K indices
-                    if isinstance(result, mx.array):
-                        logits = np.array(result)
-                        if logits.ndim >= 2:
-                            # Take last token's routing (for autoregressive)
-                            last_logits = logits.reshape(-1, logits.shape[-1])[-1]
-                            top_k_idx = np.argsort(last_logits)[-hook_self.top_k :][::-1]
-                            top_k_weights = last_logits[top_k_idx]
-
-                            hook_self._record_routing(
-                                self._layer_idx,
-                                top_k_idx.tolist(),
-                                top_k_weights.tolist(),
-                            )
-                except Exception:
-                    pass  # Never block inference
-
-                return result
-
-        # Replace the gate's __call__ with hooked version
-        # We can't easily replace __call__ on an MLX nn.Module,
-        # so instead we intercept at the mlp level
-        # For now, record that we found the gate and use post-inference analysis
-        self._gate_modules[layer_idx] = gate_module
+            if gate is not None and parent is not None:
+                self._gate_modules[i] = gate
+                self._original_gates.append(gate)
+                self._patched_mlps.append(parent)
+                parent.gate = _HookedGateWrapper(gate, self, i)
 
     def _record_routing(self, layer_idx: int, expert_ids: list[int], weights: list[float]):
         """Record a routing decision (thread-safe)."""
@@ -224,6 +179,13 @@ class RouterHook:
             for eid in expert_ids:
                 self.stats.expert_frequency[eid] += 1
                 self.stats.layer_expert_frequency[layer_idx][eid] += 1
+
+        # Notify external handler (e.g., AdvancedPrefetcher) outside the lock
+        if self._on_event is not None:
+            try:
+                self._on_event(event)
+            except Exception:
+                pass  # Never block inference due to callback errors
 
     def advance_token(self):
         """Call between tokens to advance the counter."""
@@ -273,7 +235,7 @@ class RouterHook:
 
         correct = 0
         total = 0
-        prev_by_layer = {}
+        prev_by_layer: dict[int, list[int]] = {}
 
         for event in self._routing_log:
             if event.layer_idx > 0 and (event.layer_idx - 1) in prev_by_layer:
@@ -304,3 +266,69 @@ class RouterHook:
             if hot_experts:
                 hot[layer_idx] = hot_experts
         return hot
+
+
+class _HookedGateWrapper:
+    """Wrapper that replaces a gate module to observe routing decisions.
+
+    Uses the same object-replacement pattern as ``_GateWrapper`` in
+    ``expert_pruning.py``.  Python's call protocol resolves ``obj()`` via
+    ``type(obj).__call__``, so patching an instance ``__call__`` does not
+    work.  Instead we replace the gate object on the parent MLP and
+    delegate attribute access to the original gate via ``__getattr__``.
+
+    The wrapper is observation-only: it calls the original gate, extracts
+    the top-k expert indices from the logits, records a ``RoutingEvent``
+    on the ``RouterHook``, and returns the *unmodified* logits so that
+    model behaviour is not affected.
+    """
+
+    def __init__(self, original_gate, hook: RouterHook, layer_idx: int):
+        self._original_gate = original_gate
+        self._hook = hook
+        self._layer_idx = layer_idx
+
+    def __call__(self, *args, **kwargs):
+        logits = self._original_gate(*args, **kwargs)
+
+        # Capture routing decision (observation only, never block inference)
+        try:
+            if isinstance(logits, mx.array):
+                logits_np = np.array(logits)
+                if logits_np.ndim >= 2:
+                    # Apply softmax to get expert probabilities
+                    last_logits = logits_np.reshape(-1, logits_np.shape[-1])[-1]
+                    # Numerically stable softmax
+                    shifted = last_logits - last_logits.max()
+                    exp_vals = np.exp(shifted)
+                    probs = exp_vals / exp_vals.sum()
+
+                    k = min(self._hook.top_k, len(probs))
+                    top_k_idx = np.argsort(probs)[-k:][::-1]
+                    top_k_weights = probs[top_k_idx]
+
+                    self._hook._record_routing(
+                        self._layer_idx,
+                        top_k_idx.tolist(),
+                        top_k_weights.tolist(),
+                    )
+
+                    # Update co-occurrence for experts selected together
+                    expert_ids = top_k_idx.tolist()
+                    for ii in range(len(expert_ids)):
+                        for jj in range(ii + 1, len(expert_ids)):
+                            ei, ej = expert_ids[ii], expert_ids[jj]
+                            if (
+                                ei < self._hook.num_experts
+                                and ej < self._hook.num_experts
+                                and self._layer_idx < self._hook.num_layers
+                            ):
+                                self._hook._cooccurrence[self._layer_idx, ei, ej] += 1
+                                self._hook._cooccurrence[self._layer_idx, ej, ei] += 1
+        except Exception:
+            pass  # Never block inference
+
+        return logits
+
+    def __getattr__(self, name):
+        return getattr(self._original_gate, name)

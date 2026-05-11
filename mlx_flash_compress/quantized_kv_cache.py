@@ -38,12 +38,31 @@ import mlx.nn as nn
 
 @dataclass
 class QuantizedKVConfig:
-    """Configuration for quantized KV cache."""
+    """Configuration for quantized KV cache.
 
-    key_bits: int = 4  # quantization bits for keys (2, 4, 8)
-    value_bits: int = 4  # quantization bits for values
-    group_size: int = 64  # quantization group size
-    calibration_tokens: int = 32  # tokens before switching to quantized mode
+    Attributes:
+        key_bits: Quantization bits for keys. Must be 2, 4, or 8.
+        value_bits: Quantization bits for values. Must be 2, 4, or 8.
+        group_size: Number of elements per quantization group. Must be > 0.
+        calibration_tokens: Tokens stored in full precision before switching
+            to quantized mode. Set to 0 for immediate quantization.
+    """
+
+    key_bits: int = 4
+    value_bits: int = 4
+    group_size: int = 64
+    calibration_tokens: int = 32
+
+    def __post_init__(self):
+        """Validate configuration values."""
+        if self.key_bits not in (2, 4, 8):
+            raise ValueError(f"key_bits must be 2, 4, or 8, got {self.key_bits}")
+        if self.value_bits not in (2, 4, 8):
+            raise ValueError(f"value_bits must be 2, 4, or 8, got {self.value_bits}")
+        if self.group_size <= 0:
+            raise ValueError(f"group_size must be positive, got {self.group_size}")
+        if self.calibration_tokens < 0:
+            raise ValueError(f"calibration_tokens must be non-negative, got {self.calibration_tokens}")
 
 
 def quantize_tensor(x: mx.array, bits: int, group_size: int = 64) -> tuple[mx.array, mx.array, mx.array]:
@@ -63,8 +82,15 @@ def quantize_tensor(x: mx.array, bits: int, group_size: int = 64) -> tuple[mx.ar
     """
     if bits not in (2, 4, 8):
         raise ValueError(f"bits must be 2, 4, or 8, got {bits}")
+    if group_size <= 0:
+        raise ValueError(f"group_size must be positive, got {group_size}")
 
     original_shape = x.shape
+    if not original_shape or original_shape[-1] == 0:
+        empty_packed = mx.zeros((0,), dtype=mx.uint8)
+        empty_scales = mx.zeros((0,), dtype=mx.float32)
+        return empty_packed, empty_scales, empty_scales
+
     last_dim = original_shape[-1]
     # Use effective group size (clamp to last_dim for small tensors)
     effective_gs = min(group_size, last_dim)
@@ -150,9 +176,15 @@ def dequantize_tensor(
 
     Returns:
         Dequantized float32 tensor with original_shape.
+
+    Raises:
+        ValueError: If bits is not 2, 4, or 8, or if original_shape is empty.
     """
     if bits not in (2, 4, 8):
         raise ValueError(f"bits must be 2, 4, or 8, got {bits}")
+
+    if not original_shape or original_shape[-1] == 0:
+        return mx.zeros(original_shape, dtype=mx.float32)
 
     max_int = (1 << (bits - 1)) - 1
     leading = list(original_shape[:-1])
@@ -233,7 +265,12 @@ class QuantizedKVEntry:
         return packed, scales, zeros, data.shape
 
     def _finalize_calibration(self):
-        """Quantize accumulated calibration data and switch to quantized mode."""
+        """Quantize accumulated calibration data and switch to quantized mode.
+
+        After this call, all future appends will be quantized immediately.
+        If no data was accumulated during calibration (e.g. calibration_tokens=0
+        and no data yet), the calibration flag is set without quantizing.
+        """
         if self._fp_keys is None:
             self._calibration_done = True
             return
@@ -352,7 +389,12 @@ class QuantizedKVEntry:
 
 
 class QuantizedKVCacheManager:
-    """Manages quantized KV caches across all layers of a transformer."""
+    """Manages quantized KV caches across all layers of a transformer.
+
+    Creates one QuantizedKVEntry per layer, each using the same config
+    for quantization parameters. The manager provides layer-indexed
+    access for updating and retrieving KV pairs.
+    """
 
     def __init__(
         self,
@@ -361,6 +403,12 @@ class QuantizedKVCacheManager:
         num_kv_heads: int,
         head_dim: int,
     ):
+        if num_layers <= 0:
+            raise ValueError(f"num_layers must be positive, got {num_layers}")
+        if num_kv_heads <= 0:
+            raise ValueError(f"num_kv_heads must be positive, got {num_kv_heads}")
+        if head_dim <= 0:
+            raise ValueError(f"head_dim must be positive, got {head_dim}")
         self.config = config
         self.num_layers = num_layers
         self.num_kv_heads = num_kv_heads

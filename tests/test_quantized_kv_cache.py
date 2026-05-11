@@ -545,3 +545,147 @@ class TestCalibration:
                 assert entry._calibration_done
 
         assert entry.length == 8
+
+
+# ---------------------------------------------------------------------------
+# Coverage gaps: dequantization, apply_quantized_kv_cache, edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestDequantizeTrimPath:
+    """Cover lines 238-239: flatten and trim in dequantize_tensor."""
+
+    def test_dequantize_with_non_divisible_dim(self):
+        """Test dequantize when last dim is not divisible by group_size."""
+        # Create data with dim 100 (not divisible by 64)
+        mx.random.seed(42)
+        data = mx.random.normal(shape=(100,))
+        packed, scales, zeros = quantize_tensor(data, bits=4, group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=4, original_shape=data.shape, group_size=64)
+        assert restored.shape == data.shape
+        mse = mx.mean((data.astype(mx.float32) - restored) ** 2).item()
+        assert mse < 0.05
+
+    def test_dequantize_3d_tensor(self):
+        """Test dequantize on a 3D tensor (seq, heads, dim)."""
+        mx.random.seed(42)
+        data = mx.random.normal(shape=(4, 8, 64))
+        packed, scales, zeros = quantize_tensor(data, bits=4, group_size=64)
+        restored = dequantize_tensor(packed, scales, zeros, bits=4, original_shape=data.shape, group_size=64)
+        assert restored.shape == data.shape
+
+
+class TestApplyQuantizedKVCache:
+    """Cover lines 465-513: apply_quantized_kv_cache function."""
+
+    def test_basic_apply(self):
+        """Test applying to a model with layers and attention."""
+        import mlx.nn as nn
+
+        from mlx_flash_compress.quantized_kv_cache import apply_quantized_kv_cache
+
+        class MockAttn(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.num_heads = 8
+                self.num_kv_heads = 4
+                self.head_dim = 64
+
+        class MockLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.self_attn = MockAttn()
+
+        class MockModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = [MockLayer(), MockLayer()]
+
+        model = MockModel()
+        manager = apply_quantized_kv_cache(model)
+        assert isinstance(manager, QuantizedKVCacheManager)
+        assert len(manager.entries) == 2
+
+    def test_apply_with_n_kv_heads_attr(self):
+        """Test with n_kv_heads attribute name."""
+        import mlx.nn as nn
+
+        from mlx_flash_compress.quantized_kv_cache import apply_quantized_kv_cache
+
+        class MockAttn(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.n_kv_heads = 4
+                self.head_dim = 64
+
+        class MockLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.self_attn = MockAttn()
+
+        class MockModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = [MockLayer()]
+
+        model = MockModel()
+        manager = apply_quantized_kv_cache(model)
+        assert len(manager.entries) == 1
+
+    def test_apply_with_attention_attr(self):
+        """Test with .attention instead of .self_attn."""
+        import mlx.nn as nn
+
+        from mlx_flash_compress.quantized_kv_cache import apply_quantized_kv_cache
+
+        class MockAttn(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.n_heads = 8
+                self.head_dim = 64
+
+        class MockLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.attention = MockAttn()
+
+        class MockModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = [MockLayer()]
+
+        model = MockModel()
+        manager = apply_quantized_kv_cache(model)
+        assert len(manager.entries) == 1
+
+    def test_apply_no_layers_raises(self):
+        """Model without layers should raise ValueError."""
+        import mlx.nn as nn
+
+        from mlx_flash_compress.quantized_kv_cache import apply_quantized_kv_cache
+
+        class MockModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+
+        with pytest.raises(ValueError, match="Could not detect model"):
+            apply_quantized_kv_cache(MockModel())
+
+    def test_apply_no_heads_raises(self):
+        """Model with layers but no head config should raise ValueError."""
+        import mlx.nn as nn
+
+        from mlx_flash_compress.quantized_kv_cache import apply_quantized_kv_cache
+
+        class MockLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                # No attention module
+
+        class MockModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = [MockLayer()]
+
+        with pytest.raises(ValueError, match="Could not detect num_kv_heads"):
+            apply_quantized_kv_cache(MockModel())

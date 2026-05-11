@@ -598,7 +598,7 @@ class ContinuousBatchingEngine:
         # Sample next token
         next_token = self._sample(logits, req.temperature)
         mx.eval(next_token)
-        next_token_id = next_token.item()
+        next_token_id = int(next_token.item())
 
         if not req.generated_tokens:
             req.first_token_at = time.time()

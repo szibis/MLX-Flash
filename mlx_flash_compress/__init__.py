@@ -1,6 +1,6 @@
 """MLX-Flash: Tiered compressed expert cache for MoE inference on Apple Silicon."""
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 
 def __getattr__(name):
@@ -149,6 +149,10 @@ def __getattr__(name):
         from mlx_flash_compress.eagle3 import EAGLE3Trainer
 
         return EAGLE3Trainer
+    if name == "apply_eagle3":
+        from mlx_flash_compress.eagle3 import apply_eagle3
+
+        return apply_eagle3
     if name == "LayerQuantizer":
         from mlx_flash_compress.layer_quantization import LayerQuantizer
 

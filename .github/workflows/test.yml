@@ -15,6 +15,9 @@ permissions:
   checks: write
   pull-requests: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ---------------------------------------------------------------------------
   # Test matrix — Python 3.12 + 3.13 on macOS Apple Silicon
@@ -28,7 +31,7 @@ jobs:
         python-version: ["3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -55,7 +58,7 @@ jobs:
 
       - name: Upload coverage artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: coverage-py${{ matrix.python-version }}
           path: coverage.xml
@@ -63,7 +66,7 @@ jobs:
 
       - name: Upload test results artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: test-results-py${{ matrix.python-version }}
           path: test-results.xml
@@ -84,13 +87,13 @@ jobs:
           python -m coverage report --rcfile=.coveragerc | tail -5
 
   # ---------------------------------------------------------------------------
-  # Test count gate — fail if test suite shrinks below 800
+  # Test count gate — fail if test suite shrinks below 1400
   # ---------------------------------------------------------------------------
   test-count:
-    name: Test count gate (min 800)
+    name: Test count gate (min 1400)
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -109,11 +112,11 @@ jobs:
           COUNT=$(python -m pytest tests/ --collect-only -q 2>/dev/null | tail -1 | grep -oE '^[0-9]+' || echo "0")
           echo "Collected tests: ${COUNT}"
           echo "### Test Count: ${COUNT}" >> $GITHUB_STEP_SUMMARY
-          if [ "${COUNT}" -lt 800 ]; then
-            echo "::error::Test count ${COUNT} is below minimum threshold of 800"
+          if [ "${COUNT}" -lt 1400 ]; then
+            echo "::error::Test count ${COUNT} is below minimum threshold of 1400"
             exit 1
           fi
-          echo "Test count ${COUNT} meets minimum threshold of 800"
+          echo "Test count ${COUNT} meets minimum threshold of 1400"
 
   # ---------------------------------------------------------------------------
   # Lint — ruff (replaces flake8 + black + isort) + import validation
@@ -123,7 +126,7 @@ jobs:
     runs-on: macos-15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -153,7 +156,7 @@ jobs:
     runs-on: macos-15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -183,7 +186,7 @@ jobs:
     runs-on: macos-15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

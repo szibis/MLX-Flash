@@ -172,7 +172,7 @@ class SpeculationTree:
             mx.array of shape [num_paths, max_depth] with token IDs,
             padded with -1 for shorter paths.
         """
-        paths = []
+        paths: list[list[int]] = []
         self._collect_paths(tree, [], paths)
 
         if not paths:
@@ -213,7 +213,7 @@ class SpeculationTree:
             Longest accepted token sequence as mx.array
         """
         verified_list = np.array(verified_tokens).flatten().tolist()
-        paths = []
+        paths: list[list[int]] = []
         self._collect_paths(tree, [], paths)
 
         best_path = []
@@ -274,7 +274,7 @@ class LayerOffloader:
     def __init__(self, model_path: str, config: SequoiaConfig):
         self.model_path = model_path
         self.config = config
-        self._loaded_layers: dict[int, nn.Module] = {}
+        self._loaded_layers: dict[int, nn.Module | dict] = {}
         self._layer_sizes: dict[int, int] = {}
         self._prefetch_threads: dict[int, threading.Thread] = {}
         self._prefetch_results: dict[int, dict] = {}
@@ -758,7 +758,7 @@ class SequoiaEngine:
             t0 = time.perf_counter()
             try:
                 self._draft_fn(tokens)
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, IndexError):
                 break
             elapsed = (time.perf_counter() - t0) * 1000
             draft_times.append(elapsed)
@@ -773,7 +773,7 @@ class SequoiaEngine:
             t0 = time.perf_counter()
             try:
                 self._verify_candidates(tokens, mx.expand_dims(draft_tok, 0))
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, IndexError):
                 break
             elapsed = (time.perf_counter() - t0) * 1000
             verify_times.append(elapsed)

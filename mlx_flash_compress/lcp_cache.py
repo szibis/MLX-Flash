@@ -170,21 +170,60 @@ class LCPCache:
         return self.expert_dir / f"layer_{layer_idx:03d}" / f"expert_{expert_id:04d}.bin"
 
     def _read_expert(self, layer_idx: int, expert_id: int) -> bytes:
-        """Read expert weights from SSD."""
+        """Read expert weights from SSD.
+
+        Args:
+            layer_idx: Transformer layer index.
+            expert_id: Expert index within the layer.
+
+        Returns:
+            Raw bytes of the expert weight file.
+
+        Raises:
+            FileNotFoundError: If the expert weight file does not exist.
+            OSError: If the file cannot be read (permission denied, I/O error).
+        """
         path = self._expert_path(layer_idx, expert_id)
-        data = path.read_bytes()
+        if not path.exists():
+            raise FileNotFoundError(f"Expert weight file not found: {path} (layer={layer_idx}, expert={expert_id})")
+        try:
+            data = path.read_bytes()
+        except OSError as e:
+            raise OSError(f"Failed to read expert weights from {path}: {e}") from e
         if self._ssd_latency_ms > 0:
             scale = len(data) / (2 * 1024 * 1024)
             time.sleep(self._ssd_latency_ms * scale / 1000)
         return data
 
     def _read_expert_partial(self, layer_idx: int, expert_id: int) -> bytes:
-        """Dendritic: read only the first 1/3 of expert (gate projection)."""
+        """Dendritic: read only the first 1/3 of expert (gate projection).
+
+        Args:
+            layer_idx: Transformer layer index.
+            expert_id: Expert index within the layer.
+
+        Returns:
+            Raw bytes of the first third of the expert weight file.
+
+        Raises:
+            FileNotFoundError: If the expert weight file does not exist.
+            OSError: If the file cannot be read.
+        """
         path = self._expert_path(layer_idx, expert_id)
-        file_size = path.stat().st_size
+        if not path.exists():
+            raise FileNotFoundError(f"Expert weight file not found: {path} (layer={layer_idx}, expert={expert_id})")
+        try:
+            file_size = path.stat().st_size
+        except OSError as e:
+            raise OSError(f"Cannot stat expert weight file {path}: {e}") from e
+        if file_size == 0:
+            return b""
         partial_size = file_size // 3  # gate_proj is ~1/3 of total
-        with open(path, "rb") as f:
-            data = f.read(partial_size)
+        try:
+            with open(path, "rb") as f:
+                data = f.read(partial_size)
+        except OSError as e:
+            raise OSError(f"Failed to read partial expert weights from {path}: {e}") from e
         if self._ssd_latency_ms > 0:
             scale = len(data) / (2 * 1024 * 1024)
             time.sleep(self._ssd_latency_ms * scale / 1000)
@@ -209,13 +248,22 @@ class LCPCache:
             self._current_bytes -= evicted.size_bytes
 
     def _insert(self, layer_idx: int, expert_id: int, data: bytes, is_partial: bool = False):
-        """Insert into cache, evicting if necessary."""
-        key = (layer_idx, expert_id)
-        if key in self._cache:
-            old = self._cache[key]
-            self._current_bytes -= old.size_bytes
+        """Insert into cache, evicting if necessary.
 
+        Thread-safe: all cache mutations happen under self._lock.
+
+        Args:
+            layer_idx: Transformer layer index.
+            expert_id: Expert index within the layer.
+            data: Raw expert weight bytes to cache.
+            is_partial: True if only gate projection was loaded (dendritic).
+        """
+        key = (layer_idx, expert_id)
         with self._lock:
+            if key in self._cache:
+                old = self._cache[key]
+                self._current_bytes -= old.size_bytes
+
             self._evict_until_free(len(data))
             entry = LCPEntry(
                 data=data,
@@ -237,8 +285,16 @@ class LCPCache:
     ) -> list[tuple[bytes, str]]:
         """Fetch experts with priority: cache > prefetch > cold load > skip.
 
-        Returns list of (data_bytes, source) where source is one of:
-        'cache', 'prefetch', 'cold', 'skip', 'dendritic_skip'
+        Thread-safe for concurrent access from multiple inference threads.
+
+        Args:
+            layer_idx: Transformer layer index.
+            expert_ids: List of expert indices to fetch.
+            allow_skip: If True, allow skip-fallback when expert is unavailable.
+
+        Returns:
+            List of (data_bytes, source) where source is one of:
+            'cache', 'prefetch', 'cold', 'skip', 'dendritic_skip'.
         """
         self.stats.total_requests += len(expert_ids)
         results = []
@@ -246,18 +302,23 @@ class LCPCache:
         for eid in expert_ids:
             key = (layer_idx, eid)
 
-            # 1. Cache hit (fast path — no thread pool)
-            if key in self._cache:
-                entry = self._cache[key]
-                entry.frequency += 1
-                entry.last_step = self._step
-                self.stats.cache_hits += 1
-                results.append((entry.data, "cache"))
-                continue
+            # 1. Cache hit (fast path)
+            with self._lock:
+                if key in self._cache:
+                    entry = self._cache[key]
+                    entry.frequency += 1
+                    entry.last_step = self._step
+                    self.stats.cache_hits += 1
+                    results.append((entry.data, "cache"))
+                    continue
 
             # 2. Prefetch hit (background read completed)
-            if key in self._prefetch_pending:
-                future = self._prefetch_pending.pop(key)
+            future = None
+            with self._lock:
+                if key in self._prefetch_pending:
+                    future = self._prefetch_pending.pop(key)
+
+            if future is not None:
                 if future.done():
                     try:
                         data = future.result(timeout=0)
@@ -268,7 +329,7 @@ class LCPCache:
                     except Exception:
                         pass
                 else:
-                    # Prefetch still running — wait briefly or skip
+                    # Prefetch still running -- wait briefly or skip
                     try:
                         data = future.result(timeout=0.001)  # 1ms max wait
                         self._insert(layer_idx, eid, data)
@@ -280,15 +341,20 @@ class LCPCache:
 
             # 3. Dendritic two-stage loading
             if self.enable_dendritic:
-                partial = self._read_expert_partial(layer_idx, eid)
-                # Estimate gate magnitude from partial data
-                gate_mag = np.frombuffer(partial[: min(1024, len(partial))], dtype=np.uint8).astype(np.float32).std()
-                if gate_mag < self.dendritic_threshold:
-                    # Expert would contribute negligibly — skip W2/W3
-                    self._insert(layer_idx, eid, partial, is_partial=True)
-                    self.stats.dendritic_skips += 1
-                    results.append((partial, "dendritic_skip"))
-                    continue
+                try:
+                    partial = self._read_expert_partial(layer_idx, eid)
+                except (FileNotFoundError, OSError):
+                    partial = b""
+                if partial:
+                    # Estimate gate magnitude from partial data
+                    sample = partial[: min(1024, len(partial))]
+                    gate_mag = np.frombuffer(sample, dtype=np.uint8).astype(np.float32).std()
+                    if gate_mag < self.dendritic_threshold:
+                        # Expert would contribute negligibly -- skip W2/W3
+                        self._insert(layer_idx, eid, partial, is_partial=True)
+                        self.stats.dendritic_skips += 1
+                        results.append((partial, "dendritic_skip"))
+                        continue
 
             # 4. Skip fallback (zero routing score, renormalize)
             if self.enable_skip and allow_skip:
@@ -296,25 +362,39 @@ class LCPCache:
                 results.append((b"", "skip"))
                 continue
 
-            # 5. Cold load (synchronous — last resort)
-            data = self._read_expert(layer_idx, eid)
+            # 5. Cold load (synchronous -- last resort)
+            try:
+                data = self._read_expert(layer_idx, eid)
+            except (FileNotFoundError, OSError):
+                # Expert file missing or unreadable -- treat as skip
+                self.stats.skip_fallbacks += 1
+                results.append((b"", "skip"))
+                continue
             self._insert(layer_idx, eid, data)
             self.stats.cold_loads += 1
             results.append((data, "cold"))
 
-            # Update co-occurrence
-            self._update_cooccurrence(layer_idx, expert_ids)
+        # Update co-occurrence (once per fetch call, not per expert)
+        self._update_cooccurrence(layer_idx, expert_ids)
 
         return results
 
     def prefetch(self, layer_idx: int, expert_ids: list[int]):
-        """Async prefetch: kick off background reads for predicted experts."""
+        """Async prefetch: kick off background reads for predicted experts.
+
+        Thread-safe: checks and updates prefetch state under lock.
+
+        Args:
+            layer_idx: Layer index to prefetch experts for.
+            expert_ids: Expert indices to prefetch.
+        """
         for eid in expert_ids:
             key = (layer_idx, eid)
-            if key in self._cache or key in self._prefetch_pending:
-                continue  # already cached or being fetched
-            future = self._prefetch_pool.submit(self._read_expert, layer_idx, eid)
-            self._prefetch_pending[key] = future
+            with self._lock:
+                if key in self._cache or key in self._prefetch_pending:
+                    continue  # already cached or being fetched
+                future = self._prefetch_pool.submit(self._read_expert, layer_idx, eid)
+                self._prefetch_pending[key] = future
 
     def _update_cooccurrence(self, layer_idx: int, expert_ids: list[int]):
         """Update co-occurrence matrix for prediction."""
@@ -326,11 +406,25 @@ class LCPCache:
         self._prev_experts[layer_idx] = expert_ids
 
     def predict_next(self, current_layer: int, current_experts: list[int], top_k: int = 4) -> list[int]:
-        """Predict next layer's experts from co-occurrence statistics."""
+        """Predict next layer's experts from co-occurrence statistics.
+
+        Uses the co-occurrence matrix built from previous fetch() calls
+        to predict which experts at ``current_layer + 1`` are most likely
+        needed next.
+
+        Args:
+            current_layer: The layer currently being processed.
+            current_experts: Expert IDs selected at the current layer.
+            top_k: Maximum number of experts to predict.
+
+        Returns:
+            List of predicted expert IDs for the next layer, sorted by
+            likelihood. Empty if no co-occurrence data is available.
+        """
         if current_layer not in self._cooccurrence:
             return []
 
-        scores = defaultdict(float)
+        scores: defaultdict[int, float] = defaultdict(float)
         for eid in current_experts:
             if eid in self._cooccurrence[current_layer]:
                 for next_eid, count in self._cooccurrence[current_layer][eid].items():
@@ -343,17 +437,28 @@ class LCPCache:
         return [eid for eid, _ in sorted_experts[:top_k]]
 
     def get_cache_summary(self) -> dict:
-        """Get cache state summary."""
-        priorities = [self._priority(e) for e in self._cache.values()]
+        """Get cache state summary including priority statistics.
+
+        Thread-safe: reads cache state under lock.
+
+        Returns:
+            Dictionary with entries count, memory usage, capacity,
+            utilization ratio, and priority statistics.
+        """
+        with self._lock:
+            priorities = [self._priority(e) for e in self._cache.values()]
+            num_entries = len(self._cache)
+            current_bytes = self._current_bytes
         return {
-            "entries": len(self._cache),
-            "bytes_used_mb": self._current_bytes / 1e6,
+            "entries": num_entries,
+            "bytes_used_mb": current_bytes / 1e6,
             "capacity_mb": self.capacity / 1e6,
-            "utilization": self._current_bytes / self.capacity if self.capacity > 0 else 0,
-            "avg_priority": np.mean(priorities) if priorities else 0,
-            "min_priority": min(priorities) if priorities else 0,
-            "max_priority": max(priorities) if priorities else 0,
+            "utilization": current_bytes / self.capacity if self.capacity > 0 else 0,
+            "avg_priority": float(np.mean(priorities)) if priorities else 0.0,
+            "min_priority": float(min(priorities)) if priorities else 0.0,
+            "max_priority": float(max(priorities)) if priorities else 0.0,
         }
 
     def shutdown(self):
+        """Shut down the prefetch thread pool and release resources."""
         self._prefetch_pool.shutdown(wait=False)

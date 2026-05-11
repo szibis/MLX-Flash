@@ -43,7 +43,7 @@ class Algorithm(IntEnum):
 # Check if ZSTD is available (macOS 15+)
 try:
     ZSTD = 0xB01  # COMPRESSION_ZSTD
-    Algorithm.ZSTD = ZSTD
+    Algorithm.ZSTD = ZSTD  # type: ignore[attr-defined]
 except Exception:
     ZSTD = None
 
@@ -174,10 +174,10 @@ def benchmark_native_algorithms(data: bytes, iterations: int = 5) -> list[dict]:
 
     # Try ZSTD (macOS 15+)
     try:
-        test_comp = NativeCompressor(0xB01)
+        test_comp = NativeCompressor(Algorithm(0xB01))
         test_buf = test_comp.compress(data[:1024])
         test_comp.decompress(test_buf)
-        algorithms.append(("ZSTD_native", 0xB01))
+        algorithms.append(("ZSTD_native", Algorithm(0xB01)))
     except (RuntimeError, OSError):
         pass
 

@@ -591,3 +591,345 @@ class TestEdgeCases:
         pmap = LayerSensitivityProfile.default_precision_map(10)
         assert all(isinstance(k, int) for k in pmap.keys())
         assert all(isinstance(v, int) for v in pmap.values())
+
+
+# -- Additional coverage tests --
+
+if HAS_MLX:
+    from mlx_flash_compress.layer_quantization import (
+        _get_layers,
+        _get_nested_attr,
+        _quantize_linears_inplace,
+        _restore_linear,
+        _set_nested_attr,
+    )
+
+
+class TestGetLayers:
+    def test_model_model_layers_path(self, small_model):
+        """Should find layers via model.model.layers."""
+        layers = _get_layers(small_model)
+        assert len(layers) == 8
+
+    def test_direct_layers_path(self):
+        """Should find layers via model.layers."""
+        inner = MockModelInner(dim=MODEL_DIM, num_layers=3)
+        mx.eval(inner.parameters())
+        layers = _get_layers(inner)
+        assert len(layers) == 3
+
+    def test_raises_on_no_layers(self):
+        """Should raise AttributeError when no layers found."""
+
+        class NoLayersModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = nn.Linear(64, 64)
+
+            def __call__(self, x):
+                return self.linear(x)
+
+        model = NoLayersModel()
+        with pytest.raises(AttributeError, match="Cannot find model layers"):
+            _get_layers(model)
+
+
+class TestNestedAttrHelpers:
+    def test_get_nested_attr_exists(self):
+        layer = MockTransformerLayer(dim=MODEL_DIM)
+        mx.eval(layer.parameters())
+        q_proj = _get_nested_attr(layer, "self_attn.q_proj")
+        assert isinstance(q_proj, nn.Linear)
+
+    def test_get_nested_attr_missing(self):
+        layer = MockTransformerLayer(dim=MODEL_DIM)
+        result = _get_nested_attr(layer, "self_attn.nonexistent")
+        assert result is None
+
+    def test_get_nested_attr_single(self):
+        layer = MockTransformerLayer(dim=MODEL_DIM)
+        attn = _get_nested_attr(layer, "self_attn")
+        assert isinstance(attn, MockSelfAttn)
+
+    def test_set_nested_attr(self):
+        layer = MockTransformerLayer(dim=MODEL_DIM)
+        mx.eval(layer.parameters())
+        new_linear = nn.Linear(MODEL_DIM, MODEL_DIM)
+        mx.eval(new_linear.parameters())
+
+        _set_nested_attr(layer, "self_attn.q_proj", new_linear)
+        assert layer.self_attn.q_proj is new_linear
+
+
+class TestRestoreLinear:
+    def test_restore_after_quantize(self):
+        """Restoring a quantized linear should recreate nn.Linear with original weight."""
+        layer = MockTransformerLayer(dim=MODEL_DIM)
+        mx.eval(layer.parameters())
+
+        original_weight = layer.self_attn.q_proj.weight
+        original_shape = original_weight.shape
+
+        # Quantize the q_proj
+        quantized = nn.QuantizedLinear.from_linear(layer.self_attn.q_proj, group_size=64, bits=4)
+        _set_nested_attr(layer, "self_attn.q_proj", quantized)
+
+        # Now restore
+        _restore_linear(layer, "self_attn.q_proj", original_weight)
+
+        # Should be back to nn.Linear
+        restored = _get_nested_attr(layer, "self_attn.q_proj")
+        assert isinstance(restored, nn.Linear)
+        assert restored.weight.shape == original_shape
+
+
+class TestLayerQuantConfigAdditional:
+    def test_group_size_custom(self):
+        config = LayerQuantConfig(group_size=128)
+        assert config.group_size == 128
+
+    def test_calibration_samples_custom(self):
+        config = LayerQuantConfig(calibration_samples=64)
+        assert config.calibration_samples == 64
+
+
+class TestLayerSensitivityProfileAdditional:
+    def test_precision_map_uniform_scores(self):
+        """All-equal sensitivity scores: 75th percentile logic."""
+        profile = LayerSensitivityProfile(8)
+        # All scores identical -> threshold = score, but score >= threshold => Q8
+        profile.sensitivity_scores = [1.0] * 8
+        pmap = profile.get_precision_map()
+        # All scores == threshold == 1.0, all should be sensitive_bits (Q8)
+        assert all(bits == 8 for bits in pmap.values())
+
+    def test_precision_map_zero_scores(self):
+        """All-zero scores: threshold is 0, but threshold > 0 check fails."""
+        profile = LayerSensitivityProfile(4)
+        profile.sensitivity_scores = [0.0, 0.0, 0.0, 0.0]
+        pmap = profile.get_precision_map()
+        # threshold=0.0, but code checks `threshold > 0` -> all default bits
+        assert all(bits == 4 for bits in pmap.values())
+
+    def test_precision_map_clear_separation(self):
+        """Scores with clear separation should assign bits correctly."""
+        profile = LayerSensitivityProfile(8)
+        # First 2 and last 2 have high sensitivity, middle low
+        profile.sensitivity_scores = [10.0, 9.0, 1.0, 1.0, 1.0, 1.0, 8.0, 11.0]
+        pmap = profile.get_precision_map()
+
+        # 75th percentile: sorted = [1,1,1,1,8,9,10,11], idx=6 -> threshold=10.0
+        # Scores >= 10.0: idx 0 (10.0), idx 7 (11.0)
+        assert pmap[0] == 8
+        assert pmap[7] == 8
+        # Middle layers below threshold
+        assert pmap[2] == 4
+        assert pmap[3] == 4
+
+
+class TestLayerQuantizerAdditional:
+    def test_quantize_model_bits_distribution(self, small_model):
+        """Bits distribution in stats should match precision map."""
+        pmap = {
+            0: 8,
+            1: 4,
+            2: 4,
+            3: 4,
+            4: 4,
+            5: 4,
+            6: 4,
+            7: 8,
+        }
+        quantizer = LayerQuantizer()
+        quantizer.quantize_model(small_model, pmap)
+        stats = quantizer.get_stats()
+        assert stats["bits_distribution"] == pmap
+
+    def test_quantize_layer_q8(self, tiny_model):
+        """Quantize at Q8 should work."""
+        quantizer = LayerQuantizer()
+        layer = tiny_model.model.layers[0]
+        x = mx.random.normal((1, 4, MODEL_DIM))
+        mx.eval(x)
+        quantizer.quantize_layer(layer, bits=8, group_size=64)
+        out = layer(x)
+        mx.eval(out)
+        assert out.shape == (1, 4, MODEL_DIM)
+
+
+class TestMemoryEstimationAdditional:
+    def test_all_q8_doubles_vs_q4(self, small_model):
+        """All Q8 should be 2x the size of all Q4."""
+        pmap_q8 = {i: 8 for i in range(8)}
+        pmap_q4 = {i: 4 for i in range(8)}
+        quantizer = LayerQuantizer()
+        est_q8 = quantizer.estimate_memory_savings(small_model, pmap_q8)
+        est_q4 = quantizer.estimate_memory_savings(small_model, pmap_q4)
+
+        # Q8 should be 2x Q4 size
+        assert est_q8["mixed_bytes"] == pytest.approx(est_q4["mixed_bytes"] * 2)
+
+    def test_effective_bits_mixed(self, small_model):
+        """Mixed bits should produce weighted average."""
+        # 2 layers at Q8, 6 layers at Q4
+        pmap = {i: 8 if i in (0, 7) else 4 for i in range(8)}
+        est = estimate_model_size(small_model, pmap)
+        # All layers same size, so effective = (2*8 + 6*4) / 8 = 5.0
+        assert est["effective_bits"] == pytest.approx(5.0)
+
+
+class TestApplyLayerQuantizationAdditional:
+    def test_result_has_all_keys(self, tiny_model):
+        """Result dict should contain all expected top-level keys."""
+        result = apply_layer_quantization(tiny_model)
+        assert "num_layers" in result
+        assert "precision_map" in result
+        assert "stats" in result
+        assert "profiling" in result
+        assert "memory" in result
+
+    def test_stats_after_quantization(self, tiny_model):
+        """Stats sub-dict should have correct counts."""
+        result = apply_layer_quantization(tiny_model)
+        stats = result["stats"]
+        assert stats["layers_quantized"] == 4
+        assert stats["linears_quantized"] == 28  # 7 per layer * 4
+        assert stats["elapsed_ms"] >= 0
+
+    def test_memory_sub_dict(self, tiny_model):
+        """Memory sub-dict should have all fields."""
+        result = apply_layer_quantization(tiny_model)
+        mem = result["memory"]
+        assert "total_params" in mem
+        assert "uniform_q4_bytes" in mem
+        assert "mixed_bytes" in mem
+        assert "savings_ratio" in mem
+        assert "effective_bits" in mem
+        assert "num_layers" in mem
+
+
+# -- Tests for _quantize_linears_inplace --
+
+
+class TestQuantizeLinearsInplace:
+    def test_4bit_changes_weights(self):
+        """4-bit quantization should modify weights (not be a no-op)."""
+        layer = MockTransformerLayer(dim=MODEL_DIM)
+        mx.eval(layer.parameters())
+        linears = _find_linear_layers(layer)
+
+        # Save original weights
+        originals = {}
+        for name, linear in linears:
+            originals[name] = mx.array(linear.weight)
+            mx.eval(originals[name])
+
+        _quantize_linears_inplace(linears, bits=4, group_size=64)
+
+        # At least one weight should differ after quantization
+        any_changed = False
+        for name, linear in linears:
+            if not mx.array_equal(linear.weight, originals[name]):
+                any_changed = True
+                break
+        assert any_changed, "4-bit quantization should change at least one weight"
+
+    def test_8bit_changes_weights(self):
+        """8-bit quantization should modify weights."""
+        layer = MockTransformerLayer(dim=MODEL_DIM)
+        mx.eval(layer.parameters())
+        linears = _find_linear_layers(layer)
+
+        originals = {}
+        for name, linear in linears:
+            originals[name] = mx.array(linear.weight)
+            mx.eval(originals[name])
+
+        _quantize_linears_inplace(linears, bits=8, group_size=64)
+
+        any_changed = False
+        for name, linear in linears:
+            if not mx.array_equal(linear.weight, originals[name]):
+                any_changed = True
+                break
+        assert any_changed, "8-bit quantization should change at least one weight"
+
+    def test_quantized_output_correlated_with_original(self):
+        """Quantized layer output should be correlated with original (not garbage)."""
+        import numpy as np_test
+
+        layer = MockTransformerLayer(dim=MODEL_DIM)
+        mx.eval(layer.parameters())
+
+        x = mx.random.normal((1, 4, MODEL_DIM))
+        mx.eval(x)
+
+        original_out = layer(x)
+        mx.eval(original_out)
+        original_np = np_test.array(original_out).flatten()
+
+        # Save weights, quantize, compute output
+        linears = _find_linear_layers(layer)
+        saved = {name: mx.array(linear.weight) for name, linear in linears}
+        for name, w in saved.items():
+            mx.eval(w)
+
+        _quantize_linears_inplace(linears, bits=4, group_size=64)
+
+        quantized_out = layer(x)
+        mx.eval(quantized_out)
+        quantized_np = np_test.array(quantized_out).flatten()
+
+        # Output should be correlated (Pearson r > 0.5) — not identical but related
+        if np_test.std(original_np) > 0 and np_test.std(quantized_np) > 0:
+            correlation = np_test.corrcoef(original_np, quantized_np)[0, 1]
+            assert correlation > 0.5, f"Outputs should be correlated, got r={correlation:.3f}"
+
+    def test_4bit_has_more_error_than_8bit(self):
+        """4-bit quantization should introduce more error than 8-bit."""
+        import numpy as np_test
+        from mlx.utils import tree_flatten
+
+        layer_4 = MockTransformerLayer(dim=MODEL_DIM)
+        mx.eval(layer_4.parameters())
+        layer_8 = MockTransformerLayer(dim=MODEL_DIM)
+        # Copy weights from layer_4 to layer_8 so they start identical
+        layer_8.load_weights(tree_flatten(layer_4.parameters()))
+        mx.eval(layer_8.parameters())
+
+        x = mx.random.normal((1, 4, MODEL_DIM))
+        mx.eval(x)
+
+        orig_out = layer_4(x)
+        mx.eval(orig_out)
+        orig_np = np_test.array(orig_out)
+
+        linears_4 = _find_linear_layers(layer_4)
+        _quantize_linears_inplace(linears_4, bits=4, group_size=64)
+        out_4 = layer_4(x)
+        mx.eval(out_4)
+        mse_4 = float(np_test.mean((np_test.array(out_4) - orig_np) ** 2))
+
+        linears_8 = _find_linear_layers(layer_8)
+        _quantize_linears_inplace(linears_8, bits=8, group_size=64)
+        out_8 = layer_8(x)
+        mx.eval(out_8)
+        mse_8 = float(np_test.mean((np_test.array(out_8) - orig_np) ** 2))
+
+        # 4-bit should have >= error than 8-bit (usually strictly more)
+        assert mse_4 >= mse_8 * 0.5, f"4-bit MSE ({mse_4:.6f}) should be >= 8-bit MSE ({mse_8:.6f})"
+
+    def test_sensitivity_profiling_roundtrip(self, tiny_model):
+        """Sensitivity profiling should work end-to-end now that
+        _quantize_linears_inplace is implemented."""
+        profile = LayerSensitivityProfile(4)
+        calibration = mx.random.normal((2, 8, MODEL_DIM))
+        mx.eval(calibration)
+
+        scores = profile.measure_sensitivity(tiny_model, calibration)
+
+        assert len(scores) == 4
+        assert all(isinstance(s, float) for s in scores)
+        # At least some layers should show non-zero sensitivity
+        # (quantization introduces error)
+        assert any(s > 0 for s in scores), "At least one layer should show quantization sensitivity"

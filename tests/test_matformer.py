@@ -480,3 +480,420 @@ class TestAdaptiveMatFormer:
 
             adaptive.adapt(memory_pressure="nominal")
             assert model.layers[0].mlp.gate_proj.weight.shape == original_gate
+
+
+# ── Additional coverage tests ───────────────────────────────────
+
+
+class MockMLPAlt(nn.Module):
+    """FFN block using w1/w2/w3 naming convention (e.g. LLaMA-style)."""
+
+    def __init__(self, hidden_dim: int = 64, intermediate_dim: int = 128):
+        super().__init__()
+        self.w1 = nn.Linear(hidden_dim, intermediate_dim)
+        self.w2 = nn.Linear(intermediate_dim, hidden_dim)
+        self.w3 = nn.Linear(hidden_dim, intermediate_dim)
+
+    def __call__(self, x):
+        return self.w2(nn.silu(self.w1(x)) * self.w3(x))
+
+
+class MockMLPFeedForward(nn.Module):
+    """FFN block named feed_forward instead of mlp."""
+
+    def __init__(self, hidden_dim: int = 64, intermediate_dim: int = 128):
+        super().__init__()
+        self.fc1 = nn.Linear(hidden_dim, intermediate_dim)
+        self.fc2 = nn.Linear(intermediate_dim, hidden_dim)
+
+    def __call__(self, x):
+        return self.fc2(nn.silu(self.fc1(x)))
+
+
+class MockLayerAlt(nn.Module):
+    def __init__(self, mlp_cls, hidden_dim=64, intermediate_dim=128):
+        super().__init__()
+        self.mlp = mlp_cls(hidden_dim, intermediate_dim)
+
+    def __call__(self, x):
+        return self.mlp(x)
+
+
+class MockLayerFeedForward(nn.Module):
+    def __init__(self, hidden_dim=64, intermediate_dim=128):
+        super().__init__()
+        self.feed_forward = MockMLPFeedForward(hidden_dim, intermediate_dim)
+
+    def __call__(self, x):
+        return self.feed_forward(x)
+
+
+class TestMatFormerExtractorAdditional:
+    def test_discover_w1_w2_w3_naming(self):
+        """Should discover FFN layers using w1/w2/w3 naming."""
+
+        class AltModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = [MockLayerAlt(MockMLPAlt)]
+
+            def __call__(self, x):
+                for layer in self.layers:
+                    x = layer(x)
+                return x
+
+        model = AltModel()
+        mx.eval(model.parameters())
+        extractor = MatFormerExtractor(model)
+
+        # w1, w2, w3 -> 3 projections per layer
+        assert len(extractor._ffn_layers) == 3
+        keys = [k for k, _ in extractor._ffn_layers]
+        assert any("w1" in k for k in keys)
+        assert any("w2" in k for k in keys)
+        assert any("w3" in k for k in keys)
+
+    def test_discover_feed_forward_attribute(self):
+        """Should discover FFN layers when attribute is 'feed_forward' not 'mlp'."""
+
+        class FFModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = [MockLayerFeedForward()]
+
+            def __call__(self, x):
+                for layer in self.layers:
+                    x = layer(x)
+                return x
+
+        model = FFModel()
+        mx.eval(model.parameters())
+        extractor = MatFormerExtractor(model)
+
+        assert len(extractor._ffn_layers) == 2
+        keys = [k for k, _ in extractor._ffn_layers]
+        assert any("fc1" in k for k in keys)
+        assert any("fc2" in k for k in keys)
+
+    def test_discover_via_model_model_layers(self):
+        """Should discover layers via model.model.layers path."""
+
+        class InnerModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = [
+                    MockTransformerLayer(64, 128),
+                    MockTransformerLayer(64, 128),
+                ]
+
+            def __call__(self, x):
+                for layer in self.layers:
+                    x = layer(x)
+                return x
+
+        class OuterModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = InnerModel()
+
+            def __call__(self, x):
+                return self.model(x)
+
+        model = OuterModel()
+        mx.eval(model.parameters())
+        extractor = MatFormerExtractor(model)
+
+        # 2 layers * 3 projections = 6
+        assert len(extractor._ffn_layers) == 6
+
+    def test_no_layers_attribute(self):
+        """Model with no 'layers' attribute should yield zero FFN layers."""
+
+        class FlatModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = nn.Linear(64, 64)
+
+            def __call__(self, x):
+                return self.linear(x)
+
+        model = FlatModel()
+        mx.eval(model.parameters())
+        extractor = MatFormerExtractor(model)
+        assert len(extractor._ffn_layers) == 0
+
+    def test_extract_below_min_ratio_clamps(self):
+        """Extracting below min_ratio should clamp to min_ratio."""
+        model = make_model()
+        config = MatFormerConfig(min_ratio=0.5)
+        extractor = MatFormerExtractor(model, config)
+
+        extractor.extract(0.1)  # below min_ratio
+
+        # Should have been clamped to 0.5
+        assert extractor._extracted_ratio == 0.5
+        # gate_proj at 0.5: 128*0.5 = 64
+        assert model.layers[0].mlp.gate_proj.weight.shape == (64, 64)
+
+    def test_extract_same_ratio_noop(self):
+        """Extracting at current ratio should be a no-op."""
+        model = make_model()
+        extractor = MatFormerExtractor(model)
+
+        extractor.extract(0.5)
+        shape_after_first = model.layers[0].mlp.gate_proj.weight.shape
+
+        # Extract again at same ratio - should return immediately
+        result = extractor.extract(0.5)
+        assert result is model
+        assert model.layers[0].mlp.gate_proj.weight.shape == shape_after_first
+
+    def test_snap_ratio_below_all(self):
+        """Snap ratio below all valid ratios returns the smallest."""
+        model = make_model()
+        extractor = MatFormerExtractor(model)
+        snapped = extractor._snap_to_ratio(0.01)
+        assert snapped == 0.5  # smallest in default list
+
+    def test_extract_with_bias(self):
+        """Extraction should slice bias on up/gate projections."""
+
+        class BiasedMLP(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.gate_proj = nn.Linear(64, 128, bias=True)
+                self.up_proj = nn.Linear(64, 128, bias=True)
+                self.down_proj = nn.Linear(128, 64, bias=True)
+
+            def __call__(self, x):
+                return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
+
+        class BiasLayer(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.mlp = BiasedMLP()
+
+            def __call__(self, x):
+                return self.mlp(x)
+
+        class BiasModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = [BiasLayer()]
+
+            def __call__(self, x):
+                for layer in self.layers:
+                    x = layer(x)
+                return x
+
+        model = BiasModel()
+        mx.eval(model.parameters())
+        extractor = MatFormerExtractor(model)
+
+        # gate_proj bias shape should be (128,) initially
+        assert model.layers[0].mlp.gate_proj.bias.shape == (128,)
+
+        extractor.extract(0.5)
+
+        # After extraction at 0.5: bias should be sliced to 64
+        assert model.layers[0].mlp.gate_proj.bias.shape == (64,)
+        assert model.layers[0].mlp.up_proj.bias.shape == (64,)
+
+    def test_estimate_memory_no_ffn_layers(self):
+        """Memory estimate with no FFN layers returns zero for everything."""
+
+        class EmptyModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layers = []
+
+            def __call__(self, x):
+                return x
+
+        model = EmptyModel()
+        extractor = MatFormerExtractor(model)
+        est = extractor.estimate_memory(0.5)
+        assert est["full_ffn_params"] == 0
+        assert est["extracted_ffn_params"] == 0
+        assert est["memory_saved_mb"] == 0.0
+        assert est["ffn_layers_found"] == 0
+
+    def test_get_available_ratios_all_valid(self):
+        """All default ratios should be valid for our mock model."""
+        model = make_model()
+        extractor = MatFormerExtractor(model)
+        ratios = extractor.get_available_ratios()
+        # 128 * 0.5 = 64, 128 * 0.625 = 80, etc. -- all > 0
+        assert ratios == [0.5, 0.625, 0.75, 0.875, 1.0]
+
+    def test_extract_875_ratio(self):
+        """Extraction at 0.875 should reduce intermediate dim to 87.5%."""
+        model = make_model()
+        extractor = MatFormerExtractor(model)
+
+        extractor.extract(0.875)
+
+        # 128 * 0.875 = 112
+        gate_shape = model.layers[0].mlp.gate_proj.weight.shape
+        assert gate_shape == (112, 64)
+
+    def test_extract_625_ratio(self):
+        """Extraction at 0.625 should reduce intermediate dim to 62.5%."""
+        model = make_model()
+        extractor = MatFormerExtractor(model)
+
+        extractor.extract(0.625)
+
+        # 128 * 0.625 = 80
+        gate_shape = model.layers[0].mlp.gate_proj.weight.shape
+        assert gate_shape == (80, 64)
+
+        down_shape = model.layers[0].mlp.down_proj.weight.shape
+        assert down_shape == (64, 80)
+
+
+class TestAdaptiveMatFormerAdditional:
+    def test_forward_1d_input(self):
+        """Forward should handle 1D input by expanding dims."""
+        config = MatFormerConfig(auto_adapt=False)
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model, config)
+
+        input_ids = mx.array([1, 2, 3])  # 1D
+        output = adaptive.forward(input_ids)
+        mx.eval(output)
+        assert output.shape == (1, 3, 32)
+
+    def test_forward_2d_input(self):
+        """Forward should handle 2D input directly."""
+        config = MatFormerConfig(auto_adapt=False)
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model, config)
+
+        input_ids = mx.array([[1, 2, 3]])  # 2D
+        output = adaptive.forward(input_ids)
+        mx.eval(output)
+        assert output.shape == (1, 3, 32)
+
+    def test_get_stats_after_adaptations(self):
+        """Stats after several adaptations should reflect changes."""
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model)
+
+        adaptive.adapt(memory_pressure="critical")
+        adaptive.adapt(memory_pressure="emergency")
+
+        stats = adaptive.get_stats()
+        assert stats["current_ratio"] == 0.5
+        assert stats["adaptation_count"] == 2
+        assert stats["memory"]["ratio"] == 0.5
+        assert stats["memory"]["param_reduction"] > 0
+
+    def test_custom_pressure_thresholds(self):
+        """Custom pressure thresholds should work."""
+        config = MatFormerConfig(
+            pressure_thresholds={
+                "nominal": 1.0,
+                "low_pressure": 0.75,
+                "high_pressure": 0.5,
+            },
+        )
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model, config)
+
+        ratio = adaptive.adapt(memory_pressure="low_pressure")
+        assert ratio == 0.75
+
+        ratio = adaptive.adapt(memory_pressure="high_pressure")
+        assert ratio == 0.5
+
+
+class TestAdaptiveMatFormerPressure:
+    """Additional coverage for pressure adaptation paths."""
+
+    def test_get_current_ratio_no_auto_adapt(self):
+        """Without auto_adapt, get_current_ratio returns current ratio."""
+        config = MatFormerConfig(auto_adapt=False)
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model, config)
+        assert adaptive.get_current_ratio() == 1.0
+
+    def test_get_current_ratio_with_auto_adapt(self):
+        """With auto_adapt, get_current_ratio checks pressure."""
+        config = MatFormerConfig(auto_adapt=True)
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model, config)
+        # Force last check time to be stale
+        adaptive._last_check_time = 0.0
+        ratio = adaptive.get_current_ratio()
+        assert 0.0 < ratio <= 1.0
+
+    def test_pressure_to_ratio_nominal(self):
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model)
+        ratio = adaptive._pressure_to_ratio("nominal")
+        assert ratio == 1.0
+
+    def test_pressure_to_ratio_warning(self):
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model)
+        ratio = adaptive._pressure_to_ratio("warning")
+        assert ratio < 1.0
+
+    def test_pressure_to_ratio_critical(self):
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model)
+        ratio = adaptive._pressure_to_ratio("critical")
+        assert ratio < 1.0
+
+    def test_pressure_to_ratio_emergency(self):
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model)
+        ratio = adaptive._pressure_to_ratio("emergency")
+        assert ratio <= 0.625
+
+    def test_pressure_to_ratio_unknown(self):
+        """Unknown pressure level should default to 1.0."""
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model)
+        ratio = adaptive._pressure_to_ratio("unknown_level")
+        assert ratio == 1.0
+
+    def test_adapt_same_ratio_no_change(self):
+        """Adapting with same pressure should not increment count."""
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model)
+        adaptive.adapt(memory_pressure="nominal")
+        count1 = adaptive._adaptation_count
+        adaptive.adapt(memory_pressure="nominal")
+        count2 = adaptive._adaptation_count
+        assert count2 == count1
+
+    def test_ratio_history_bounded(self):
+        """Ratio history should be bounded."""
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model)
+        # Force many adaptations
+        pressures = ["nominal", "warning", "critical", "emergency"]
+        for i in range(300):
+            adaptive.adapt(memory_pressure=pressures[i % len(pressures)])
+        assert len(adaptive._ratio_history) <= 200
+
+    def test_forward_with_auto_adapt(self):
+        """Forward with auto_adapt should work."""
+        config = MatFormerConfig(auto_adapt=True)
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model, config)
+        # Force check interval to 0 so it checks immediately
+        adaptive._check_interval_s = 0.0
+        input_ids = mx.array([[1, 2, 3]])
+        output = adaptive.forward(input_ids)
+        mx.eval(output)
+        assert output.shape == (1, 3, 32)
+
+    def test_get_memory_pressure_fallback(self):
+        """_get_memory_pressure should return 'nominal' on fallback."""
+        model = make_model()
+        adaptive = AdaptiveMatFormer(model)
+        pressure = adaptive._get_memory_pressure()
+        assert pressure in ("nominal", "warning", "urgent", "critical", "emergency")

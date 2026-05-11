@@ -1,6 +1,5 @@
 """Tests for LayerSkip self-speculative decoding."""
 
-import numpy as np
 import pytest
 
 try:
@@ -62,10 +61,31 @@ class MockModel(nn.Module):
         return self.lm_head(h)
 
 
+class MockLanguageModel(nn.Module):
+    """Model with language_model.model.embed_tokens structure."""
+
+    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 4):
+        super().__init__()
+        self.language_model = MockModel(vocab_size, hidden_dim, num_layers)
+
+    def __call__(self, input_ids: mx.array) -> mx.array:
+        return self.language_model(input_ids)
+
+
 class MockTokenizer:
     """Minimal tokenizer for testing."""
 
     eos_token_id = 99
+
+    def encode(self, text: str) -> list[int]:
+        return [ord(c) % 100 for c in text[:20]]
+
+    def decode(self, tokens) -> str:
+        return "".join(chr(t + 32) for t in tokens)
+
+
+class MockTokenizerNoEos:
+    """Tokenizer without eos_token_id."""
 
     def encode(self, text: str) -> list[int]:
         return [ord(c) % 100 for c in text[:20]]
@@ -95,6 +115,47 @@ class TestLayerSkipConfig:
         assert config.exit_layer == 4
         assert config.num_speculative_tokens == 10
         assert config.temperature == 0.5
+
+    def test_invalid_num_speculative_tokens_zero(self):
+        with pytest.raises(ValueError, match="num_speculative_tokens"):
+            LayerSkipConfig(num_speculative_tokens=0)
+
+    def test_invalid_num_speculative_tokens_negative(self):
+        with pytest.raises(ValueError, match="num_speculative_tokens"):
+            LayerSkipConfig(num_speculative_tokens=-1)
+
+    def test_invalid_temperature_negative(self):
+        with pytest.raises(ValueError, match="temperature"):
+            LayerSkipConfig(temperature=-0.1)
+
+    def test_invalid_confidence_threshold_below_zero(self):
+        with pytest.raises(ValueError, match="confidence_threshold"):
+            LayerSkipConfig(confidence_threshold=-0.1)
+
+    def test_invalid_confidence_threshold_above_one(self):
+        with pytest.raises(ValueError, match="confidence_threshold"):
+            LayerSkipConfig(confidence_threshold=1.1)
+
+    def test_edge_confidence_threshold_zero(self):
+        config = LayerSkipConfig(confidence_threshold=0.0)
+        assert config.confidence_threshold == 0.0
+
+    def test_edge_confidence_threshold_one(self):
+        config = LayerSkipConfig(confidence_threshold=1.0)
+        assert config.confidence_threshold == 1.0
+
+    def test_edge_temperature_zero(self):
+        config = LayerSkipConfig(temperature=0.0)
+        assert config.temperature == 0.0
+
+    def test_exit_layer_auto(self):
+        """exit_layer=-1 is valid and means auto."""
+        config = LayerSkipConfig(exit_layer=-1)
+        assert config.exit_layer == -1
+
+    def test_exit_layer_explicit(self):
+        config = LayerSkipConfig(exit_layer=3)
+        assert config.exit_layer == 3
 
 
 # -- Drafter Tests --
@@ -126,6 +187,24 @@ class TestLayerSkipDrafter:
         assert drafter._norm_fn is not None
         assert drafter._lm_head_fn is not None
 
+    def test_component_detection_language_model(self):
+        """Test detection for language_model.model structure."""
+        model = MockLanguageModel(vocab_size=100, hidden_dim=32, num_layers=4)
+        mx.eval(model.parameters())
+        config = LayerSkipConfig()
+        drafter = LayerSkipDrafter(model, config)
+        assert drafter._embed_fn is not None
+        assert len(drafter._layers) == 4
+        assert drafter.get_exit_layer() == 2  # 4 // 2
+
+    def test_component_detection_fails_for_bad_model(self):
+        class BadModel:
+            pass
+
+        config = LayerSkipConfig()
+        with pytest.raises(RuntimeError, match="Cannot detect"):
+            LayerSkipDrafter(BadModel(), config)
+
     def test_partial_forward(self):
         config = LayerSkipConfig(exit_layer=4)
         drafter = LayerSkipDrafter(self.model, config)
@@ -150,6 +229,32 @@ class TestLayerSkipDrafter:
         diff = float(mx.sum(mx.abs(h2 - h4)).item())
         assert diff > 0
 
+    def test_partial_forward_zero_layers(self):
+        """Zero layers should just return embeddings."""
+        config = LayerSkipConfig()
+        drafter = LayerSkipDrafter(self.model, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        h0 = drafter._forward_partial(input_ids, num_layers=0)
+        mx.eval(h0)
+
+        # Should be raw embeddings (no layer applied)
+        expected = drafter._embed_fn(input_ids)
+        mx.eval(expected)
+        diff = float(mx.sum(mx.abs(h0 - expected)).item())
+        assert diff == 0.0
+
+    def test_partial_forward_all_layers(self):
+        """Using all layers should be equivalent to full forward (minus norm)."""
+        config = LayerSkipConfig()
+        drafter = LayerSkipDrafter(self.model, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        h_all = drafter._forward_partial(input_ids, num_layers=8)
+        mx.eval(h_all)
+
+        assert h_all.shape == (1, 3, 32)
+
     def test_draft_produces_tokens(self):
         config = LayerSkipConfig(exit_layer=4, num_speculative_tokens=3)
         drafter = LayerSkipDrafter(self.model, config)
@@ -173,6 +278,52 @@ class TestLayerSkipDrafter:
         mx.eval(ids1, ids2)
 
         assert mx.array_equal(ids1, ids2)
+
+    def test_draft_with_temperature(self):
+        """Sampling mode should still produce valid tokens."""
+        config = LayerSkipConfig(exit_layer=4, num_speculative_tokens=3, temperature=0.8)
+        drafter = LayerSkipDrafter(self.model, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        draft_ids, draft_logits = drafter.draft(input_ids)
+        mx.eval(draft_ids)
+
+        assert draft_ids.shape == (1, 3)
+        # All drafted tokens should be valid vocab indices
+        for tok in draft_ids[0].tolist():
+            assert 0 <= tok < 100
+
+    def test_draft_tracks_exit_layers_adaptive(self):
+        """With adaptive exit, the per-token exit layers should be tracked."""
+        config = LayerSkipConfig(
+            exit_layer=4,
+            num_speculative_tokens=5,
+            adaptive_exit=True,
+            confidence_threshold=0.5,
+        )
+        drafter = LayerSkipDrafter(self.model, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        drafter.draft(input_ids)
+
+        assert hasattr(drafter, "_draft_exit_layers")
+        assert len(drafter._draft_exit_layers) == 5
+
+    def test_draft_no_adaptive_exit(self):
+        """Without adaptive exit, exit layer should stay fixed."""
+        config = LayerSkipConfig(
+            exit_layer=4,
+            num_speculative_tokens=3,
+            adaptive_exit=False,
+        )
+        drafter = LayerSkipDrafter(self.model, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        drafter.draft(input_ids)
+
+        assert hasattr(drafter, "_draft_exit_layers")
+        # All should be the base exit layer since adaptive is off
+        assert all(el == 4 for el in drafter._draft_exit_layers)
 
 
 # -- Engine Tests --
@@ -207,6 +358,16 @@ class TestLayerSkipEngine:
 
         assert draft_ids.shape == (1, 3)
         assert draft_logits.shape == (1, 3, 100)
+
+    def test_draft_step_updates_stats(self):
+        config = LayerSkipConfig(num_speculative_tokens=3)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        engine._draft_step(input_ids)
+
+        assert engine.stats["total_draft_tokens"] == 3
+        assert len(engine.stats["draft_times_ms"]) == 1
 
     def test_verify_step_all_match(self):
         """When draft matches target, all tokens should be accepted."""
@@ -254,6 +415,18 @@ class TestLayerSkipEngine:
         assert len(accepted) >= 1  # at least the bonus token
         assert num >= 1
 
+    def test_verify_step_updates_stats(self):
+        config = LayerSkipConfig(num_speculative_tokens=3)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        draft = mx.array([[10, 20, 30]])
+        engine._verify_step(input_ids, draft)
+
+        assert engine.stats["total_verify_steps"] == 1
+        assert len(engine.stats["verify_times_ms"]) == 1
+        assert engine.stats["total_accepted"] >= 1
+
     def test_generate_basic(self):
         config = LayerSkipConfig(num_speculative_tokens=3)
         engine = LayerSkipEngine(self.model, self.tokenizer, config)
@@ -289,6 +462,29 @@ class TestLayerSkipEngine:
 
         assert len(callback_tokens) > 0
 
+    def test_generate_with_temperature(self):
+        """Test sampling mode generation."""
+        config = LayerSkipConfig(num_speculative_tokens=3, temperature=0.8)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        prompt = mx.array([1, 2, 3, 4, 5])
+        output = engine.generate(prompt, max_tokens=5)
+        mx.eval(output)
+
+        assert output.shape[0] > 5
+
+    def test_generate_no_eos_tokenizer(self):
+        """Test with tokenizer that has no eos_token_id."""
+        config = LayerSkipConfig(num_speculative_tokens=3)
+        tokenizer = MockTokenizerNoEos()
+        engine = LayerSkipEngine(self.model, tokenizer, config)
+
+        prompt = mx.array([1, 2, 3])
+        output = engine.generate(prompt, max_tokens=5)
+        mx.eval(output)
+
+        assert output.shape[0] > 3
+
     def test_stats(self):
         config = LayerSkipConfig(num_speculative_tokens=3)
         engine = LayerSkipEngine(self.model, self.tokenizer, config)
@@ -304,6 +500,8 @@ class TestLayerSkipEngine:
         assert "speedup_factor" in stats
         assert "avg_draft_ms" in stats
         assert "avg_verify_ms" in stats
+        assert "adaptive_exit_enabled" in stats
+        assert "avg_adaptive_exit_layer" in stats
         assert stats["exit_layer"] == 4
         assert stats["total_layers"] == 8
         assert stats["total_draft_tokens"] > 0
@@ -322,6 +520,39 @@ class TestLayerSkipEngine:
 
         # Stats should be fresh for each generate call
         assert stats2["total_verify_steps"] > 0
+
+    def test_stats_empty_before_generate(self):
+        config = LayerSkipConfig(num_speculative_tokens=3)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        stats = engine.get_stats()
+        assert stats["total_draft_tokens"] == 0
+        assert stats["total_accepted"] == 0
+        assert stats["avg_draft_ms"] == 0
+        assert stats["avg_verify_ms"] == 0
+
+    def test_stats_acceptance_rate_bounded(self):
+        config = LayerSkipConfig(num_speculative_tokens=3)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        prompt = mx.array([1, 2, 3, 4, 5])
+        engine.generate(prompt, max_tokens=10)
+
+        stats = engine.get_stats()
+        assert 0.0 <= stats["acceptance_rate"] <= 2.0  # can exceed 1.0 due to bonus tokens
+        assert stats["speedup_factor"] >= 0.0
+
+    def test_stats_adaptive_exit_info(self):
+        """Stats should include adaptive exit layer info."""
+        config = LayerSkipConfig(num_speculative_tokens=3, adaptive_exit=True)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        prompt = mx.array([1, 2, 3, 4, 5])
+        engine.generate(prompt, max_tokens=10)
+
+        stats = engine.get_stats()
+        assert stats["adaptive_exit_enabled"] is True
+        assert isinstance(stats["avg_adaptive_exit_layer"], (int, float))
 
 
 # -- apply_layerskip convenience function --
@@ -348,6 +579,18 @@ class TestApplyLayerSkip:
         engine = apply_layerskip(model, tokenizer, config)
         assert engine.config.exit_layer == 2
         assert engine.config.num_speculative_tokens == 7
+
+    def test_apply_generates(self):
+        mx.random.seed(42)
+        model = MockModel(vocab_size=100, hidden_dim=32, num_layers=8)
+        mx.eval(model.parameters())
+        tokenizer = MockTokenizer()
+
+        engine = apply_layerskip(model, tokenizer)
+        prompt = mx.array([1, 2, 3])
+        output = engine.generate(prompt, max_tokens=5)
+        mx.eval(output)
+        assert output.shape[0] > 3
 
 
 # -- Edge Cases --
@@ -388,3 +631,80 @@ class TestLayerSkipEdgeCases:
         output = engine.generate(prompt, max_tokens=0)
         mx.eval(output)
         assert output.shape[0] == 3  # no new tokens
+
+    def test_single_token_prompt(self):
+        config = LayerSkipConfig(num_speculative_tokens=3)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        prompt = mx.array([42])
+        output = engine.generate(prompt, max_tokens=5)
+        mx.eval(output)
+        assert output.shape[0] > 1
+
+    def test_large_speculative_count(self):
+        config = LayerSkipConfig(num_speculative_tokens=15)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        prompt = mx.array([1, 2, 3, 4, 5])
+        output = engine.generate(prompt, max_tokens=20)
+        mx.eval(output)
+        assert output.shape[0] > 5
+
+    def test_exit_layer_near_total(self):
+        """Exit layer close to total layers should still work."""
+        config = LayerSkipConfig(exit_layer=7, num_speculative_tokens=3)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        prompt = mx.array([1, 2, 3])
+        output = engine.generate(prompt, max_tokens=5)
+        mx.eval(output)
+        assert output.shape[0] > 3
+
+    def test_verify_with_single_draft(self):
+        config = LayerSkipConfig(num_speculative_tokens=1)
+        engine = LayerSkipEngine(self.model, self.tokenizer, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        draft = mx.array([[10]])
+        accepted, num = engine._verify_step(input_ids, draft)
+        mx.eval(accepted)
+
+        assert len(accepted) >= 1
+
+    def test_adaptive_exit_reduces_layers_for_high_confidence(self):
+        """With low threshold, adaptive should reduce exit layers."""
+        config = LayerSkipConfig(
+            exit_layer=4,
+            num_speculative_tokens=5,
+            adaptive_exit=True,
+            confidence_threshold=0.0,  # everything is "high confidence"
+        )
+        drafter = LayerSkipDrafter(self.model, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        drafter.draft(input_ids)
+
+        # With threshold=0.0, every token has high confidence,
+        # so exit layers should decrease
+        exit_layers = drafter._draft_exit_layers
+        assert len(exit_layers) == 5
+        # Last tokens should use fewer layers than the first
+        assert exit_layers[-1] <= exit_layers[0]
+
+    def test_adaptive_exit_increases_layers_for_low_confidence(self):
+        """With very high threshold, adaptive should increase exit layers."""
+        config = LayerSkipConfig(
+            exit_layer=4,
+            num_speculative_tokens=5,
+            adaptive_exit=True,
+            confidence_threshold=1.0,  # nothing can be high confidence
+        )
+        drafter = LayerSkipDrafter(self.model, config)
+
+        input_ids = mx.array([[1, 2, 3]])
+        drafter.draft(input_ids)
+
+        exit_layers = drafter._draft_exit_layers
+        assert len(exit_layers) == 5
+        # Last tokens should use more layers than the first
+        assert exit_layers[-1] >= exit_layers[0]

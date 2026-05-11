@@ -149,3 +149,53 @@ class TestKernelStatus:
 
     def test_metal_available_is_bool(self):
         assert isinstance(is_metal_available(), bool)
+
+
+class TestFallbackPaths:
+    """Test fallback behavior when Metal is not available."""
+
+    @pytest.mark.skipif(not HAS_MLX, reason="MLX required")
+    def test_swiglu_fallback_after_metal_fail(self):
+        """Force Metal kernel unavailable and verify fallback works."""
+        import mlx_flash_compress.kernels.ops as ops_mod
+
+        # Save original state
+        orig = ops_mod._metal_swiglu_available
+        ops_mod._metal_swiglu_available = False
+
+        gate = mx.array([1.0, 2.0, -1.0])
+        up = mx.array([1.0, 1.0, 1.0])
+        result = swiglu(gate, up)
+        mx.eval(result)
+        assert result.shape == (3,)
+
+        # Restore
+        ops_mod._metal_swiglu_available = orig
+
+    @pytest.mark.skipif(not HAS_MLX, reason="MLX required")
+    def test_swiglu_with_none_state(self):
+        """Test swiglu when Metal availability is None (not yet checked)."""
+        import mlx_flash_compress.kernels.ops as ops_mod
+
+        orig = ops_mod._metal_swiglu_available
+        ops_mod._metal_swiglu_available = None
+
+        gate = mx.array([1.0, 2.0])
+        up = mx.array([1.0, 1.0])
+        result = swiglu(gate, up)
+        mx.eval(result)
+        assert result.shape == (2,)
+
+        ops_mod._metal_swiglu_available = orig
+
+    def test_moe_dispatch_numpy_large(self):
+        """Test numpy fallback with larger inputs."""
+        rng = np.random.default_rng(42)
+        expert_outputs = rng.standard_normal((256, 1024)).astype(np.float32)
+        selected = np.array([0, 10, 50, 100])
+        weights = np.array([0.4, 0.3, 0.2, 0.1])
+        result = moe_dispatch_numpy(expert_outputs, selected, weights)
+        assert result.shape == (1024,)
+        # Verify it's a proper weighted sum
+        expected = sum(w * expert_outputs[s] for s, w in zip(selected, weights))
+        np.testing.assert_allclose(result, expected, atol=1e-5)

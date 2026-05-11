@@ -41,6 +41,15 @@ class LayerSkipConfig:
     confidence_threshold: float = 0.9  # early exit if top-1 prob > this
     adaptive_exit: bool = True  # dynamically choose exit layer based on confidence
 
+    def __post_init__(self):
+        if self.num_speculative_tokens < 1:
+            raise ValueError(f"num_speculative_tokens must be >= 1, got {self.num_speculative_tokens}")
+        if self.temperature < 0.0:
+            raise ValueError(f"temperature must be >= 0.0, got {self.temperature}")
+        if self.confidence_threshold < 0.0 or self.confidence_threshold > 1.0:
+            raise ValueError(f"confidence_threshold must be in [0.0, 1.0], got {self.confidence_threshold}")
+        # exit_layer validated later when num_layers is known; -1 is auto
+
 
 class LayerSkipDrafter:
     """Uses early exit from the target model as a draft model.
@@ -136,6 +145,11 @@ class LayerSkipDrafter:
         logits, then greedily select tokens. Repeats autoregressively for
         num_speculative_tokens.
 
+        When adaptive_exit is enabled, the exit layer is adjusted per token:
+        - High confidence (above threshold): use fewer layers (exit_layer - 1)
+        - Low confidence (below threshold): use more layers (exit_layer + 1)
+        The exit layer is clamped to [1, total_layers - 1].
+
         Args:
             input_ids: Context token IDs [B, seq_len]
             cache: Optional KV cache
@@ -143,15 +157,20 @@ class LayerSkipDrafter:
         Returns:
             (draft_token_ids [B, num_spec], draft_logits_list)
         """
-        exit_layer = self.config.exit_layer
+        base_exit_layer = self.config.exit_layer
+        current_exit_layer = base_exit_layer
         num_draft = self.config.num_speculative_tokens
+        total_layers = len(self._layers)
+        min_exit = max(1, base_exit_layer // 2)
+        max_exit = min(total_layers - 1, base_exit_layer + base_exit_layer // 2)
 
         draft_ids = []
         draft_logits_list = []
         current_ids = input_ids
+        self._draft_exit_layers = []  # track per-token exit layers for stats
 
         for _ in range(num_draft):
-            h = self._forward_partial(current_ids, exit_layer, cache=cache)
+            h = self._forward_partial(current_ids, current_exit_layer, cache=cache)
 
             # Apply norm and LM head to intermediate hidden states
             if self._norm_fn is not None:
@@ -169,17 +188,20 @@ class LayerSkipDrafter:
                 next_token = mx.random.categorical(mx.log(probs + 1e-10).squeeze(1)).reshape(-1, 1)
 
             draft_ids.append(next_token)
+            self._draft_exit_layers.append(current_exit_layer)
 
-            # Adaptive exit: if confidence is very high, we could use an
-            # even earlier layer; if low, use a later layer. For simplicity
-            # in this implementation, we track confidence for stats but
-            # keep the exit layer fixed within a draft cycle.
+            # Adaptive exit: adjust exit layer for next token based on confidence
             if self.config.adaptive_exit:
                 top_prob = mx.max(mx.softmax(last_logits, axis=-1))
                 mx.eval(top_prob)
-                # Could adjust exit_layer here for next token, but the
-                # overhead of switching layers mid-draft is not worth it
-                # on Apple Silicon's unified memory architecture.
+                top_prob_val = float(top_prob.item())
+
+                if top_prob_val >= self.config.confidence_threshold:
+                    # High confidence: use fewer layers next time
+                    current_exit_layer = max(min_exit, current_exit_layer - 1)
+                else:
+                    # Low confidence: use more layers next time
+                    current_exit_layer = min(max_exit, current_exit_layer + 1)
 
             # Next iteration: predict from the drafted token only
             current_ids = next_token
@@ -369,7 +391,11 @@ class LayerSkipEngine:
         effective_passes = 1.0 + draft_cost_fraction  # verify + draft cost
         speedup = tokens_per_step / effective_passes if effective_passes > 0 else 1.0
 
-        import numpy as np
+        draft_times = self.stats["draft_times_ms"]
+        verify_times = self.stats["verify_times_ms"]
+
+        # Collect adaptive exit layer info if available
+        draft_exit_layers = getattr(self.drafter, "_draft_exit_layers", [])
 
         return {
             "exit_layer": exit_layer,
@@ -380,12 +406,12 @@ class LayerSkipEngine:
             "acceptance_rate": round(acceptance_rate, 3),
             "tokens_per_step": round(tokens_per_step, 1),
             "speedup_factor": round(speedup, 2),
-            "avg_draft_ms": round(float(np.mean(self.stats["draft_times_ms"])), 1)
-            if self.stats["draft_times_ms"]
-            else 0,
-            "avg_verify_ms": round(float(np.mean(self.stats["verify_times_ms"])), 1)
-            if self.stats["verify_times_ms"]
-            else 0,
+            "avg_draft_ms": round(sum(draft_times) / len(draft_times), 1) if draft_times else 0,
+            "avg_verify_ms": round(sum(verify_times) / len(verify_times), 1) if verify_times else 0,
+            "adaptive_exit_enabled": self.config.adaptive_exit,
+            "avg_adaptive_exit_layer": round(sum(draft_exit_layers) / len(draft_exit_layers), 1)
+            if draft_exit_layers
+            else exit_layer,
         }
 
 

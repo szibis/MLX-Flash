@@ -433,10 +433,39 @@ class DFlashEngine:
 
     def _generate_fallback(self, prompt_tokens: mx.array, max_tokens: int, callback: Optional[Callable]) -> mx.array:
         """Fallback to standard autoregressive generation when no drafter available."""
-        from mlx_lm import generate
+        generated = list(prompt_tokens.tolist()) if hasattr(prompt_tokens, "tolist") else list(prompt_tokens)
+        tokens_generated = 0
 
-        # Standard generation without speculation
-        return prompt_tokens
+        while tokens_generated < max_tokens:
+            input_ids = mx.array(generated)
+            input_2d = mx.expand_dims(input_ids, axis=0)
+
+            logits = self._target_forward(input_2d)
+
+            # Get last position logits
+            if len(logits.shape) == 3:
+                last_logits = logits[0, -1, :]
+            else:
+                last_logits = logits[-1, :]
+
+            if self.config.temperature == 0:
+                next_token = int(mx.argmax(last_logits).item())
+            else:
+                probs = mx.softmax(last_logits / self.config.temperature, axis=-1)
+                next_token = int(mx.random.categorical(mx.expand_dims(probs, 0)).item())
+
+            generated.append(next_token)
+            tokens_generated += 1
+
+            if callback:
+                callback([next_token], self.stats)
+
+            # Check for EOS
+            if self.tokenizer and hasattr(self.tokenizer, "eos_token_id"):
+                if next_token == self.tokenizer.eos_token_id:
+                    break
+
+        return mx.array(generated)
 
     def get_stats_summary(self) -> dict:
         """Return summary statistics for the DFlash session."""

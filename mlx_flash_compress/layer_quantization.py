@@ -21,7 +21,7 @@ perturbation MSE and assigned precision accordingly.
 
 import time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -190,7 +190,7 @@ class LayerQuantizer:
 
     def __init__(self, config: LayerQuantConfig = None):
         self.config = config or LayerQuantConfig()
-        self._stats = {
+        self._stats: dict[str, Any] = {
             "layers_quantized": 0,
             "layers_skipped": 0,
             "linears_quantized": 0,
@@ -459,14 +459,39 @@ def _set_nested_attr(module, dotted_name: str, value):
 
 
 def _quantize_linears_inplace(linears: list[tuple[str, nn.Linear]], bits: int, group_size: int):
-    """Quantize a list of (name, linear) pairs in-place on their parent.
+    """Quantize a list of (name, linear) pairs in-place by replacing weights.
 
-    Note: This modifies the linear objects but does not set them back on the
-    parent module. Used for temporary quantization during sensitivity profiling.
+    For each ``nn.Linear`` in *linears*, computes symmetric absmax
+    quantization:
+      - 4-bit: ``scale = max(|weight|) / 7``, clamp to [-8, 7]
+      - 8-bit: ``scale = max(|weight|) / 127``, clamp to [-128, 127]
+
+    The quantized weight is stored as ``round(weight / scale) * scale``
+    (dequantized back to float) so the existing ``nn.Linear`` forward pass
+    works without any wrapper — the precision loss is baked into the weight
+    matrix directly. This is intentionally lossy; the caller
+    (``_measure_layer_sensitivity``) uses the MSE between original and
+    quantized outputs to score sensitivity, then restores originals via
+    ``_restore_linear``.
     """
-    # For profiling, we create quantized versions and measure output,
-    # but we need to hold references. The caller is responsible for restore.
-    pass
+    if bits <= 4:
+        qmax = 7.0  # int4 symmetric: [-8, 7]
+        qmin = -8.0
+    else:
+        qmax = 127.0  # int8 symmetric: [-128, 127]
+        qmin = -128.0
+
+    for _name, linear in linears:
+        w = linear.weight
+        abs_max = mx.max(mx.abs(w))
+        # Avoid division by zero for all-zero weights
+        scale = abs_max / qmax
+        scale = mx.maximum(scale, mx.array(1e-10))
+
+        # Quantize then dequantize (simulate quantization error)
+        quantized = mx.clip(mx.round(w / scale), qmin, qmax)
+        linear.weight = quantized * scale
+        mx.eval(linear.weight)
 
 
 def _restore_linear(layer: nn.Module, name: str, original_weight: mx.array):

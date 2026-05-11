@@ -29,6 +29,7 @@ Usage:
   print(adaptive.get_stats())
 """
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
@@ -326,6 +327,10 @@ class AdaptiveMatFormer:
         self._check_interval_s = 5.0  # check pressure every 5s
         self._ratio_history: list[tuple[float, float]] = []  # (time, ratio)
 
+        # Monitoring thread state
+        self._monitor_thread: Optional[threading.Thread] = None
+        self._monitoring: bool = False
+
     def get_current_ratio(self) -> float:
         """Return current extraction ratio based on memory pressure."""
         if not self.config.auto_adapt:
@@ -429,6 +434,84 @@ class AdaptiveMatFormer:
 
         return self._model(input_ids, **kwargs)
 
+    def start_monitoring(self, model=None, interval_seconds: float = 5.0) -> None:
+        """Start background thread that polls memory pressure and adapts model size.
+
+        Uses psutil.virtual_memory().percent as the pressure signal. When
+        memory usage exceeds thresholds, the model is extracted at a lower
+        ratio. When pressure drops, the model is restored to a higher ratio.
+
+        Args:
+            model: Ignored (kept for API compatibility). The model is already
+                set in ``__init__``.
+            interval_seconds: Polling interval in seconds (default: 5.0).
+        """
+        if self._monitoring:
+            return
+
+        self._check_interval_s = interval_seconds
+        self._monitoring = True
+        self._monitor_thread = threading.Thread(
+            target=self._monitoring_loop,
+            daemon=True,
+            name="matformer-monitor",
+        )
+        self._monitor_thread.start()
+
+    def stop_monitoring(self) -> None:
+        """Stop the background monitoring thread."""
+        self._monitoring = False
+        if self._monitor_thread is not None:
+            self._monitor_thread.join(timeout=self._check_interval_s + 1.0)
+            self._monitor_thread = None
+
+    def _monitoring_loop(self) -> None:
+        """Background loop: poll memory pressure and apply adaptation."""
+        while self._monitoring:
+            try:
+                self._apply_pressure_adaptation()
+            except Exception:
+                pass  # Never crash the monitor thread
+            # Sleep in small increments to allow fast shutdown
+            deadline = time.monotonic() + self._check_interval_s
+            while self._monitoring and time.monotonic() < deadline:
+                time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+
+    def _apply_pressure_adaptation(self) -> None:
+        """Check system memory pressure via psutil and adapt model ratio.
+
+        Memory usage thresholds (via psutil.virtual_memory().percent):
+          - < 60%:  nominal  -> ratio 1.0 (full model)
+          - 60-75%: warning  -> ratio 0.875
+          - 75-85%: critical -> ratio 0.75
+          - 85-92%: urgent   -> ratio 0.625
+          - > 92%:  emergency -> ratio 0.5
+        """
+        try:
+            import psutil
+
+            mem = psutil.virtual_memory()
+            pct = mem.percent
+        except (ImportError, Exception):
+            # psutil unavailable, fall back to mlx-flash's memory manager
+            pressure = self._get_memory_pressure()
+            self.adapt(memory_pressure=pressure)
+            return
+
+        # Map memory usage percentage to pressure level
+        if pct < 60:
+            pressure = "nominal"
+        elif pct < 75:
+            pressure = "warning"
+        elif pct < 85:
+            pressure = "critical"
+        elif pct < 92:
+            pressure = "urgent"
+        else:
+            pressure = "emergency"
+
+        self.adapt(memory_pressure=pressure)
+
     def get_stats(self) -> dict:
         """Return adaptive inference statistics."""
         mem_estimate = self.extractor.estimate_memory(self._current_ratio)
@@ -450,6 +533,7 @@ class AdaptiveMatFormer:
             "adaptation_count": self._adaptation_count,
             "available_ratios": available_ratios,
             "auto_adapt": self.config.auto_adapt,
+            "monitoring": self._monitoring,
             "stability": round(stability, 3),
             "memory": mem_estimate,
             "ffn_layers": len(self.extractor._ffn_layers),

@@ -63,7 +63,7 @@ class CrossLayerPredictor:
 
         Returns: {target_layer: [predicted_expert_ids]}
         """
-        predictions = {}
+        predictions: dict[int, list[int]] = {}
         if layer_idx >= self.num_layers - 1:
             return predictions
 
@@ -326,11 +326,11 @@ def benchmark_predictors(
         for token_idx, token_route in enumerate(trace):
             for layer_idx, experts in enumerate(token_route):
                 if token_idx >= warmup and layer_idx > 0:
-                    predicted = pred.predict(layer_idx - 1, trace[token_idx][layer_idx - 1])
+                    predicted = pred.predict(layer_idx - 1, trace[token_idx][layer_idx - 1])  # type: ignore[attr-defined]
                     total += len(experts)
                     correct += sum(1 for a in experts if a in set(predicted))
 
-                pred.observe(layer_idx, experts)
+                pred.observe(layer_idx, experts)  # type: ignore[attr-defined]
 
         avg_acc = correct / max(total, 1)
         results.append(
@@ -344,3 +344,103 @@ def benchmark_predictors(
         )
 
     return results
+
+
+class AdvancedPrefetcher:
+    """Prefetcher that can be driven by RouterHook routing events.
+
+    Wraps a CrossLayerPredictor and/or ShadowPredictor and provides an
+    ``on_routing_event(event)`` method suitable as a callback for
+    ``RouterHook(on_event=prefetcher.on_routing_event)``.
+
+    When a routing event arrives, the prefetcher updates its prediction
+    models and computes which experts should be prefetched for upcoming
+    layers.
+
+    Usage:
+        prefetcher = AdvancedPrefetcher(num_layers=24, num_experts=60, top_k=4)
+        hook = RouterHook(model, on_event=prefetcher.on_routing_event)
+        hook.install()
+        # After inference, check prefetcher.get_predictions()
+    """
+
+    def __init__(
+        self,
+        num_layers: int = 24,
+        num_experts: int = 60,
+        top_k: int = 4,
+        lookahead: int = 3,
+        use_shadow: bool = False,
+        shadow_hidden_dim: int = 64,
+    ):
+        self.cross_layer = CrossLayerPredictor(
+            num_layers=num_layers,
+            num_experts=num_experts,
+            top_k=top_k,
+            lookahead=lookahead,
+        )
+        self.shadow = None
+        if use_shadow:
+            self.shadow = ShadowPredictor(
+                num_layers=num_layers,
+                num_experts=num_experts,
+                top_k=top_k,
+                hidden_dim=shadow_hidden_dim,
+            )
+
+        self._last_predictions: dict[int, list[int]] = {}
+        self._events_received: int = 0
+
+    def on_routing_event(self, event) -> None:
+        """Callback for RouterHook — update prediction models with routing event.
+
+        Args:
+            event: A RoutingEvent with layer_idx and expert_ids attributes.
+        """
+        layer_idx = event.layer_idx
+        expert_ids = event.expert_ids
+
+        # Update cross-layer predictor
+        self.cross_layer.observe(layer_idx, expert_ids)
+
+        # Update shadow predictor if enabled
+        if self.shadow is not None:
+            self.shadow.observe(layer_idx, expert_ids)
+
+        # Compute predictions for upcoming layers
+        self._last_predictions = self.cross_layer.predict_multi(layer_idx, expert_ids)
+
+        self._events_received += 1
+
+    def get_predictions(self) -> dict[int, list[int]]:
+        """Return the latest prefetch predictions.
+
+        Returns:
+            ``{target_layer: [predicted_expert_ids]}``.
+        """
+        return dict(self._last_predictions)
+
+    def predict_for_layer(self, layer_idx: int, current_experts: list[int]) -> list[int]:
+        """Predict experts for the next layer (convenience wrapper).
+
+        Args:
+            layer_idx: Current layer index.
+            current_experts: Expert IDs activated at current layer.
+
+        Returns:
+            Predicted expert IDs for layer_idx + 1.
+        """
+        if self.shadow is not None:
+            return self.shadow.predict(layer_idx, current_experts)
+        return self.cross_layer.predict(layer_idx, current_experts)
+
+    def get_stats(self) -> dict:
+        """Return prefetcher statistics."""
+        stats = {
+            "events_received": self._events_received,
+            "cross_layer": self.cross_layer.stats(),
+            "last_predictions": self._last_predictions,
+        }
+        if self.shadow is not None:
+            stats["shadow"] = self.shadow.stats()
+        return stats

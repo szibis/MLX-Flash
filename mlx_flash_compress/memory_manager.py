@@ -379,14 +379,14 @@ class MemoryManager:
         Returns info about what was done.
         """
         state = get_memory_state()
-        result = {"action": "none", "pressure": state.pressure_level}
+        result: dict[str, str | float] = {"action": "none", "pressure": state.pressure_level}
 
         if state.pressure_level in ("red", "critical"):
             try:
                 import mlx.core as mx
 
                 # Clear MLX memory pool (releases unused cached allocations)
-                mx.clear_memory_pool()
+                mx.clear_memory_pool()  # type: ignore[attr-defined]
                 import gc
 
                 gc.collect()

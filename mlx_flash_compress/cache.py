@@ -124,6 +124,8 @@ class ExpertCacheManager:
         promotion_threshold: int = 3,  # accesses before promoting warm→hot
         bypass_os_cache: bool = False,  # F_NOCACHE for fair SSD benchmarks
         simulated_ssd_latency_ms: float = 0.0,  # Add artificial SSD latency per read
+        eviction_policy=None,  # Optional LeastStalePolicy for smart eviction
+        pinned_experts: Optional[set[tuple[int, int]]] = None,  # Experts that are never evicted
     ):
         self.expert_dir = Path(expert_dir)
         self._bypass_os_cache = bypass_os_cache
@@ -135,6 +137,12 @@ class ExpertCacheManager:
         self.enable_warm = enable_warm
         self.promotion_threshold = promotion_threshold
         self._hot_algo = hot_algo
+
+        # Smart eviction policy (LeastStalePolicy from smart_eviction.py)
+        self._eviction_policy = eviction_policy
+
+        # Pinned experts (from SharedExpertPinner) — never evicted
+        self._pinned_experts: set[tuple[int, int]] = pinned_experts or set()
 
         # Compression backends
         # ZSTD contexts are not thread-safe, so we create per-use instances
@@ -211,16 +219,38 @@ class ExpertCacheManager:
         return sum(e.buf.compressed_size for e in self._warm.values())
 
     def _evict_lfu(self, cache: dict, target_free: int, tier_name: str) -> int:
-        """Evict least-frequently-used entries until target_free bytes are available."""
+        """Evict entries until target_free bytes are available.
+
+        Uses the smart eviction policy (LeastStalePolicy) when available,
+        falling back to least-frequently-used (LFU). Pinned experts are
+        always excluded from eviction.
+        """
         freed = 0
-        # Sort by access count ascending (evict least used first)
-        by_freq = sorted(cache.items(), key=lambda kv: kv[1].access_count)
-        for key, entry in by_freq:
-            if freed >= target_free:
-                break
-            freed += entry.buf.compressed_size
-            del cache[key]
-            self.stats.evictions += 1
+
+        # Filter out pinned experts from eviction candidates
+        candidate_keys = [k for k in cache.keys() if k not in self._pinned_experts]
+
+        if self._eviction_policy is not None and candidate_keys:
+            # Use smart eviction: pick victims by lowest retention score
+            while freed < target_free and candidate_keys:
+                victim = self._eviction_policy.select_eviction(candidate_keys)
+                if victim in cache:
+                    freed += cache[victim].buf.compressed_size
+                    del cache[victim]
+                    self.stats.evictions += 1
+                candidate_keys.remove(victim)
+        else:
+            # Fallback: sort by access count ascending (evict least used first)
+            by_freq = sorted(
+                ((k, e) for k, e in cache.items() if k not in self._pinned_experts),
+                key=lambda kv: kv[1].access_count,
+            )
+            for key, entry in by_freq:
+                if freed >= target_free:
+                    break
+                freed += entry.buf.compressed_size
+                del cache[key]
+                self.stats.evictions += 1
         return freed
 
     def _compress_hot(self, raw_data: bytes, layer_idx: int, expert_id: int):
@@ -291,6 +321,10 @@ class ExpertCacheManager:
         key = (layer_idx, expert_id)
         self._access_count[key] += 1
 
+        # Feed access event to smart eviction policy if available
+        if self._eviction_policy is not None:
+            self._eviction_policy.record_access(layer_idx, expert_id)
+
         # Check HOT tier (LZ4)
         if self.enable_hot and key in self._hot:
             entry = self._hot[key]
@@ -338,7 +372,7 @@ class ExpertCacheManager:
         self,
         layer_idx: int,
         expert_ids: list[int],
-        expert_dtype: np.dtype = np.float16,
+        expert_dtype: type = np.float16,
     ) -> list[tuple[np.ndarray, CacheTier]]:
         """Fetch K experts in parallel, returning decompressed weight arrays.
 
@@ -352,13 +386,21 @@ class ExpertCacheManager:
         """
         self._token_counter += 1
 
-        results = {}
-        cold_experts = []
+        # Advance the eviction policy's token clock
+        if self._eviction_policy is not None:
+            self._eviction_policy.advance_token()
+
+        results: dict[int, tuple[np.ndarray, CacheTier]] = {}
+        cold_experts: list[int] = []
 
         # Phase 1: Resolve cache hits synchronously (fast-path)
         for eid in expert_ids:
             key = (layer_idx, eid)
             self._access_count[key] += 1
+
+            # Feed access event to smart eviction policy
+            if self._eviction_policy is not None:
+                self._eviction_policy.record_access(layer_idx, eid)
 
             # Check HOT tier
             if self.enable_hot and key in self._hot:

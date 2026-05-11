@@ -61,6 +61,7 @@ LAZY_IMPORTS = {
     "EAGLE3Config": ("mlx_flash_compress.eagle3", "EAGLE3Config"),
     "EAGLEDraftHead": ("mlx_flash_compress.eagle3", "EAGLEDraftHead"),
     "EAGLE3Trainer": ("mlx_flash_compress.eagle3", "EAGLE3Trainer"),
+    "apply_eagle3": ("mlx_flash_compress.eagle3", "apply_eagle3"),
     # layer_quantization.py
     "LayerQuantizer": ("mlx_flash_compress.layer_quantization", "LayerQuantizer"),
     "LayerQuantConfig": ("mlx_flash_compress.layer_quantization", "LayerQuantConfig"),

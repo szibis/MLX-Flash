@@ -185,7 +185,7 @@ class AttentionScoreTracker:
             keep_indices: Indices of tokens that were kept after eviction.
         """
         # Convert to Python list for filtering (MLX lacks boolean indexing)
-        idx_list = keep_indices.tolist()
+        idx_list: list[int] = list(keep_indices.tolist())  # type: ignore[arg-type]
 
         for i in range(self.num_layers):
             if self._importance[i] is not None:
