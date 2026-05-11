@@ -85,7 +85,7 @@ impl WorkerPool {
         Some(worker)
     }
 
-    /// Remove a session's affinity (e.g. when conversation ends).
+    #[allow(dead_code)]
     pub fn release_session(&self, session_id: &str) {
         let mut sessions = self.sessions.lock().unwrap();
         sessions.remove(session_id);

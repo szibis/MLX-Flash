@@ -402,7 +402,6 @@ async fn main() {
     let health_pool = pool.clone();
     let health_model = model_for_restart.clone();
     let health_python = python_path.clone();
-    let health_base_port = args.python_port;
     let health_preload = preload_for_restart;
     tokio::spawn(async move {
         let client = reqwest::Client::builder()

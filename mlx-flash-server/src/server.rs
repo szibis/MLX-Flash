@@ -16,6 +16,7 @@ use crate::worker_pool::WorkerPool;
 
 #[derive(Clone)]
 pub struct AppState {
+    #[allow(dead_code)]
     pub python_port: u16,
     pub model_name: Arc<RwLock<String>>,
     pub start_time: Instant,
