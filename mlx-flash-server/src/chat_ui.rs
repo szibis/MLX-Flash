@@ -306,31 +306,31 @@ function formatContent(text) {
 }
 
 let genPollInterval = null;
-let tokBefore = 0;
+let liveTokenCount = 0;
 
 function startGenProgress() {
   const el = document.getElementById('gen-progress');
   el.classList.add('active');
   document.getElementById('status-dot').style.background = 'var(--accent)';
-  tokBefore = 0;
-  // Snapshot current tokens
-  fetch('/status').then(r=>r.json()).then(st => { tokBefore = (st.stats||{}).tokens_generated||0; }).catch(()=>{});
-  // Poll every 500ms during generation
+  liveTokenCount = 0;
+  document.getElementById('gen-tokens').textContent = '0 tok';
+  // Poll memory/pressure during generation
   genPollInterval = setInterval(async () => {
     try {
       const st = await fetch('/status').then(r=>r.json());
-      const tokNow = (st.stats||{}).tokens_generated||0;
-      const genTok = tokNow - tokBefore;
-      document.getElementById('gen-tokens').textContent = genTok + ' tok';
       const mem = st.memory||{};
       const avail = ((mem.free_gb||0)+(mem.inactive_gb||0)*0.5).toFixed(1);
       const pressure = (mem.pressure||'Normal').toString();
       document.getElementById('gen-mem').textContent = avail+'GB free';
       document.getElementById('gen-mem').style.color = pressure==='Critical'?'var(--red)':pressure==='Warning'?'var(--yellow)':'var(--dim)';
-      // Pressure banner
       updatePressureBanner(pressure, avail, mem.swap_used_gb||0);
     } catch(e) {}
-  }, 500);
+  }, 1000);
+}
+
+function updateLiveTokens(count) {
+  liveTokenCount = count;
+  document.getElementById('gen-tokens').textContent = count + ' tok';
 }
 
 function stopGenProgress() {
@@ -357,22 +357,30 @@ function updatePressureBanner(pressure, availGb, swapGb) {
   }
 }
 
-// Session persistence — survive page reload / tab switch
+// Session persistence — survives page reload, tab switch, nav to dashboard and back
 function saveSession() {
-  try { localStorage.setItem('mlx-flash-messages', JSON.stringify(messages)); } catch(e) {}
+  try {
+    localStorage.setItem('mlx-flash-messages', JSON.stringify(messages));
+    localStorage.setItem('mlx-flash-session-ts', Date.now().toString());
+  } catch(e) {}
 }
 function loadSession() {
   try {
     const saved = localStorage.getItem('mlx-flash-messages');
-    if (saved) {
-      const restored = JSON.parse(saved);
-      if (restored.length > 0) {
-        document.getElementById('empty')?.remove();
-        restored.forEach(m => addMessage(m.role, m.content));
+    if (!saved) return;
+    const restored = JSON.parse(saved);
+    if (!Array.isArray(restored) || restored.length === 0) return;
+    document.getElementById('empty')?.remove();
+    restored.forEach(m => {
+      if (m && m.role && m.content) {
+        addMessage(m.role, m.content);
       }
-    }
-  } catch(e) {}
+    });
+  } catch(e) { console.error('Session restore failed:', e); }
 }
+// Save on every page unload (covers nav away, refresh, tab close)
+window.addEventListener('beforeunload', saveSession);
+// Restore on load
 loadSession();
 
 async function handleSlashCommand(text) {
@@ -524,12 +532,12 @@ async function sendMessage() {
     // SSE streaming — read tokens as they arrive
     let fullText = '';
     let respTokens = 0;
+    let streamChunkCount = 0;
     let tokPerSec = '';
     let lastChunkModel = currentModel;
 
     const contentType = resp.headers.get('content-type') || '';
     if (contentType.includes('text/event-stream') || contentType.includes('text/plain')) {
-      // SSE stream mode
       const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -550,22 +558,25 @@ async function sendMessage() {
             const delta = chunk.choices?.[0]?.delta || {};
             if (delta.content) {
               fullText += delta.content;
+              streamChunkCount++;
+              updateLiveTokens(streamChunkCount);
               aiEl.innerHTML = formatContent(fullText);
               messagesEl.scrollTop = messagesEl.scrollHeight;
             }
             if (chunk.model) lastChunkModel = chunk.model;
-            // Some implementations send usage in the final chunk
             if (chunk.usage) {
               respTokens = chunk.usage.completion_tokens || 0;
             }
-            // Extract MLX-Flash performance data if present
             const mlxData = chunk.mlx_flash_compress || {};
             if (mlxData.tok_per_s) tokPerSec = mlxData.tok_per_s.toFixed(1) + ' tok/s';
-          } catch(e) { /* skip unparseable lines */ }
+          } catch(e) {}
         }
       }
+      // Use chunk count as token estimate if usage not provided
+      if (!respTokens && streamChunkCount > 0) {
+        respTokens = streamChunkCount;
+      }
     } else {
-      // Fallback: non-streaming JSON response
       try {
         const json = await resp.json();
         fullText = json.choices?.[0]?.message?.content
@@ -583,7 +594,6 @@ async function sendMessage() {
     }
 
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    // Estimate tokens from text if not provided
     if (!respTokens && fullText) {
       respTokens = Math.ceil(fullText.length / 4);
     }
@@ -592,14 +602,13 @@ async function sendMessage() {
     }
 
     messages[messages.length-1].content = fullText;
-    // Track cumulative tokens for savings calculator
     if (respTokens > 0) {
       totalTokensSession += respTokens;
       try { localStorage.setItem('mlx-flash-total-tokens', totalTokensSession.toString()); } catch(e) {}
     }
     saveSession();
 
-    // Get current model + pressure for metadata bar
+    // Per-message stats
     let currentPressure = 'Normal';
     let currentModelName = lastChunkModel || currentModel;
     try {
@@ -608,7 +617,6 @@ async function sendMessage() {
       if (st.model) currentModelName = st.model;
     } catch(e) {}
 
-    // Set metadata bar under the AI message
     setMessageMeta(messages.length - 1, {
       model: currentModelName,
       tokens: respTokens || null,
@@ -617,11 +625,11 @@ async function sendMessage() {
       pressure: currentPressure.toString(),
     });
 
-    // Show generation stats in status bar
     const stats = [elapsed + 's'];
+    if (respTokens) stats.push(respTokens + ' tok');
     if (tokPerSec) stats.push(tokPerSec);
     document.getElementById('status-text').textContent = 'Done — ' + stats.join(', ');
-    setTimeout(() => { if (!generating) document.getElementById('status-text').textContent = 'Ready'; }, 5000);
+    setTimeout(() => { if (!generating) document.getElementById('status-text').textContent = 'Ready'; }, 8000);
 
   } catch(e) {
     aiEl.innerHTML = '<p style="color:var(--red)">Connection error — is the Python worker running?</p>';
