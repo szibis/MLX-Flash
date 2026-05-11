@@ -19,8 +19,10 @@ Or from LM Studio: Add custom endpoint http://localhost:8080/v1
 """
 
 import argparse
+import gc
 import json
 import os
+import pathlib
 import signal
 import sys
 import time
@@ -30,6 +32,7 @@ from socketserver import ThreadingMixIn
 from typing import Optional
 
 import mlx.core as mx
+import yaml
 from mlx_lm import generate, load
 
 from mlx_flash_compress.hardware import detect_hardware
@@ -41,6 +44,15 @@ logger = None
 
 # Available speculative decoding engines
 SPECULATIVE_ENGINES = ("eagle3", "layerskip", "dflash", "none")
+
+# Path to the model registry YAML
+MODELS_YAML = pathlib.Path(__file__).parent.parent / "scripts" / "models.yaml"
+
+
+def load_model_registry() -> dict:
+    """Load the model registry from models.yaml."""
+    with open(MODELS_YAML) as f:
+        return yaml.safe_load(f)
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -457,6 +469,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._handle_config_get()
         elif self.path == "/admin":
             self._serve_dashboard_html()
+        elif self.path == "/profile/models":
+            self._handle_profile_models()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -473,6 +487,8 @@ class ChatHandler(BaseHTTPRequestHandler):
             self._handle_config_set()
         elif self.path == "/profile":
             self._handle_profile()
+        elif self.path == "/profile/batch":
+            self._handle_profile_batch()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -660,6 +676,135 @@ class ChatHandler(BaseHTTPRequestHandler):
                 "memory_after_gb": round(mem_after.available_gb, 2),
             }
         )
+
+    def _handle_profile_models(self):
+        """Return the model registry from models.yaml without profiling."""
+        try:
+            registry = load_model_registry()
+        except Exception as e:
+            self._send_json({"error": f"Cannot read models.yaml: {e}"}, 500)
+            return
+
+        models = []
+        for m in registry.get("models", []):
+            models.append({
+                "id": m.get("id", ""),
+                "category_expected": m.get("category_expected", "unknown"),
+                "size_gb_approx": m.get("size_gb_approx", 0),
+                "skip": m.get("skip", False),
+                "notes": m.get("notes", ""),
+                "drafter": m.get("drafter"),
+            })
+
+        self._send_json({
+            "models": models,
+            "cache_dir": registry.get("cache_dir", "~/.cache/huggingface/hub"),
+            "total_models": len(models),
+        })
+
+    def _handle_profile_batch(self):
+        """Profile multiple models from the registry sequentially."""
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self._send_json({"error": "Invalid JSON"}, 400)
+            return
+
+        max_tokens = data.get("max_tokens", 32)
+        prompt_text = data.get("prompt", "def binary_search(arr, target):\n    ")
+        requested_models = data.get("models", [])
+
+        # Load registry
+        try:
+            registry = load_model_registry()
+        except Exception as e:
+            self._send_json({"error": f"Cannot read models.yaml: {e}"}, 500)
+            return
+
+        # Build the list of models to profile
+        registry_models = registry.get("models", [])
+        if requested_models:
+            # Filter to only requested models
+            models_to_profile = [
+                m for m in registry_models
+                if m.get("id") in requested_models
+            ]
+        else:
+            # Profile all non-skipped models
+            models_to_profile = [
+                m for m in registry_models
+                if not m.get("skip", False)
+            ]
+
+        log = logger or __import__("logging").getLogger("mlx_flash")
+        state = self.server_state
+        original_model = state.model_name
+        results = []
+
+        for entry in models_to_profile:
+            model_id = entry.get("id", "")
+            category = entry.get("category_expected", "unknown")
+            log.info(
+                f"Batch profiling model: {model_id}",
+                extra={"action": "batch_profile_start", "model": model_id},
+            )
+
+            result = {"model": model_id, "category": category}
+
+            try:
+                # Unload any currently loaded model
+                state.model = None
+                state.tokenizer = None
+                gc.collect()
+                try:
+                    mx.clear_cache()
+                except AttributeError:
+                    pass
+
+                # Load target model
+                state.model_name = model_id
+                t_load = time.monotonic()
+                state.model, state.tokenizer = load(model_id)
+                mx.synchronize()
+                load_time = time.monotonic() - t_load
+
+                # Profile: generate tokens and measure
+                mem_before = get_memory_state()
+                t0 = time.monotonic()
+                output = generate(
+                    state.model,
+                    state.tokenizer,
+                    prompt=prompt_text,
+                    max_tokens=max_tokens,
+                    verbose=False,
+                )
+                mx.synchronize()
+                elapsed = time.monotonic() - t0
+                out_tokens = len(state.tokenizer.encode(output))
+                mem_after = get_memory_state()
+
+                result["tokens_per_sec"] = round(out_tokens / elapsed, 1) if elapsed > 0 else 0
+                result["memory_gb"] = round(mem_before.available_gb - mem_after.available_gb, 2)
+                result["load_time_s"] = round(load_time, 2)
+
+            except Exception as e:
+                result["error"] = str(e)
+
+            results.append(result)
+
+        # Restore original model name (leave model unloaded to save memory)
+        state.model = None
+        state.tokenizer = None
+        gc.collect()
+        try:
+            mx.clear_cache()
+        except AttributeError:
+            pass
+        state.model_name = original_model
+
+        self._send_json(results)
 
     def _handle_chat(self):
         content_length = int(self.headers.get("Content-Length", 0))

@@ -2,7 +2,8 @@
 
 import threading
 import time
-from unittest.mock import MagicMock
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -592,3 +593,310 @@ class TestRequestStatus:
             RequestStatus.CANCELLED,
         ]
         assert len(set(statuses)) == 5
+
+
+# ===========================================================================
+# Concurrency & Stress Tests
+# ===========================================================================
+
+
+class TestBatchingConcurrency:
+    """Concurrency, stress, and edge-case tests for the batching engine."""
+
+    def _make_engine(self, max_batch=8, vocab_size=32):
+        model = _make_model(vocab_size=vocab_size)
+        tokenizer = _make_tokenizer(vocab_size=vocab_size)
+        config = BatchSchedulerConfig(
+            max_batch_size=max_batch,
+            prefill_chunk_size=64,
+        )
+        return ContinuousBatchingEngine(model, tokenizer, config)
+
+    # -- test_concurrent_submit_no_crash ------------------------------------
+
+    def test_concurrent_submit_no_crash(self):
+        """Submit 20+ requests concurrently using threads; verify no exceptions."""
+        engine = self._make_engine(max_batch=4)
+        engine.start()
+        try:
+            num_requests = 24
+            errors = []
+            results = []
+
+            def submit_and_wait(idx):
+                try:
+                    req = engine.submit(f"concurrent prompt {idx}", max_tokens=3)
+                    result = engine.wait_for_completion(req, timeout=30.0)
+                    return result
+                except Exception as e:
+                    errors.append(e)
+                    return None
+
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                futures = [pool.submit(submit_and_wait, i) for i in range(num_requests)]
+                for f in as_completed(futures):
+                    r = f.result()
+                    if r is not None:
+                        results.append(r)
+
+            assert not errors, f"Got {len(errors)} errors: {errors}"
+            # All requests should complete
+            assert len(results) == num_requests
+            for r in results:
+                assert r.status == RequestStatus.COMPLETED
+                assert len(r.generated_tokens) > 0
+        finally:
+            engine.stop()
+
+    # -- test_queue_ordering_fifo -------------------------------------------
+
+    def test_queue_ordering_fifo(self):
+        """Verify requests are processed in FIFO order by the scheduler."""
+        config = BatchSchedulerConfig(max_batch_size=2, scheduling_policy="fcfs")
+        sched = BatchScheduler(config)
+
+        # Add 5 requests in order
+        request_ids = [f"fifo-{i}" for i in range(5)]
+        for rid in request_ids:
+            sched.add_request(InferenceRequest(request_id=rid, prompt_tokens=[1, 2, 3]))
+
+        # First batch should pick the first 2 (max_batch_size=2)
+        batch1 = sched.get_batch()
+        batch1_ids = [r.request_id for r in batch1]
+        assert batch1_ids == ["fifo-0", "fifo-1"]
+
+        # Complete them, then get next batch
+        for r in batch1:
+            sched.mark_completed(r.request_id)
+
+        batch2 = sched.get_batch()
+        batch2_ids = [r.request_id for r in batch2]
+        assert batch2_ids == ["fifo-2", "fifo-3"]
+
+        # Complete, get last
+        for r in batch2:
+            sched.mark_completed(r.request_id)
+
+        batch3 = sched.get_batch()
+        batch3_ids = [r.request_id for r in batch3]
+        assert batch3_ids == ["fifo-4"]
+
+    # -- test_batch_formation -----------------------------------------------
+
+    def test_batch_formation(self):
+        """Requests arriving within the same scheduling cycle are grouped together."""
+        config = BatchSchedulerConfig(max_batch_size=4)
+        sched = BatchScheduler(config)
+
+        # Simulate several requests arriving before the scheduler gets a batch
+        for i in range(4):
+            sched.add_request(
+                InferenceRequest(request_id=f"batch-{i}", prompt_tokens=[1] * (i + 1))
+            )
+
+        batch = sched.get_batch()
+        # All 4 should be in the same batch
+        assert len(batch) == 4
+        assert {r.request_id for r in batch} == {"batch-0", "batch-1", "batch-2", "batch-3"}
+        # All should be PREFILLING (just promoted from queue)
+        for r in batch:
+            assert r.status == RequestStatus.PREFILLING
+
+    def test_batch_formation_partial(self):
+        """When more requests arrive than max_batch_size, only max_batch_size are batched."""
+        config = BatchSchedulerConfig(max_batch_size=3)
+        sched = BatchScheduler(config)
+
+        for i in range(6):
+            sched.add_request(
+                InferenceRequest(request_id=f"partial-{i}", prompt_tokens=[1])
+            )
+
+        batch = sched.get_batch()
+        assert len(batch) == 3
+        # Remaining 3 stay in queue
+        stats = sched.get_stats()
+        assert stats["queue_depth"] == 3
+
+    # -- test_scheduler_config_validation -----------------------------------
+
+    def test_scheduler_config_validation_zero_batch_size(self):
+        """BatchSchedulerConfig with max_batch_size=0 should not crash the scheduler."""
+        config = BatchSchedulerConfig(max_batch_size=0)
+        sched = BatchScheduler(config)
+        sched.add_request(InferenceRequest(request_id="r1", prompt_tokens=[1]))
+        # With batch size 0, no requests can be scheduled
+        batch = sched.get_batch()
+        assert len(batch) == 0
+
+    def test_scheduler_config_validation_negative_batch_size(self):
+        """Negative max_batch_size should result in empty batches (no crash)."""
+        config = BatchSchedulerConfig(max_batch_size=-1)
+        sched = BatchScheduler(config)
+        sched.add_request(InferenceRequest(request_id="r1", prompt_tokens=[1]))
+        batch = sched.get_batch()
+        assert len(batch) == 0
+
+    def test_scheduler_config_validation_unknown_policy(self):
+        """Unknown scheduling policy falls back to FCFS behavior (no crash)."""
+        config = BatchSchedulerConfig(max_batch_size=4, scheduling_policy="unknown_policy")
+        sched = BatchScheduler(config)
+        for i in range(3):
+            sched.add_request(
+                InferenceRequest(request_id=f"r{i}", prompt_tokens=[1] * (10 - i))
+            )
+        batch = sched.get_batch()
+        # Should be in insertion order (FCFS) since unknown policy doesn't sort
+        assert [r.request_id for r in batch] == ["r0", "r1", "r2"]
+
+    def test_scheduler_config_validation_zero_wait_ms(self):
+        """Zero max_wait_ms is valid and shouldn't crash."""
+        config = BatchSchedulerConfig(max_wait_ms=0.0)
+        assert config.max_wait_ms == 0.0
+
+    def test_scheduler_config_validation_large_sequence_length(self):
+        """Very large sequence length should be accepted without error."""
+        config = BatchSchedulerConfig(max_sequence_length=1_000_000)
+        assert config.max_sequence_length == 1_000_000
+
+    # -- test_engine_shutdown_drains_queue -----------------------------------
+
+    def test_engine_shutdown_drains_queue(self):
+        """Pending requests should complete (or be in progress) when engine stops."""
+        engine = self._make_engine(max_batch=4)
+        engine.start()
+        try:
+            requests = [engine.submit(f"drain-{i}", max_tokens=3) for i in range(6)]
+            # Wait for all requests to complete before stopping
+            for r in requests:
+                engine.wait_for_completion(r, timeout=30.0)
+
+            completed = [r for r in requests if r.status == RequestStatus.COMPLETED]
+            assert len(completed) == 6
+        finally:
+            engine.stop()
+
+        # After stop, all should be completed
+        for r in requests:
+            assert r.status == RequestStatus.COMPLETED
+            assert len(r.generated_tokens) > 0
+
+    def test_engine_stop_is_safe_when_idle(self):
+        """Stopping an idle engine should not hang or raise."""
+        engine = self._make_engine()
+        engine.start()
+        time.sleep(0.05)  # let the loop spin a few times
+        engine.stop()
+        assert not engine._running
+
+    def test_engine_stop_without_start(self):
+        """Calling stop without start should be a no-op."""
+        engine = self._make_engine()
+        engine.stop()  # should not raise
+        assert not engine._running
+
+    # -- test_engine_handles_slow_model -------------------------------------
+
+    def test_engine_handles_slow_model(self):
+        """Mock a slow model (adds delay per forward pass); verify timeout behavior."""
+        call_count = [0]
+
+        class SlowModel(MockModel):
+            def __call__(self, token_ids, **kwargs):
+                call_count[0] += 1
+                time.sleep(0.05)  # 50ms per forward pass
+                return super().__call__(token_ids, **kwargs)
+
+        model = SlowModel(vocab_size=32)
+        tokenizer = _make_tokenizer(vocab_size=32)
+        config = BatchSchedulerConfig(max_batch_size=4, prefill_chunk_size=64)
+
+        engine = ContinuousBatchingEngine(model, tokenizer, config)
+        engine.start()
+        try:
+            # Short timeout should still work because max_tokens is small
+            req = engine.submit("slow model test", max_tokens=2)
+            result = engine.wait_for_completion(req, timeout=10.0)
+            assert result.status == RequestStatus.COMPLETED
+            assert len(result.generated_tokens) > 0
+            assert call_count[0] > 0  # model was actually called
+        finally:
+            engine.stop()
+
+    def test_engine_slow_model_timeout(self):
+        """With a very slow model and a very short timeout, wait should time out."""
+
+        class VerySlowModel(MockModel):
+            def __call__(self, token_ids, **kwargs):
+                time.sleep(2.0)  # 2 seconds per forward pass
+                return mx.zeros((token_ids.shape[0], token_ids.shape[1], 32))
+
+        model = VerySlowModel(vocab_size=32)
+        tokenizer = _make_tokenizer(vocab_size=32)
+        config = BatchSchedulerConfig(max_batch_size=4, prefill_chunk_size=64)
+
+        engine = ContinuousBatchingEngine(model, tokenizer, config)
+        engine.start()
+        try:
+            req = engine.submit("timeout test", max_tokens=10)
+            # Very short timeout -- the request won't finish in time
+            result = engine.wait_for_completion(req, timeout=0.1)
+            # The request should NOT be completed (still generating or prefilling)
+            assert result.status != RequestStatus.COMPLETED
+        finally:
+            engine.stop()
+
+    # -- additional concurrency edge cases ----------------------------------
+
+    def test_concurrent_submit_and_cancel(self):
+        """Submit and cancel requests concurrently without crashes."""
+        engine = self._make_engine(max_batch=4)
+        engine.start()
+        try:
+            errors = []
+
+            def submit_work(idx):
+                try:
+                    req = engine.submit(f"cancel-test-{idx}", max_tokens=3)
+                    if idx % 2 == 0:
+                        # Cancel even-numbered requests
+                        engine.cancel(req.request_id)
+                    else:
+                        engine.wait_for_completion(req, timeout=15.0)
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=submit_work, args=(i,)) for i in range(16)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=30.0)
+
+            assert not errors, f"Got errors: {errors}"
+        finally:
+            engine.stop()
+
+    def test_rapid_start_stop_cycles(self):
+        """Rapidly starting and stopping the engine should not crash."""
+        engine = self._make_engine()
+        for _ in range(5):
+            engine.start()
+            engine.submit("cycle test", max_tokens=1)
+            engine.stop()
+        assert not engine._running
+
+    def test_kv_pool_reclaimed_under_load(self):
+        """KV pool slots are properly reclaimed when processing many requests."""
+        engine = self._make_engine(max_batch=2)
+        engine.start()
+        try:
+            # Submit more requests than pool slots, sequentially
+            for i in range(8):
+                req = engine.submit(f"reclaim-{i}", max_tokens=2)
+                engine.wait_for_completion(req, timeout=15.0)
+                assert req.status == RequestStatus.COMPLETED
+
+            # All slots should be free after all requests complete
+            assert engine.kv_pool.num_free_slots == 2
+        finally:
+            engine.stop()

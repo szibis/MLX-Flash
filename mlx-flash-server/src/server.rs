@@ -70,6 +70,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/models/registry", get(handle_model_registry))
         .route("/v1/models/registry/cleanup", axum::routing::post(handle_model_cleanup))
         .route("/v1/models/profile", axum::routing::post(handle_model_profile))
+        .route("/v1/models/profile/batch", axum::routing::post(handle_model_profile_batch))
+        .route("/v1/models/profile/list", get(handle_model_profile_list))
         .route("/v1/config", get(handle_config_get).post(handle_config_set))
         .with_state(state)
         .layer(cors)
@@ -909,6 +911,71 @@ async fn handle_model_profile(
         Err(e) => axum::Json(json!({
             "error": format!("Python worker unreachable: {e}"),
             "hint": "Ensure a Python worker is running. Use GET /v1/models/registry to list models without profiling.",
+        })),
+    }
+}
+
+async fn handle_model_profile_batch(
+    State(state): State<AppState>,
+    body: axum::body::Bytes,
+) -> axum::Json<Value> {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    let parsed: Value = serde_json::from_slice(&body).unwrap_or(json!({}));
+
+    // Forward to first healthy Python worker's /profile/batch endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(1800)) // batch profiling can be very slow
+        .build()
+        .unwrap();
+
+    let worker = match state.pool.next_worker() {
+        Some(w) => w,
+        None => return axum::Json(json!({"error": "No healthy workers available"})),
+    };
+    let url = format!("http://127.0.0.1:{}/profile/batch", worker.port);
+
+    match client.post(&url).json(&parsed).send().await {
+        Ok(resp) => {
+            if let Ok(result) = resp.json::<Value>().await {
+                axum::Json(result)
+            } else {
+                axum::Json(json!({"error": "Invalid response from Python worker"}))
+            }
+        }
+        Err(e) => axum::Json(json!({
+            "error": format!("Python worker unreachable: {e}"),
+            "hint": "Ensure a Python worker is running.",
+        })),
+    }
+}
+
+async fn handle_model_profile_list(State(state): State<AppState>) -> axum::Json<Value> {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
+
+    // Forward to first healthy Python worker's /profile/models endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    let worker = match state.pool.next_worker() {
+        Some(w) => w,
+        None => return axum::Json(json!({"error": "No healthy workers available"})),
+    };
+    let url = format!("http://127.0.0.1:{}/profile/models", worker.port);
+
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            if let Ok(result) = resp.json::<Value>().await {
+                axum::Json(result)
+            } else {
+                axum::Json(json!({"error": "Invalid response from Python worker"}))
+            }
+        }
+        Err(e) => axum::Json(json!({
+            "error": format!("Python worker unreachable: {e}"),
+            "hint": "Ensure a Python worker is running.",
         })),
     }
 }
