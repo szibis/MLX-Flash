@@ -60,6 +60,7 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """HTTP server that handles each request in a new thread."""
 
     daemon_threads = True
+    allow_reuse_address = True
 
 
 class InferenceState:
