@@ -366,47 +366,25 @@ class LayerOffloader:
         return weights
 
     def _load_layer_weights(self, layer_idx: int) -> Optional[dict]:
-        """Load raw weight tensors for a layer from safetensors."""
+        """Load raw weight tensors for a layer from safetensors.
+
+        Uses mx.load which handles quantized dtypes (4-bit packed weights)
+        natively, unlike manual numpy parsing.
+        """
         if layer_idx not in self._layer_index:
             return None
 
         info = self._layer_index[layer_idx]
         shard_path = info["shard"]
-        result = {}
+        layer_keys = set(info["keys"])
 
         try:
-            with open(shard_path, "rb") as f:
-                header_size = struct.unpack("<Q", f.read(8))[0]
-                header_bytes = f.read(header_size)
-                data_start = 8 + header_size
-
-            header = json.loads(header_bytes)
-            _NP_DTYPES = {"F16": np.float16, "BF16": np.float16, "F32": np.float32, "I32": np.int32, "U8": np.uint8}
-
-            import mmap
-
-            with open(shard_path, "rb") as f:
-                mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-
-                for key in info["keys"]:
-                    tensor_info = header[key]
-                    offsets = tensor_info.get("data_offsets", [0, 0])
-                    shape = tensor_info.get("shape", [])
-                    dtype_str = tensor_info.get("dtype", "F16")
-                    np_dtype = _NP_DTYPES.get(dtype_str, np.float16)
-
-                    offset = data_start + offsets[0]
-                    size = offsets[1] - offsets[0]
-                    raw = mm[offset : offset + size]
-                    arr = np.frombuffer(raw, dtype=np_dtype).reshape(shape)
-                    result[key] = mx.array(arr)
-
-                mm.close()
-
-        except (OSError, json.JSONDecodeError, struct.error):
+            all_weights = mx.load(shard_path)
+            result = {k: v for k, v in all_weights.items() if k in layer_keys}
+        except (OSError, ValueError):
             return None
 
-        return result
+        return result if result else None
 
     def evict_layer(self, layer_idx: int):
         """Release a layer's memory."""
@@ -470,16 +448,28 @@ class LayerOffloader:
         head_fn = None
         norm_fn = None
 
-        if hasattr(model, "model") and hasattr(model.model, "layers"):
+        # Qwen3.6 / Gemma-4: model.language_model.model.{layers,embed_tokens,norm}
+        if hasattr(model, "language_model") and hasattr(model.language_model, "model"):
+            inner = model.language_model.model
+            if hasattr(inner, "layers"):
+                model_layers = inner.layers
+                embed_fn = getattr(inner, "embed_tokens", None)
+                norm_fn = getattr(inner, "norm", None)
+                head_fn = getattr(model.language_model, "lm_head", None)
+        # Llama / Qwen3: model.model.{layers,embed_tokens,norm}
+        if model_layers is None and hasattr(model, "model") and hasattr(model.model, "layers"):
             model_layers = model.model.layers
             embed_fn = getattr(model.model, "embed_tokens", None)
             norm_fn = getattr(model.model, "norm", None)
             head_fn = getattr(model, "lm_head", None)
-        elif hasattr(model, "layers"):
+        elif model_layers is None and hasattr(model, "layers"):
             model_layers = model.layers
             embed_fn = getattr(model, "embed_tokens", None)
             norm_fn = getattr(model, "norm", None)
             head_fn = getattr(model, "lm_head", None)
+
+        if head_fn is None and embed_fn is not None and hasattr(embed_fn, "as_linear"):
+            head_fn = embed_fn.as_linear
 
         if model_layers is None:
             return model(input_ids)

@@ -237,8 +237,21 @@ class DFlashDraftModel(nn.Module):
 
     @classmethod
     def from_pretrained(cls, model_dir: str) -> tuple["DFlashDraftModel", "DFlashModelConfig"]:
-        """Load pre-trained drafter from a directory with config.json + model.safetensors."""
+        """Load pre-trained drafter from a directory with config.json + model.safetensors.
+
+        Accepts either a local path or a HuggingFace model ID (e.g. 'z-lab/Qwen3.6-35B-A3B-DFlash').
+        """
         model_path = Path(model_dir)
+        if not (model_path / "config.json").exists():
+            from huggingface_hub import snapshot_download
+
+            model_path = Path(
+                snapshot_download(
+                    model_dir,
+                    allow_patterns=["config.json", "*.safetensors"],
+                )
+            )
+
         config = DFlashModelConfig.from_json(str(model_path / "config.json"))
         model = cls(config)
 
