@@ -45,7 +45,7 @@ def create_synthetic_experts(
     num_layers: int = 8,
     num_experts: int = 64,
     expert_size_bytes: int = 256 * 1024,  # 256KB per expert (small for testing)
-    dtype: np.dtype = np.float16,
+    dtype: type = np.float16,
     quantized: bool = True,
 ) -> Path:
     """Create synthetic expert weight files on disk.
@@ -130,8 +130,8 @@ def _generate_quantized_expert(rng: np.random.Generator, size_bytes: int) -> byt
         archetypes.append(packed)
 
     # Small pool of scale/min metadata (real models reuse these heavily)
-    scale_pool = np.float16(rng.uniform(0.001, 0.03, size=32))
-    min_pool = np.float16(rng.uniform(-0.02, 0.0, size=32))
+    scale_pool = np.array(rng.uniform(0.001, 0.03, size=32), dtype=np.float16)
+    min_pool = np.array(rng.uniform(-0.02, 0.0, size=32), dtype=np.float16)
 
     parts = []
     for b in range(num_blocks):
@@ -213,7 +213,7 @@ def benchmark_compression_ratios(
     num_samples: int = 16,
 ) -> list[CompressionBenchResult]:
     """Measure compression ratio and speed on actual expert weight data."""
-    results = []
+    results: list[CompressionBenchResult] = []
     lz4 = LZ4Compressor()
     zstd_low = ZSTDCompressor(level=1)
     zstd_mid = ZSTDCompressor(level=3)
@@ -235,7 +235,7 @@ def benchmark_compression_ratios(
         print("  WARNING: No expert files found for compression benchmark")
         return results
 
-    compressors = [
+    compressors: list[tuple[str, LZ4Compressor | ZSTDCompressor]] = [
         ("LZ4", lz4),
         ("ZSTD-1", zstd_low),
         ("ZSTD-3", zstd_mid),
@@ -368,7 +368,7 @@ def benchmark_cache_mode(
     num_workers: int = 4,
     enable_hot: bool = True,
     enable_warm: bool = True,
-    expert_dtype: np.dtype = np.float16,
+    expert_dtype: type = np.float16,
     bypass_os_cache: bool = False,
     hot_algo: str = "lz4",
     ssd_latency_ms: float = 0.0,
@@ -458,7 +458,7 @@ def benchmark_pure_mlx(
 
     print(f"  Loading model: {model_name}")
     t_load = time.monotonic()
-    model, tokenizer = load(model_name)
+    model, tokenizer = load(model_name)  # type: ignore[misc]
     load_time = time.monotonic() - t_load
     print(f"  Model loaded in {load_time:.1f}s")
 
@@ -538,7 +538,7 @@ def run_synthetic_benchmarks(args) -> dict:
     """Run all synthetic benchmarks (no model needed)."""
     work_dir = args.work_dir
 
-    results = {"synthetic": {}}
+    results: dict[str, dict] = {"synthetic": {}}
 
     # Step 1: Create synthetic experts (quantized = compressible)
     print_separator("1. Creating Synthetic Expert Weights")
@@ -556,19 +556,19 @@ def run_synthetic_benchmarks(args) -> dict:
     # Step 2: Compression ratios
     print_separator("2. Compression Ratio Benchmark")
     comp_results = benchmark_compression_ratios(expert_dir, num_samples=min(32, args.experts))
-    results["synthetic"]["compression"] = [asdict(r) for r in comp_results]
+    results["synthetic"]["compression"] = [asdict(cr) for cr in comp_results]
 
     headers = ["Algorithm", "Ratio", "Compress MB/s", "Decompress MB/s", "Compress ms", "Decompress ms"]
     rows = []
-    for r in comp_results:
+    for cr in comp_results:
         rows.append(
             [
-                r.algo,
-                f"{r.ratio:.2f}x",
-                f"{r.compress_speed_mbs:.0f}",
-                f"{r.decompress_speed_mbs:.0f}",
-                f"{r.compress_time_ms:.1f}",
-                f"{r.decompress_time_ms:.1f}",
+                cr.algo,
+                f"{cr.ratio:.2f}x",
+                f"{cr.compress_speed_mbs:.0f}",
+                f"{cr.decompress_speed_mbs:.0f}",
+                f"{cr.compress_time_ms:.1f}",
+                f"{cr.decompress_time_ms:.1f}",
             ]
         )
     print_table(headers, rows)
@@ -590,7 +590,7 @@ def run_synthetic_benchmarks(args) -> dict:
         ("tiered_lzfse+zstd", True, True, "lzfse", "Tiered (LZFSE hot + ZSTD warm)"),
     ]
 
-    cache_results = []
+    cache_results: list[CacheBenchResult] = []
     for mode_name, hot, warm, hot_algo, description in cache_configs:
         print(f"  Running: {description}...")
         result = benchmark_cache_mode(
@@ -689,7 +689,7 @@ def run_synthetic_benchmarks(args) -> dict:
         ("Tiered (sim)", True, True, "lz4", "Tiered LZ4+ZSTD + simulated SSD"),
     ]
 
-    sim_results = []
+    sim_results: list[CacheBenchResult] = []
     for mode_name, hot, warm, hot_algo, description in sim_configs:
         print(f"  Running: {description}...")
         result = benchmark_cache_mode(
@@ -745,7 +745,7 @@ def run_synthetic_benchmarks(args) -> dict:
 
 def run_model_benchmarks(args) -> dict:
     """Run benchmarks with a real MLX MoE model."""
-    results = {"model": {}}
+    results: dict[str, dict] = {"model": {}}
 
     print_separator("1. Pure MLX Baseline")
     mlx_result = benchmark_pure_mlx(
