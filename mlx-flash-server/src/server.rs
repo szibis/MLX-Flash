@@ -66,8 +66,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/shutdown", axum::routing::post(handle_shutdown))
         .route("/workers/restart", axum::routing::post(handle_workers_restart))
         .route("/gpu", get(handle_gpu))
+        .route("/telemetry", get(handle_telemetry))
+        .route("/telemetry/current", get(handle_telemetry_current))
         .route("/commands", get(handle_commands_list))
         .route("/commands/run", axum::routing::post(handle_command_run))
+        .route("/switch/progress", get(handle_switch_progress))
         .route("/v1/models/registry", get(handle_model_registry))
         .route("/v1/models/registry/cleanup", axum::routing::post(handle_model_cleanup))
         .route("/v1/models/profile", axum::routing::post(handle_model_profile))
@@ -169,6 +172,62 @@ fn extract_ioreg_int(line: &str, key: &str) -> Option<u64> {
     } else {
         None
     }
+}
+
+async fn handle_telemetry(State(state): State<AppState>) -> axum::Json<Value> {
+    // Proxy to first healthy Python worker's /telemetry endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/telemetry");
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(body) = resp.json::<Value>().await {
+                return axum::Json(body);
+            }
+        }
+    }
+
+    axum::Json(json!({"error": "No healthy worker available for telemetry"}))
+}
+
+async fn handle_telemetry_current(State(state): State<AppState>) -> axum::Json<Value> {
+    // Proxy to first healthy Python worker's /telemetry/current endpoint
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/telemetry/current");
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(body) = resp.json::<Value>().await {
+                return axum::Json(body);
+            }
+        }
+    }
+
+    axum::Json(json!({"error": "No healthy worker available for telemetry"}))
+}
+
+async fn handle_switch_progress(State(state): State<AppState>) -> axum::Json<Value> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .unwrap();
+
+    for port in state.pool.ports() {
+        let url = format!("http://127.0.0.1:{port}/switch/progress");
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(body) = resp.json::<Value>().await {
+                return axum::Json(body);
+            }
+        }
+    }
+
+    axum::Json(json!({"switching": false, "error": "No worker available"}))
 }
 
 async fn handle_release(State(state): State<AppState>) -> axum::Json<Value> {
@@ -770,6 +829,26 @@ async fn handle_model_registry(State(state): State<AppState>) -> axum::Json<Valu
         &std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()),
     );
 
+    // Detect system RAM for model fit filtering
+    let total_ram_gb = {
+        let mut size: u64 = 0;
+        let mut len = std::mem::size_of::<u64>();
+        let mib = [libc::CTL_HW, libc::HW_MEMSIZE];
+        unsafe {
+            libc::sysctl(
+                mib.as_ptr() as *mut _,
+                2,
+                &mut size as *mut _ as *mut _,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            );
+        }
+        size as f64 / 1073741824.0
+    };
+    // Usable budget: ~75% of RAM (OS + other apps take ~25%)
+    let usable_gb = total_ram_gb * 0.75;
+
     let mut models = Vec::new();
     if let Some(model_list) = registry["models"].as_array() {
         for m in model_list {
@@ -783,12 +862,23 @@ async fn handle_model_registry(State(state): State<AppState>) -> axum::Json<Valu
                 m["size_gb_approx"].as_f64().unwrap_or(0.0)
             };
 
+            if m["skip"].as_bool().unwrap_or(false) {
+                continue;
+            }
+
+            let category = m["category_expected"].as_str().unwrap_or("unknown");
+            let is_moe = category.contains("moe");
+            // Dense models must fit in usable RAM; MoE models can use expert streaming
+            let fits_ram = if is_moe { true } else { size_gb <= usable_gb };
+
             models.push(json!({
                 "id": model_id,
-                "category_expected": m["category_expected"].as_str().unwrap_or("unknown"),
+                "category_expected": category,
                 "size_gb": (size_gb * 10.0).round() / 10.0,
+                "size_gb_approx": m["size_gb_approx"].as_f64().unwrap_or(0.0),
                 "cached": cached,
-                "skip": m["skip"].as_bool().unwrap_or(false),
+                "fits_ram": fits_ram,
+                "is_moe": is_moe,
                 "notes": m["notes"].as_str().unwrap_or(""),
                 "drafter": m["drafter"].as_str(),
             }));
@@ -800,6 +890,8 @@ async fn handle_model_registry(State(state): State<AppState>) -> axum::Json<Valu
         "cache_dir": cache_dir_expanded,
         "total_models": models.len(),
         "cached_models": models.iter().filter(|m| m["cached"].as_bool().unwrap_or(false)).count(),
+        "system_ram_gb": (total_ram_gb * 10.0).round() / 10.0,
+        "usable_ram_gb": (usable_gb * 10.0).round() / 10.0,
     }))
 }
 

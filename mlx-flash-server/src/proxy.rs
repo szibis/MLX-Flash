@@ -1,9 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use axum::extract::State;
-use axum::response::{IntoResponse, Response};
-use axum::response::sse::{Event, KeepAlive, Sse};
-use tokio_stream::StreamExt;
+use axum::response::Response;
 
 use crate::server::AppState;
 
@@ -107,22 +105,17 @@ pub async fn handle_chat(
         }
         Ok(upstream) => {
             if streaming {
+                // Pass through raw SSE bytes from Python — it already sends
+                // properly formatted "data: {...}\n\n" lines
                 let byte_stream = upstream.bytes_stream();
-                let event_stream = byte_stream.map(|chunk| {
-                    chunk
-                        .map(|bytes| {
-                            Event::default().data(
-                                String::from_utf8_lossy(&bytes)
-                                    .trim_end()
-                                    .to_string(),
-                            )
-                        })
-                        .map_err(|e| format!("stream error: {e}"))
-                });
-
-                Sse::new(event_stream)
-                    .keep_alive(KeepAlive::default())
-                    .into_response()
+                let body = axum::body::Body::from_stream(byte_stream);
+                axum::response::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "text/event-stream")
+                    .header("Cache-Control", "no-cache")
+                    .header("Connection", "keep-alive")
+                    .body(body)
+                    .unwrap()
             } else {
                 let status = upstream.status();
                 let bytes = match upstream.bytes().await {

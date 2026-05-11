@@ -26,9 +26,10 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   .header .status { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--dim); }
   .header .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-  .header .nav { display: flex; gap: 8px; }
+  .header .nav { display: flex; gap: 8px; flex-wrap: wrap; }
   .header .nav a { color: var(--dim); text-decoration: none; font-size: 0.8rem; padding: 4px 10px; border-radius: 6px; transition: all 0.15s; }
   .header .nav a:hover { color: var(--text); background: rgba(77,166,255,0.1); }
+  .header .nav a.nav-active { background: rgba(77,166,255,0.15); color: var(--accent); }
   .header .uptime { margin-left: auto; font-size: 0.8rem; color: var(--dim); font-variant-numeric: tabular-nums; }
 
   .container { padding: 20px 32px; }
@@ -97,7 +98,18 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 <div class="header">
   <h1>MLX-Flash</h1>
   <div class="status"><div class="dot"></div> Live</div>
-  <div class="nav"><a href="/admin">Dashboard</a><a href="/chat">Chat</a><a href="/metrics">Metrics</a></div>
+  <div class="nav">
+    <a href="/admin" class="nav-active">Dashboard</a>
+    <a href="/chat">Chat</a>
+    <a href="/metrics">Prometheus</a>
+    <a href="/status" target="_blank">Status JSON</a>
+    <a href="/gpu" target="_blank">GPU</a>
+    <a href="/telemetry" target="_blank">Telemetry</a>
+    <a href="/cache/stats" target="_blank">Cache</a>
+    <a href="/workers" target="_blank">Workers</a>
+    <a href="/v1/models/registry" target="_blank">Models</a>
+    <a href="/logs/recent" target="_blank">Logs JSON</a>
+  </div>
   <div class="uptime" id="uptime">0:00</div>
 </div>
 
@@ -169,7 +181,10 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
   <div class="card span3">
     <div class="card-label">Workers <span id="worker-summary" style="float:right;color:var(--green)"></span></div>
     <div id="workers"></div>
-    <div class="card-sub" style="margin-top:8px">Sessions: <span id="sessions">0</span> | Strategy: least-connections + cache-affinity</div>
+    <div class="card-sub" style="margin-top:8px">
+      Sessions: <span id="sessions">0</span> | Strategy: <span id="worker-strategy">least-connections + cache-affinity</span>
+    </div>
+    <div class="card-sub" style="margin-top:4px" id="worker-sessions-detail"></div>
     <div class="action-bar">
       <button class="btn" onclick="apiAction('/reload','POST')">Reload All</button>
       <button class="btn" onclick="apiAction('/workers/restart','POST')">Restart Unhealthy</button>
@@ -179,11 +194,17 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 
   <!-- Row 4: GPU + Hints + Cache -->
   <div class="card span2">
-    <div class="card-label">GPU (Metal)</div>
+    <div class="card-label">GPU (Metal) + Telemetry</div>
     <div class="card-value" id="gpu-util"><span class="accent">--%</span></div>
     <div class="bar"><div class="bar-fill bg-accent" id="gpu-bar" style="width:0%"></div></div>
     <div class="card-sub"><span id="gpu-mem">--</span> GB used</div>
     <div class="card-sub" style="margin-top:4px"><span id="gpu-renderer">--</span>% renderer / <span id="gpu-tiler">--</span>% tiler</div>
+    <div class="card-sub" style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px">
+      Power: <span id="gpu-power" class="yellow">--</span> W | ANE: <span id="gpu-ane" class="accent">--%</span>
+    </div>
+    <div class="card-sub" style="margin-top:4px">
+      CPU Temp: <span id="gpu-cpu-temp" class="green">--</span>&deg;C | GPU Temp: <span id="gpu-gpu-temp" class="green">--</span>&deg;C
+    </div>
   </div>
   <div class="card span2">
     <div class="card-label">Optimization Hints</div>
@@ -200,10 +221,63 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
     </div>
   </div>
 
-  <!-- Row 5: Live Logs -->
+  <!-- Row 5: Telemetry Charts (Power + Temperature) -->
+  <div class="card span3">
+    <div class="chart-wrap">
+      <div class="chart-label">Power (W)</div>
+      <div class="chart-value yellow" id="power-chart-val">0 W</div>
+      <canvas id="power-chart"></canvas>
+    </div>
+  </div>
+  <div class="card span3">
+    <div class="chart-wrap">
+      <div class="chart-label">Temperature (&deg;C)</div>
+      <div class="chart-value" id="temp-chart-val"><span class="green">-- &deg;C</span></div>
+      <canvas id="temp-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Row 6: Live Logs -->
   <div class="card span6">
     <div class="card-label">Live Logs <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">last 100 entries</span></div>
     <div class="log-panel" id="log-panel"></div>
+  </div>
+
+  <!-- Row 7: API Endpoints -->
+  <div class="card span6">
+    <div class="card-label">API Endpoints</div>
+    <div style="display:flex;flex-wrap:wrap;gap:16px;font-size:0.82rem;line-height:1.8">
+      <div>
+        <strong style="color:var(--accent);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px">Core</strong><br>
+        <a href="/status" target="_blank" style="color:var(--text);text-decoration:none">/status</a>
+        <a href="/health" target="_blank" style="color:var(--text);text-decoration:none;margin-left:8px">/health</a>
+        <a href="/hints" target="_blank" style="color:var(--text);text-decoration:none;margin-left:8px">/hints</a>
+      </div>
+      <div>
+        <strong style="color:var(--accent);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px">Chat</strong><br>
+        <a href="/v1/chat/completions" target="_blank" style="color:var(--text);text-decoration:none">/v1/chat/completions</a>
+        <a href="/v1/models" target="_blank" style="color:var(--text);text-decoration:none;margin-left:8px">/v1/models</a>
+      </div>
+      <div>
+        <strong style="color:var(--accent);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px">Cache</strong><br>
+        <a href="/cache/stats" target="_blank" style="color:var(--text);text-decoration:none">/cache/stats</a>
+      </div>
+      <div>
+        <strong style="color:var(--accent);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px">Workers</strong><br>
+        <a href="/workers" target="_blank" style="color:var(--text);text-decoration:none">/workers</a>
+      </div>
+      <div>
+        <strong style="color:var(--accent);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px">Telemetry</strong><br>
+        <a href="/telemetry" target="_blank" style="color:var(--text);text-decoration:none">/telemetry</a>
+        <a href="/gpu" target="_blank" style="color:var(--text);text-decoration:none;margin-left:8px">/gpu</a>
+      </div>
+      <div>
+        <strong style="color:var(--accent);font-size:0.72rem;text-transform:uppercase;letter-spacing:0.5px">Admin</strong><br>
+        <a href="/metrics" target="_blank" style="color:var(--text);text-decoration:none">/metrics</a>
+        <a href="/logs/recent" target="_blank" style="color:var(--text);text-decoration:none;margin-left:8px">/logs/recent</a>
+        <a href="/v1/config" target="_blank" style="color:var(--text);text-decoration:none;margin-left:8px">/v1/config</a>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -212,16 +286,22 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 <script>
 const MAX = 120;
 // Restore chart history from localStorage (survives page reload)
-let memH = [], tpsH = [], rpsH = [];
+let memH = [], tpsH = [], rpsH = [], powerH = [], cpuTempH = [], gpuTempH = [];
 try {
   memH = JSON.parse(localStorage.getItem('mlx-dash-memH') || '[]');
   tpsH = JSON.parse(localStorage.getItem('mlx-dash-tpsH') || '[]');
+  powerH = JSON.parse(localStorage.getItem('mlx-dash-powerH') || '[]');
+  cpuTempH = JSON.parse(localStorage.getItem('mlx-dash-cpuTempH') || '[]');
+  gpuTempH = JSON.parse(localStorage.getItem('mlx-dash-gpuTempH') || '[]');
 } catch(e) {}
 let lastTok = 0, lastReq = 0, lastT = Date.now();
 function saveCharts() {
   try {
     localStorage.setItem('mlx-dash-memH', JSON.stringify(memH.slice(-MAX)));
     localStorage.setItem('mlx-dash-tpsH', JSON.stringify(tpsH.slice(-MAX)));
+    localStorage.setItem('mlx-dash-powerH', JSON.stringify(powerH.slice(-MAX)));
+    localStorage.setItem('mlx-dash-cpuTempH', JSON.stringify(cpuTempH.slice(-MAX)));
+    localStorage.setItem('mlx-dash-gpuTempH', JSON.stringify(gpuTempH.slice(-MAX)));
   } catch(e) {}
 }
 
@@ -253,6 +333,30 @@ function drawChart(canvas, data, color, gradAlpha) {
   ctx.fillStyle = color; ctx.fill();
 }
 
+function drawMultiChart(canvas, datasets, maxVal) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr; canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+  const max = maxVal || Math.max(...datasets.flatMap(d => d.data), 1) * 1.15;
+  // Grid lines
+  ctx.strokeStyle = 'rgba(92,106,122,0.12)'; ctx.lineWidth = 1;
+  for (let i = 1; i < 4; i++) { const y = h * i / 4; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+  datasets.forEach(({data, color}) => {
+    if (data.length < 2) return;
+    const pts = data.map((v, i) => [i / (MAX - 1) * w, h - (v / max) * (h - 50) - 4]);
+    ctx.beginPath(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    pts.forEach((p, i) => i === 0 ? ctx.moveTo(p[0], p[1]) : ctx.lineTo(p[0], p[1]));
+    ctx.stroke();
+    const last = pts[pts.length - 1];
+    ctx.beginPath(); ctx.arc(last[0], last[1], 3, 0, Math.PI * 2);
+    ctx.fillStyle = color; ctx.fill();
+  });
+}
+function tempColor(c) { return c > 85 ? 'red' : c > 70 ? 'yellow' : 'green'; }
 function pressureColor(pct) { return pct > 90 ? 'red' : pct > 70 ? 'yellow' : 'green'; }
 function pressureBg(pct) { return pct > 90 ? 'bg-red' : pct > 70 ? 'bg-yellow' : 'bg-green'; }
 function fmtTime(s) { const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60); return h > 0 ? h+'h '+m+'m' : m > 0 ? m+'m '+sec+'s' : sec+'s'; }
@@ -295,11 +399,27 @@ function renderWorkers(wdata) {
       + '</div>';
   }).join('');
   document.getElementById('worker-summary').textContent = wdata.healthy_count + '/' + wdata.total_count + ' healthy';
-  // Show sessions
+  // Show sessions and strategy
+  if (wdata.strategy) {
+    document.getElementById('worker-strategy').textContent = wdata.strategy;
+  }
   if (wdata.sessions && wdata.sessions.length > 0) {
-    document.getElementById('sessions').textContent = wdata.sessions_active + ' (' + wdata.sessions.map(s => s.session_id.substring(0,8)+'→:'+s.worker_port).join(', ') + ')';
+    document.getElementById('sessions').textContent = wdata.sessions_active || wdata.sessions.length;
+    // Build per-worker session detail
+    const perWorker = {};
+    wdata.sessions.forEach(s => {
+      const port = s.worker_port || 'unknown';
+      if (!perWorker[port]) perWorker[port] = [];
+      perWorker[port].push(s.session_id ? s.session_id.substring(0,8) : '?');
+    });
+    const detailParts = Object.entries(perWorker).map(([port, ids]) =>
+      ':' + port + ' [' + ids.join(', ') + ']'
+    );
+    document.getElementById('worker-sessions-detail').innerHTML =
+      '<span style="color:var(--dim);font-size:0.72rem">Session pins: ' + detailParts.join(' | ') + '</span>';
   } else {
     document.getElementById('sessions').textContent = wdata.sessions_active || '0';
+    document.getElementById('worker-sessions-detail').innerHTML = '';
   }
 }
 
@@ -364,12 +484,13 @@ async function fetchWorkerPyStatus(ports) {
 
 async function poll() {
   try {
-    const [st, cache, workers, logs, gpu] = await Promise.all([
+    const [st, cache, workers, logs, gpu, telem] = await Promise.all([
       fetch('/status').then(r=>r.json()),
       fetch('/cache/stats').then(r=>r.json()).catch(()=>null),
       fetch('/workers').then(r=>r.json()).catch(()=>null),
       fetch('/logs/recent').then(r=>r.json()).catch(()=>null),
       fetch('/gpu').then(r=>r.json()).catch(()=>null),
+      fetch('/telemetry/current').then(r=>r.json()).catch(()=>null),
     ]);
     const mem = st.memory || {}, stats = st.stats || {};
 
@@ -469,11 +590,42 @@ async function poll() {
       document.getElementById('gpu-tiler').textContent = gpu.tiler_utilization_pct || 0;
     }
 
+    // Telemetry (power, thermal, ANE)
+    let curPower = 0, curCpuTemp = 0, curGpuTemp = 0, curAne = 0;
+    if (telem && !telem.error) {
+      curPower = telem.power_watts || 0;
+      curCpuTemp = telem.cpu_temp_c || 0;
+      curGpuTemp = telem.gpu_temp_c || 0;
+      curAne = telem.ane_util_pct || 0;
+      document.getElementById('gpu-power').textContent = curPower.toFixed(1);
+      document.getElementById('gpu-ane').textContent = curAne.toFixed(0) + '%';
+      // Color-code temperature inline in the GPU card
+      const cpuTempEl = document.getElementById('gpu-cpu-temp');
+      const gpuTempEl = document.getElementById('gpu-gpu-temp');
+      cpuTempEl.textContent = curCpuTemp.toFixed(0);
+      gpuTempEl.textContent = curGpuTemp.toFixed(0);
+      cpuTempEl.className = tempColor(curCpuTemp);
+      gpuTempEl.className = tempColor(curGpuTemp);
+      // Color-code temperature display in chart
+      const maxTemp = Math.max(curCpuTemp, curGpuTemp);
+      const tc = tempColor(maxTemp);
+      document.getElementById('temp-chart-val').innerHTML = '<span class="'+tc+'">CPU '+curCpuTemp.toFixed(0)+'&deg; / GPU '+curGpuTemp.toFixed(0)+'&deg;C</span>';
+      document.getElementById('power-chart-val').textContent = curPower.toFixed(1) + ' W';
+    }
+
     // Charts
     memH.push(pct); if (memH.length > MAX) memH.shift();
     tpsH.push(tps); if (tpsH.length > MAX) tpsH.shift();
+    powerH.push(curPower); if (powerH.length > MAX) powerH.shift();
+    cpuTempH.push(curCpuTemp); if (cpuTempH.length > MAX) cpuTempH.shift();
+    gpuTempH.push(curGpuTemp); if (gpuTempH.length > MAX) gpuTempH.shift();
     drawChart(document.getElementById('mem-chart'), memH, 'rgb(77,166,255)', 0.15);
     drawChart(document.getElementById('tps-chart'), tpsH, 'rgb(45,212,168)', 0.15);
+    drawChart(document.getElementById('power-chart'), powerH, 'rgb(251,191,36)', 0.15);
+    drawMultiChart(document.getElementById('temp-chart'), [
+      {data: cpuTempH, color: 'rgb(249,115,22)'},
+      {data: gpuTempH, color: 'rgb(239,68,68)'},
+    ], 110);
     saveCharts();
   } catch(e) {}
 }

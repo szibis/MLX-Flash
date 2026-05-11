@@ -334,7 +334,7 @@ def create_kv_cache(
 
     Args:
         strategy: One of ``"plain"``, ``"streaming"``, ``"quantized"``,
-            or ``"hybrid"``.
+            ``"hybrid"``, ``"ssd"``, or ``"ssd_hybrid"``.
         num_layers: Number of transformer layers.
         num_heads: Number of KV heads (may equal num_attention_heads for MHA).
         head_dim: Dimension per head.
@@ -346,6 +346,7 @@ def create_kv_cache(
     """
     _streaming_keys = {"num_sink_tokens", "window_size", "eviction_batch"}
     _quantized_keys = {"key_bits", "value_bits", "group_size", "calibration_tokens"}
+    _ssd_keys = {"max_ram_tokens", "cache_dir", "prompt_prefix"}
 
     if strategy == "plain":
         return PlainKVCache(num_layers, num_heads, head_dim)
@@ -358,7 +359,22 @@ def create_kv_cache(
     if strategy == "hybrid":
         filtered = {k: v for k, v in kwargs.items() if k in _streaming_keys | _quantized_keys}
         return HybridKVCache(num_layers, num_heads, head_dim, **filtered)
-    raise ValueError(f"Unknown KV cache strategy {strategy!r}. Choose from: plain, streaming, quantized, hybrid")
+    if strategy == "ssd":
+        from mlx_flash_compress.ssd_kv_cache import SSDKVCache
+
+        filtered = {k: v for k, v in kwargs.items() if k in _ssd_keys}
+        return SSDKVCache(num_layers, num_heads, head_dim, **filtered)
+    if strategy == "ssd_hybrid":
+        from mlx_flash_compress.ssd_kv_cache import SSDKVCache
+
+        # Build a quantized inner backend, then wrap it with SSD
+        quant_filtered = {k: v for k, v in kwargs.items() if k in _quantized_keys}
+        inner = QuantizedKVCache(num_layers, num_heads, head_dim, **quant_filtered)
+        ssd_filtered = {k: v for k, v in kwargs.items() if k in _ssd_keys}
+        return SSDKVCache(num_layers, num_heads, head_dim, inner_backend=inner, **ssd_filtered)
+    raise ValueError(
+        f"Unknown KV cache strategy {strategy!r}. Choose from: plain, streaming, quantized, hybrid, ssd, ssd_hybrid"
+    )
 
 
 # ---------------------------------------------------------------------------

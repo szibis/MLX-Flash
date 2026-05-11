@@ -29,12 +29,18 @@ const CHAT_HTML: &str = r##"<!DOCTYPE html>
   .topbar { padding: 14px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
   .topbar h1 { font-size: 1.1rem; font-weight: 600; background: linear-gradient(135deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
   .topbar .model-name { font-size: 0.8rem; color: var(--dim); padding: 3px 10px; background: var(--card); border-radius: 6px; border: 1px solid var(--border); }
-  .topbar .nav { margin-left: auto; display: flex; gap: 8px; }
+  .topbar .nav { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
   .topbar .nav a { color: var(--dim); text-decoration: none; font-size: 0.8rem; padding: 4px 10px; border-radius: 6px; transition: all 0.15s; }
   .topbar .nav a:hover { color: var(--text); background: var(--hover); }
+  .topbar .nav a.nav-active { background: rgba(77,166,255,0.15); color: var(--accent); }
   .model-select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 12px; font-size: 0.8rem; font-family: inherit; cursor: pointer; outline: none; -webkit-appearance: none; max-width: 280px; }
   .model-select:focus { border-color: var(--accent); }
   .model-select option { background: var(--card); color: var(--text); }
+  .model-select optgroup { background: var(--surface); color: var(--dim); font-style: normal; font-size: 0.75rem; }
+  .loading-indicator { display: none; align-items: center; gap: 8px; padding: 12px 0; }
+  .loading-indicator.active { display: flex; }
+  .loading-spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   .messages { flex: 1; overflow-y: auto; padding: 20px 0; scroll-behavior: smooth; }
   .messages::-webkit-scrollbar { width: 6px; }
@@ -120,7 +126,11 @@ const CHAT_HTML: &str = r##"<!DOCTYPE html>
   </select>
   <div class="nav">
     <a href="/admin">Dashboard</a>
-    <a href="/chat">Chat</a>
+    <a href="/chat" class="nav-active">Chat</a>
+    <a href="/metrics">Prometheus</a>
+    <a href="/status" target="_blank">Status</a>
+    <a href="/gpu" target="_blank">GPU</a>
+    <a href="/workers" target="_blank">Workers</a>
   </div>
 </div>
 
@@ -296,31 +306,31 @@ function formatContent(text) {
 }
 
 let genPollInterval = null;
-let tokBefore = 0;
+let liveTokenCount = 0;
 
 function startGenProgress() {
   const el = document.getElementById('gen-progress');
   el.classList.add('active');
   document.getElementById('status-dot').style.background = 'var(--accent)';
-  tokBefore = 0;
-  // Snapshot current tokens
-  fetch('/status').then(r=>r.json()).then(st => { tokBefore = (st.stats||{}).tokens_generated||0; }).catch(()=>{});
-  // Poll every 500ms during generation
+  liveTokenCount = 0;
+  document.getElementById('gen-tokens').textContent = '0 tok';
+  // Poll memory/pressure during generation
   genPollInterval = setInterval(async () => {
     try {
       const st = await fetch('/status').then(r=>r.json());
-      const tokNow = (st.stats||{}).tokens_generated||0;
-      const genTok = tokNow - tokBefore;
-      document.getElementById('gen-tokens').textContent = genTok + ' tok';
       const mem = st.memory||{};
       const avail = ((mem.free_gb||0)+(mem.inactive_gb||0)*0.5).toFixed(1);
       const pressure = (mem.pressure||'Normal').toString();
       document.getElementById('gen-mem').textContent = avail+'GB free';
       document.getElementById('gen-mem').style.color = pressure==='Critical'?'var(--red)':pressure==='Warning'?'var(--yellow)':'var(--dim)';
-      // Pressure banner
       updatePressureBanner(pressure, avail, mem.swap_used_gb||0);
     } catch(e) {}
-  }, 500);
+  }, 1000);
+}
+
+function updateLiveTokens(count) {
+  liveTokenCount = count;
+  document.getElementById('gen-tokens').textContent = count + ' tok';
 }
 
 function stopGenProgress() {
@@ -347,22 +357,30 @@ function updatePressureBanner(pressure, availGb, swapGb) {
   }
 }
 
-// Session persistence — survive page reload / tab switch
+// Session persistence — survives page reload, tab switch, nav to dashboard and back
 function saveSession() {
-  try { localStorage.setItem('mlx-flash-messages', JSON.stringify(messages)); } catch(e) {}
+  try {
+    localStorage.setItem('mlx-flash-messages', JSON.stringify(messages));
+    localStorage.setItem('mlx-flash-session-ts', Date.now().toString());
+  } catch(e) {}
 }
 function loadSession() {
   try {
     const saved = localStorage.getItem('mlx-flash-messages');
-    if (saved) {
-      const restored = JSON.parse(saved);
-      if (restored.length > 0) {
-        document.getElementById('empty')?.remove();
-        restored.forEach(m => addMessage(m.role, m.content));
+    if (!saved) return;
+    const restored = JSON.parse(saved);
+    if (!Array.isArray(restored) || restored.length === 0) return;
+    document.getElementById('empty')?.remove();
+    restored.forEach(m => {
+      if (m && m.role && m.content) {
+        addMessage(m.role, m.content);
       }
-    }
-  } catch(e) {}
+    });
+  } catch(e) { console.error('Session restore failed:', e); }
 }
+// Save on every page unload (covers nav away, refresh, tab close)
+window.addEventListener('beforeunload', saveSession);
+// Restore on load
 loadSession();
 
 async function handleSlashCommand(text) {
@@ -476,11 +494,11 @@ async function sendMessage() {
 
   try {
     const sel = document.getElementById('model-select');
-    const currentModel = sel.value || localStorage.getItem('mlx-flash-model') || 'local';
+    const currentModel = sel.value || activeModelId || localStorage.getItem('mlx-flash-model') || 'local';
     const payload = {
       model: currentModel,
       messages: messages.map(m => ({role: m.role, content: m.content})),
-      stream: false, max_tokens: 1024,
+      stream: true, max_tokens: 1024,
     };
 
     const t0 = Date.now();
@@ -489,12 +507,9 @@ async function sendMessage() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(payload),
     });
-    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-
-    let fullText = '';
-    let respTokens = 0;
 
     if (!resp.ok) {
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
       let errMsg = 'Server error ' + resp.status;
       try { const j = await resp.json(); errMsg = j.error || errMsg; } catch(e) {}
 
@@ -503,6 +518,10 @@ async function sendMessage() {
           + '<p style="color:var(--dim);font-size:0.85rem;margin-top:8px">Start it in another terminal:</p>'
           + '<pre style="background:var(--surface);padding:10px 14px;border-radius:8px;margin-top:6px;font-size:0.82rem;border:1px solid var(--border)">'
           + '<code>pip install mlx mlx-lm mlx-flash\nmlx-flash --port 8081 --preload</code></pre>';
+      } else if (resp.status === 503 || errMsg.toLowerCase().includes('loading')) {
+        aiEl.innerHTML = '<p style="color:var(--yellow)"><strong>Model is still loading...</strong></p>'
+          + '<p style="color:var(--dim);font-size:0.85rem;margin-top:8px">Please wait for the model to finish loading, then try again. '
+          + 'Check the <a href="/admin" style="color:var(--accent)">Dashboard</a> for progress.</p>';
       } else {
         aiEl.innerHTML = '<p style="color:var(--red)">' + errMsg + '</p>';
       }
@@ -510,43 +529,94 @@ async function sendMessage() {
       return;
     }
 
+    // SSE streaming — read tokens as they arrive
+    let fullText = '';
+    let respTokens = 0;
+    let streamChunkCount = 0;
     let tokPerSec = '';
-    try {
-      const json = await resp.json();
-      fullText = json.choices?.[0]?.message?.content
-        || json.choices?.[0]?.text
-        || JSON.stringify(json);
-      // Extract MLX-Flash performance data if present
-      const mlxData = json.mlx_flash_compress || {};
-      if (mlxData.tok_per_s) tokPerSec = mlxData.tok_per_s.toFixed(1) + ' tok/s';
-      const usage = json.usage || {};
-      respTokens = usage.completion_tokens || 0;
-      if (respTokens && !tokPerSec) {
-        tokPerSec = (respTokens / parseFloat(elapsed)).toFixed(1) + ' tok/s';
+    let lastChunkModel = currentModel;
+
+    const contentType = resp.headers.get('content-type') || '';
+    if (contentType.includes('text/event-stream') || contentType.includes('text/plain')) {
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, {stream: true});
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') continue;
+          try {
+            const chunk = JSON.parse(payload);
+            const delta = chunk.choices?.[0]?.delta || {};
+            if (delta.content) {
+              fullText += delta.content;
+              streamChunkCount++;
+              updateLiveTokens(streamChunkCount);
+              aiEl.innerHTML = formatContent(fullText);
+              messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+            if (chunk.model) lastChunkModel = chunk.model;
+            if (chunk.usage) {
+              respTokens = chunk.usage.completion_tokens || 0;
+            }
+            const mlxData = chunk.mlx_flash_compress || {};
+            if (mlxData.tok_per_s) tokPerSec = mlxData.tok_per_s.toFixed(1) + ' tok/s';
+          } catch(e) {}
+        }
       }
-    } catch(e) {
-      fullText = 'Failed to parse response';
+      // Use chunk count as token estimate if usage not provided
+      if (!respTokens && streamChunkCount > 0) {
+        respTokens = streamChunkCount;
+      }
+    } else {
+      try {
+        const json = await resp.json();
+        fullText = json.choices?.[0]?.message?.content
+          || json.choices?.[0]?.text
+          || JSON.stringify(json);
+        const mlxData = json.mlx_flash_compress || {};
+        if (mlxData.tok_per_s) tokPerSec = mlxData.tok_per_s.toFixed(1) + ' tok/s';
+        const usage = json.usage || {};
+        respTokens = usage.completion_tokens || 0;
+        if (json.model) lastChunkModel = json.model;
+      } catch(e) {
+        fullText = 'Failed to parse response';
+      }
+      aiEl.innerHTML = formatContent(fullText);
     }
 
-    aiEl.innerHTML = formatContent(fullText);
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    if (!respTokens && fullText) {
+      respTokens = Math.ceil(fullText.length / 4);
+    }
+    if (respTokens && !tokPerSec) {
+      tokPerSec = (respTokens / parseFloat(elapsed)).toFixed(1) + ' tok/s';
+    }
+
     messages[messages.length-1].content = fullText;
-    // Track cumulative tokens for savings calculator
     if (respTokens > 0) {
       totalTokensSession += respTokens;
       try { localStorage.setItem('mlx-flash-total-tokens', totalTokensSession.toString()); } catch(e) {}
     }
     saveSession();
 
-    // Get current model + pressure for metadata bar
+    // Per-message stats
     let currentPressure = 'Normal';
-    let currentModelName = currentModel;
+    let currentModelName = lastChunkModel || currentModel;
     try {
       const st = await fetch('/status').then(r=>r.json());
       currentPressure = (st.memory||{}).pressure || 'Normal';
-      currentModelName = st.model || currentModel;
+      if (st.model) currentModelName = st.model;
     } catch(e) {}
 
-    // Set metadata bar under the AI message
     setMessageMeta(messages.length - 1, {
       model: currentModelName,
       tokens: respTokens || null,
@@ -555,11 +625,11 @@ async function sendMessage() {
       pressure: currentPressure.toString(),
     });
 
-    // Show generation stats in status bar
     const stats = [elapsed + 's'];
+    if (respTokens) stats.push(respTokens + ' tok');
     if (tokPerSec) stats.push(tokPerSec);
     document.getElementById('status-text').textContent = 'Done — ' + stats.join(', ');
-    setTimeout(() => { if (!generating) document.getElementById('status-text').textContent = 'Ready'; }, 5000);
+    setTimeout(() => { if (!generating) document.getElementById('status-text').textContent = 'Ready'; }, 8000);
 
   } catch(e) {
     aiEl.innerHTML = '<p style="color:var(--red)">Connection error — is the Python worker running?</p>';
@@ -570,41 +640,150 @@ async function sendMessage() {
   }
 }
 
-// Known models catalog (matches Python MODELS list)
-const KNOWN_MODELS = [
-  {id:'mlx-community/gemma-4-E2B-it-4bit', label:'Gemma 4 E2B (1.5GB)', size:1.5},
-  {id:'mlx-community/gemma-4-E4B-it-4bit', label:'Gemma 4 E4B (2.8GB)', size:2.8},
-  {id:'mlx-community/Qwen3-4B-4bit', label:'Qwen3 4B (2.5GB)', size:2.5},
-  {id:'mlx-community/Qwen3-8B-4bit', label:'Qwen3 8B (5GB)', size:5.0},
-  {id:'mlx-community/gemma-4-26b-it-4bit', label:'Gemma 4 26B MoE (15GB)', size:15.0},
-  {id:'mlx-community/Qwen3-30B-A3B-4bit', label:'Qwen3 30B MoE (18GB)', size:18.0},
-  {id:'mlx-community/gemma-4-31b-it-4bit', label:'Gemma 4 31B (20GB)', size:20.0},
-  {id:'mlx-community/Mixtral-8x7B-Instruct-v0.1-4bit', label:'Mixtral 8x7B (26GB)', size:26.0},
-];
+// Dynamic model registry — populated from /v1/models/registry at page load
+let KNOWN_MODELS = [];
+let activeModelId = '';
+let systemRamGb = 0;
+
+async function loadModelRegistry() {
+  try {
+    const resp = await fetch('/v1/models/registry');
+    const data = await resp.json();
+    systemRamGb = data.system_ram_gb || 0;
+    const models = data.models || data || [];
+    KNOWN_MODELS = models.filter(m => m.fits_ram !== false).map(m => ({
+      id: m.id || m.model_id || m.name,
+      label: buildModelLabel(m),
+      size: m.size_gb || m.size_gb_approx || 0,
+      category: m.category_expected || '',
+      cached: m.cached || false,
+      isMoe: m.is_moe || false,
+      fitsRam: m.fits_ram !== false,
+      notes: m.notes || '',
+    }));
+  } catch(e) {
+    KNOWN_MODELS = [
+      {id:'mlx-community/Llama-3.2-3B-Instruct-4bit', label:'Llama 3.2 3B (2GB)', size:2, category:'small_dense', cached:false, isMoe:false, fitsRam:true},
+    ];
+  }
+  try {
+    const st = await fetch('/status');
+    const data = await st.json();
+    if (data.model) {
+      activeModelId = data.model;
+      if (!KNOWN_MODELS.some(m => m.id === activeModelId)) {
+        KNOWN_MODELS.unshift({id: activeModelId, label: activeModelId.split('/').pop() + ' (active)', size: 0, category: '', cached: true, isMoe: false, fitsRam: true});
+      }
+    }
+  } catch(e) {}
+  populateModelSelect(activeModelId || localStorage.getItem('mlx-flash-model') || '');
+}
+
+function buildModelLabel(m) {
+  const name = (m.id || m.name || '').split('/').pop();
+  const size = m.size_gb || m.size_gb_approx || 0;
+  let label = name;
+  if (size > 0) label += ' (' + size + 'GB)';
+  if (m.cached) label += ' \u2713';
+  if (m.is_moe) label += ' [MoE]';
+  return label;
+}
+
+const CATEGORY_LABELS = {
+  'small_dense': 'Small Dense (\u2264 5GB)',
+  'medium_dense': 'Medium Dense (5-20GB)',
+  'large_dense': 'Large Dense (20GB+)',
+  'small_moe': 'Small MoE',
+  'medium_moe': 'Medium MoE',
+  'large_moe': 'Large MoE',
+  'ssd_small': 'Hybrid SSM+Attn',
+  '': 'Other',
+};
 
 function populateModelSelect(currentModel) {
   const sel = document.getElementById('model-select');
+  const groups = {};
   const isKnown = KNOWN_MODELS.some(m => m.id === currentModel);
-  let opts = '';
+  let topOpts = '';
   if (currentModel && !isKnown) {
     const short = currentModel.split('/').pop() || currentModel;
-    opts += '<option value="'+currentModel+'" selected>'+short+' (active)</option>';
+    topOpts += '<option value="'+currentModel+'" selected>'+short+' (active)</option>';
   }
-  opts += KNOWN_MODELS.map(m =>
-    '<option value="'+m.id+'" '+(m.id===currentModel?'selected':'')+'>'+m.label+'</option>'
-  ).join('');
-  opts += '<option value="_custom">Custom model...</option>';
-  sel.innerHTML = opts;
+  KNOWN_MODELS.forEach(m => {
+    const cat = m.category || '';
+    if (!groups[cat]) groups[cat] = [];
+    groups[cat].push(m);
+  });
+  let html = topOpts;
+  const catOrder = ['small_dense','medium_dense','large_dense','small_moe','medium_moe','ssd_small','large_moe',''];
+  const sortedCats = Object.keys(groups).sort((a,b) => {
+    const ai = catOrder.indexOf(a), bi = catOrder.indexOf(b);
+    return (ai===-1?99:ai) - (bi===-1?99:bi);
+  });
+  if (sortedCats.length > 1 || (sortedCats.length === 1 && sortedCats[0] !== '')) {
+    sortedCats.forEach(cat => {
+      const label = CATEGORY_LABELS[cat] || cat || 'Other';
+      html += '<optgroup label="'+label+'">';
+      groups[cat].forEach(m => {
+        const isActive = m.id === currentModel;
+        let displayLabel = isActive ? '\u25B6 ' + m.label : m.label;
+        html += '<option value="'+m.id+'" '+(isActive?'selected':'')+'>'+displayLabel+'</option>';
+      });
+      html += '</optgroup>';
+    });
+  } else {
+    KNOWN_MODELS.forEach(m => {
+      const isActive = m.id === currentModel;
+      let displayLabel = isActive ? '\u25B6 ' + m.label : m.label;
+      html += '<option value="'+m.id+'" '+(isActive?'selected':'')+'>'+displayLabel+'</option>';
+    });
+  }
+  html += '<option value="_custom">Custom model ID...</option>';
+  sel.innerHTML = html;
 }
+
+let switchPollInterval = null;
 
 async function switchModel(modelId) {
   if (modelId === '_custom') {
     const custom = prompt('Enter HuggingFace model ID (e.g., mlx-community/gemma-4-31b-it-4bit):');
-    if (!custom) return;
+    if (!custom) { populateModelSelect(activeModelId); return; }
     modelId = custom;
   }
   const shortName = modelId.split('/').pop();
-  document.getElementById('status-text').textContent = 'Switching to ' + shortName + '...';
+  const modelInfo = KNOWN_MODELS.find(m => m.id === modelId);
+  const isCached = modelInfo ? modelInfo.cached : false;
+  const sizeGb = modelInfo ? modelInfo.size : 0;
+
+  // Show initial progress
+  const statusEl = document.getElementById('status-text');
+  const dotEl = document.getElementById('status-dot');
+  dotEl.style.background = 'var(--yellow)';
+  if (!isCached && sizeGb > 0) {
+    statusEl.textContent = 'Downloading ' + shortName + ' (~' + sizeGb + 'GB)...';
+  } else {
+    statusEl.textContent = 'Loading ' + shortName + '...';
+  }
+
+  // Poll progress while switch is happening
+  switchPollInterval = setInterval(async () => {
+    try {
+      const pr = await fetch('/switch/progress').then(r=>r.json());
+      if (pr.switching) {
+        const phase = pr.phase || 'loading';
+        if (phase === 'downloading') {
+          statusEl.textContent = 'Downloading ' + shortName + '...';
+        } else if (phase === 'loading') {
+          statusEl.textContent = 'Loading ' + shortName + ' into GPU memory...';
+        } else if (phase === 'warming') {
+          statusEl.textContent = 'Compiling Metal shaders for ' + shortName + '...';
+        } else {
+          statusEl.textContent = phase + ' ' + shortName + '...';
+        }
+      }
+    } catch(e) {}
+  }, 800);
+
   try {
     const resp = await fetch('/v1/models/switch', {
       method: 'POST',
@@ -612,31 +791,67 @@ async function switchModel(modelId) {
       body: JSON.stringify({model: modelId}),
     });
     const result = await resp.json();
+    clearInterval(switchPollInterval);
+    switchPollInterval = null;
+
     if (result.switched) {
-      document.getElementById('status-text').textContent = 'Switched to ' + shortName;
+      dotEl.style.background = 'var(--green)';
+      statusEl.textContent = 'Switched to ' + shortName;
       localStorage.setItem('mlx-flash-model', modelId);
-    } else if (result.error) {
-      document.getElementById('status-text').textContent = 'Switch failed: ' + result.error;
+      activeModelId = modelId;
+      // Refresh registry to update cached status
+      loadModelRegistry();
     } else {
-      localStorage.setItem('mlx-flash-model', modelId);
-      document.getElementById('status-text').textContent = 'Model set: ' + shortName + ' (restart to apply)';
+      dotEl.style.background = 'var(--red)';
+      // Parse error from nested failures
+      let errMsg = result.error || '';
+      if (!errMsg && result.failures && result.failures.length > 0) {
+        try {
+          const inner = JSON.parse(result.failures[0].error || '{}');
+          errMsg = inner.error || result.failures[0].error || 'Unknown error';
+        } catch(e) { errMsg = result.failures[0].error || 'Unknown error'; }
+      }
+      statusEl.textContent = 'Failed: ' + errMsg;
+      // Restore select to current model
+      populateModelSelect(activeModelId);
+      setTimeout(() => { dotEl.style.background = 'var(--green)'; statusEl.textContent = 'Ready'; }, 8000);
     }
   } catch(e) {
-    localStorage.setItem('mlx-flash-model', modelId);
-    document.getElementById('status-text').textContent = 'Model set: ' + shortName + ' (restart to apply)';
+    clearInterval(switchPollInterval);
+    switchPollInterval = null;
+    dotEl.style.background = 'var(--red)';
+    statusEl.textContent = 'Switch failed: ' + e.message;
+    populateModelSelect(activeModelId);
+    setTimeout(() => { dotEl.style.background = 'var(--green)'; statusEl.textContent = 'Ready'; }, 5000);
   }
 }
 
 // Poll model + memory for status bar + pressure detection
+let registryLoaded = false;
 async function updateStatus() {
   try {
     const st = await fetch('/status').then(r=>r.json());
     const model = st.model || '';
-    populateModelSelect(model);
+    activeModelId = model;
+    // On subsequent polls, just update the select highlight (don't re-fetch registry)
+    if (registryLoaded) {
+      populateModelSelect(model);
+    }
     const mem = st.memory || {};
     const avail = Math.max((mem.free_gb||0)+(mem.inactive_gb||0)*0.5, 0);
     const pressure = (mem.pressure||'Normal').toString();
     document.getElementById('mem-info').textContent = avail.toFixed(1)+'GB free / '+((mem.total_gb||0).toFixed(0))+'GB';
+    // Detect model loading state
+    if (!model || model === 'loading...' || model === 'none') {
+      document.getElementById('status-text').textContent = 'Waiting for model to load...';
+      document.getElementById('status-dot').style.background = 'var(--yellow)';
+    } else if (!generating) {
+      const dotEl = document.getElementById('status-dot');
+      if (dotEl.style.background !== 'var(--green)') {
+        document.getElementById('status-text').textContent = 'Ready';
+        dotEl.style.background = 'var(--green)';
+      }
+    }
     // Cumulative savings
     if (totalTokensSession > 0) {
       const totalSaved = calcSavings(totalTokensSession);
@@ -646,6 +861,8 @@ async function updateStatus() {
     if (!generating) updatePressureBanner(pressure, avail.toFixed(1), mem.swap_used_gb||0);
   } catch(e) {}
 }
+// Load model registry once at startup, then poll status
+loadModelRegistry().then(() => { registryLoaded = true; });
 updateStatus(); setInterval(updateStatus, 5000);
 </script>
 </body>

@@ -53,6 +53,10 @@ def __getattr__(name):
         from mlx_flash_compress.dflash_model import DFlashRunner
 
         return DFlashRunner
+    if name == "DraftExpertPrefetcher":
+        from mlx_flash_compress.draft_expert_prefetch import DraftExpertPrefetcher
+
+        return DraftExpertPrefetcher
     if name == "profile_and_configure":
         from mlx_flash_compress.dflash_profile import profile_and_configure
 
@@ -229,4 +233,16 @@ def __getattr__(name):
         from mlx_flash_compress.kv_cache_backend import install_kv_cache
 
         return install_kv_cache
+    if name == "SSDKVCache":
+        from mlx_flash_compress.ssd_kv_cache import SSDKVCache
+
+        return SSDKVCache
+    if name == "PrefixCacheTrie":
+        from mlx_flash_compress.prefix_cache import PrefixCacheTrie
+
+        return PrefixCacheTrie
+    if name == "get_or_compute_prefix":
+        from mlx_flash_compress.prefix_cache import get_or_compute_prefix
+
+        return get_or_compute_prefix
     raise AttributeError(f"module 'mlx_flash_compress' has no attribute {name!r}")
