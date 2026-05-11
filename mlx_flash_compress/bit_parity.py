@@ -118,13 +118,13 @@ def verify_parity(
         )
 
     # Standard inference
-    model_std, tokenizer = load(model_name)
+    model_std, tokenizer = load(model_name)  # type: ignore[misc]
     tokens = mx.array(tokenizer.encode(prompt))[None]
     logits_std = model_std(tokens)
     mx.eval(logits_std)
 
     # Lazy-loaded inference (simulates streaming path)
-    model_lazy, _ = load(model_name, lazy=True)
+    model_lazy, _ = load(model_name, lazy=True)  # type: ignore[misc]
     logits_lazy = model_lazy(tokens)
     mx.eval(logits_lazy)
 

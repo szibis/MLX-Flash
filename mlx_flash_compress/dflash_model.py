@@ -19,7 +19,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -238,16 +238,16 @@ class DFlashDraftModel(nn.Module):
     @classmethod
     def from_pretrained(cls, model_dir: str) -> tuple["DFlashDraftModel", "DFlashModelConfig"]:
         """Load pre-trained drafter from a directory with config.json + model.safetensors."""
-        model_dir = Path(model_dir)
-        config = DFlashModelConfig.from_json(str(model_dir / "config.json"))
+        model_path = Path(model_dir)
+        config = DFlashModelConfig.from_json(str(model_path / "config.json"))
         model = cls(config)
 
-        weights_file = model_dir / "model.safetensors"
+        weights_file = model_path / "model.safetensors"
         if not weights_file.exists():
             raise FileNotFoundError(f"Weights not found at {weights_file}")
 
         weights = mx.load(str(weights_file))
-        model.load_weights(list(weights.items()))
+        model.load_weights(list(weights.items()))  # type: ignore[union-attr]
         return model, config
 
 
@@ -287,11 +287,11 @@ class DFlashRunner:
             nn.quantize(self.drafter, group_size=64, bits=quantize_drafter)
             mx.eval(self.drafter.parameters())
 
-        self._embed_fn = None
-        self._lm_head_fn = None
-        self._layers = None
-        self._norm_fn = None
-        self._inner_model = None
+        self._embed_fn: Any = None
+        self._lm_head_fn: Any = None
+        self._layers: Any = None
+        self._norm_fn: Any = None
+        self._inner_model: Any = None
         self._detect_target_components()
 
         if compile_drafter:
@@ -299,7 +299,7 @@ class DFlashRunner:
         else:
             self._compiled_drafter_fn = None
 
-        self.stats = {
+        self.stats: dict[str, Any] = {
             "total_drafts": 0,
             "total_accepted": 0,
             "total_target_calls": 0,
@@ -480,8 +480,8 @@ class DFlashRunner:
         target_ids = mx.argmax(verify_logits, axis=-1)
         mx.eval(target_ids)
 
-        draft_np = draft_ids[0].tolist()
-        target_np = target_ids[0].tolist()
+        draft_np: list = list(draft_ids[0].tolist())  # type: ignore[arg-type]
+        target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
 
         num_accepted = 0
         for d, t in zip(draft_np, target_np):
@@ -680,12 +680,12 @@ class DFlashRunner:
                 axis=1,
             )
 
-            draft_np = draft_ids[0].tolist()
+            draft_np: list = list(draft_ids[0].tolist())  # type: ignore[arg-type]
 
             if accept_top_k <= 1:
                 target_ids = mx.argmax(predictions, axis=-1)
                 mx.eval(target_ids)
-                target_np = target_ids[0].tolist()
+                target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
                 num_accepted = 0
                 for d, t in zip(draft_np, target_np):
                     if d == t:
@@ -699,7 +699,7 @@ class DFlashRunner:
                 for i, d in enumerate(draft_np):
                     top_k_ids = mx.argpartition(pred_np[i], kth=-accept_top_k)[-accept_top_k:]
                     mx.eval(top_k_ids)
-                    if d in top_k_ids.tolist():
+                    if d in list(top_k_ids.tolist()):  # type: ignore[arg-type]
                         num_accepted += 1
                     else:
                         break
@@ -801,12 +801,12 @@ class DFlashRunner:
             n_draft = draft_ids.shape[-1]
             pred_logits = verify_logits[:, ctx_len - 1 : ctx_len - 1 + n_draft, :]
 
-            draft_np = draft_ids[0].tolist()
+            draft_np: list = list(draft_ids[0].tolist())  # type: ignore[arg-type]
 
             if accept_top_k <= 1:
                 target_ids = mx.argmax(pred_logits, axis=-1)
                 mx.eval(target_ids)
-                target_np = target_ids[0].tolist()
+                target_np: list = list(target_ids[0].tolist())  # type: ignore[arg-type]
                 num_accepted = 0
                 for d, t in zip(draft_np, target_np):
                     if d == t:
@@ -819,14 +819,14 @@ class DFlashRunner:
                 for i, d in enumerate(draft_np):
                     top_k_ids = mx.argpartition(pred_logits[0, i], kth=-accept_top_k)[-accept_top_k:]
                     mx.eval(top_k_ids)
-                    if d in top_k_ids.tolist():
+                    if d in list(top_k_ids.tolist()):  # type: ignore[arg-type]
                         num_accepted += 1
                     else:
                         break
 
             target_greedy = mx.argmax(pred_logits, axis=-1)
             mx.eval(target_greedy)
-            target_np = target_greedy[0].tolist()
+            target_np = list(target_greedy[0].tolist())  # type: ignore[arg-type]
             bonus_idx = num_accepted
             if bonus_idx < len(target_np):
                 accepted = draft_np[:num_accepted] + [target_np[bonus_idx]]

@@ -51,11 +51,11 @@ class WarmupSession:
 
     @property
     def avg_time_first_10(self) -> float:
-        return np.mean([t.time_ms for t in self.token_metrics[:10]]) if len(self.token_metrics) >= 10 else 0
+        return float(np.mean([t.time_ms for t in self.token_metrics[:10]])) if len(self.token_metrics) >= 10 else 0.0
 
     @property
     def avg_time_last_10(self) -> float:
-        return np.mean([t.time_ms for t in self.token_metrics[-10:]]) if len(self.token_metrics) >= 10 else 0
+        return float(np.mean([t.time_ms for t in self.token_metrics[-10:]])) if len(self.token_metrics) >= 10 else 0.0
 
     @property
     def speedup(self) -> float:
@@ -189,7 +189,7 @@ def run_warmup_session(
 
     cum_hits = 0
     cum_total = 0
-    max_time = 0
+    max_time: float = 0.0
 
     for i in range(num_tokens):
         hits, misses, time_ms = simulate_token(cache, num_layers, probs, num_experts, k, rng, ssd_latency_ms)

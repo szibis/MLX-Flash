@@ -22,7 +22,7 @@ Protocol: JSON-RPC 2.0 over stdin/stdout
 
 import json
 import sys
-from typing import Optional
+from typing import Any, Optional
 
 from mlx_flash_compress.hardware import detect_hardware
 from mlx_flash_compress.mcp_tools import MCP_TOOLS, get_mcp_manifest
@@ -35,9 +35,9 @@ SERVER_INFO = {
 }
 
 # Lazy-loaded model state
-_model = None
-_tokenizer = None
-_model_name = None
+_model: Any = None
+_tokenizer: Any = None
+_model_name: Optional[str] = None
 
 
 def _ensure_model(model_name: Optional[str] = None):
@@ -56,7 +56,7 @@ def _ensure_model(model_name: Optional[str] = None):
             hw = detect_hardware()
             model_name = auto_select_model(hw.total_ram_gb)
 
-        _model, _tokenizer = load(model_name)
+        _model, _tokenizer = load(model_name)  # type: ignore[misc]
         _model_name = model_name
     except ImportError:
         raise RuntimeError("mlx-lm required. Install: pip install mlx-lm")

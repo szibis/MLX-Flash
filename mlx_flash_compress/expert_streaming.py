@@ -61,9 +61,9 @@ class SafetensorsMap:
     """Memory-mapped access to safetensors files for per-expert slicing."""
 
     def __init__(self, shard_paths: list):
-        self._mmaps = {}
-        self._tensor_map = {}
-        self._data_offsets = {}
+        self._mmaps: dict[str, mmap.mmap] = {}
+        self._tensor_map: dict[str, tuple] = {}
+        self._data_offsets: dict[str, int] = {}
         for path in shard_paths:
             self._index_shard(path)
 
@@ -494,9 +494,8 @@ def get_warmup_experts(task: str = "general", num_layers: int = 24, num_experts:
         # Convert to flat list of expert IDs per layer
         result = []
         for layer_idx in range(num_layers):
-            layer_key = str(layer_idx)
-            if layer_key in hot_experts:
-                result.append(hot_experts[layer_key][:top_n])
+            if layer_idx in hot_experts:
+                result.append(hot_experts[layer_idx][:top_n])
             else:
                 result.append(list(range(top_n)))
         return result
