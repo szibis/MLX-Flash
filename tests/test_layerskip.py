@@ -41,6 +41,19 @@ class MockInnerModel(nn.Module):
         self.norm = nn.RMSNorm(hidden_dim)
 
 
+class _MockKVCache:
+    """Minimal KV cache stub for testing."""
+
+    def __init__(self):
+        self.offset = 0
+
+    def is_trimmable(self):
+        return True
+
+    def trim(self, n):
+        self.offset = max(0, self.offset - n)
+
+
 class MockModel(nn.Module):
     """Mimics a standard HuggingFace/MLX causal LM structure.
 
@@ -53,12 +66,18 @@ class MockModel(nn.Module):
         self.model = MockInnerModel(vocab_size, hidden_dim, num_layers)
         self.lm_head = nn.Linear(hidden_dim, vocab_size)
 
-    def __call__(self, input_ids: mx.array) -> mx.array:
+    def __call__(self, input_ids: mx.array, cache=None) -> mx.array:
         h = self.model.embed_tokens(input_ids)
-        for layer in self.model.layers:
-            h = layer(h)
+        for i, layer in enumerate(self.model.layers):
+            c = cache[i] if cache is not None and i < len(cache) else None
+            h = layer(h, cache=c)
+            if cache is not None and i < len(cache):
+                cache[i].offset += input_ids.shape[-1]
         h = self.model.norm(h)
         return self.lm_head(h)
+
+    def make_cache(self):
+        return [_MockKVCache() for _ in self.model.layers]
 
 
 class MockLanguageModel(nn.Module):

@@ -199,6 +199,11 @@ class EAGLE3Engine:
             norm = getattr(inner, "norm", None)
             head = getattr(outer, "lm_head", None) or getattr(inner, "output", None)
 
+            if head is None and embed is not None:
+                args = getattr(outer, "args", getattr(inner, "args", None))
+                if args is not None and getattr(args, "tie_word_embeddings", False):
+                    head = embed.as_linear
+
             if embed is not None and layers is not None:
                 self._embed_fn = embed
                 self._layers = layers
@@ -213,10 +218,7 @@ class EAGLE3Engine:
         )
 
     def _detect_hidden_dim(self) -> int:
-        """Auto-detect hidden dimension from model's embedding layer."""
-        if hasattr(self._embed_fn, "weight"):
-            return self._embed_fn.weight.shape[-1]
-        # Fallback: probe with a dummy input
+        """Auto-detect hidden dimension by probing embedding output."""
         dummy = mx.array([[0]])
         out = self._embed_fn(dummy)
         return out.shape[-1]
@@ -503,9 +505,7 @@ class EAGLE3Trainer:
         raise RuntimeError("Cannot detect target model components")
 
     def _detect_hidden_dim(self) -> int:
-        """Auto-detect hidden dimension."""
-        if hasattr(self._embed_fn, "weight"):
-            return self._embed_fn.weight.shape[-1]
+        """Auto-detect hidden dimension by probing embedding output."""
         dummy = mx.array([[0]])
         out = self._embed_fn(dummy)
         return out.shape[-1]
