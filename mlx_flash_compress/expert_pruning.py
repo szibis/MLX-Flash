@@ -30,7 +30,6 @@ Usage:
 """
 
 import threading
-import types
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -79,7 +78,7 @@ class ExpertPruner:
         self._ema_alpha: float = 0.05  # smoothing factor
 
         self._patched_mlps: list = []
-        self._original_calls: list = []
+        self._original_gates: list = []
 
     @property
     def in_warmup(self) -> bool:
@@ -193,11 +192,11 @@ class ExpertPruner:
             }
 
     def uninstall(self):
-        """Restore original __call__ methods on all patched MoE MLPs."""
-        for mlp, orig in zip(self._patched_mlps, self._original_calls):
-            mlp.__call__ = types.MethodType(orig, mlp)
+        """Restore original gate modules on all patched MLPs."""
+        for mlp, orig_gate in zip(self._patched_mlps, self._original_gates):
+            mlp.gate = orig_gate
         self._patched_mlps.clear()
-        self._original_calls.clear()
+        self._original_gates.clear()
 
 
 def prune_experts(
@@ -280,14 +279,21 @@ def install_expert_pruning(
     model,
     config: Optional[ExpertPruningConfig] = None,
 ) -> ExpertPruner:
-    """Monkey-patch MoE gate modules to add dynamic expert pruning.
+    """Hook MoE gate modules to add dynamic expert pruning.
 
-    Walks the model tree looking for MoE layers with ``gate`` and
-    ``switch_mlp`` submodules (Qwen, DeepSeek, Mixtral patterns).
-    Wraps the MLP ``__call__`` to prune low-weight experts before
-    computing the expert outputs.
+    Walks the model tree looking for MoE layers with a ``gate``
+    submodule (Qwen, DeepSeek, Mixtral patterns).  Wraps only the
+    gate's ``__call__`` -- the native MoE pipeline handles softmax,
+    top-k selection, and expert dispatch unchanged.
 
-    Similar pattern to ``router_hook.py``'s model interception.
+    Uses the same gate-level hook pattern as ``router_hook.py``
+    (``_find_and_hook_gates``).
+
+    Inside the hook the original gate logits are obtained, softmax is
+    applied to determine relative weights, experts below the pruning
+    threshold are identified, and their raw logits are set to ``-inf``
+    so that when the native code re-applies softmax those experts
+    receive zero weight.
 
     Args:
         model: An MLX MoE model (loaded via mlx_lm.load or similar).
@@ -316,74 +322,60 @@ def install_expert_pruning(
         if gate is None:
             continue
 
-        top_k = getattr(mlp, "top_k", None)
-        if top_k is None:
-            # Try to infer from num_experts_per_tok or similar
-            top_k = getattr(mlp, "num_experts_per_tok", 2)
-
-        original_call = type(mlp).__call__
-
-        def make_patched(orig, pruner_ref, top_k_val):
-            def patched_call(self, x):
-                # Compute gate weights
-                gates = self.gate(x)
-                gates = mx.softmax(gates, axis=-1, precise=True)
-
-                k = getattr(self, "top_k", top_k_val)
-
-                # Select top-k experts
-                inds = mx.stop_gradient(mx.argpartition(-gates, kth=k - 1, axis=-1)[..., :k])
-                scores = mx.take_along_axis(gates, inds, axis=-1)
-
-                # --- Pruning logic ---
-                if not pruner_ref.in_warmup:
-                    # Flatten for pruning, then reshape back
-                    flat_shape = scores.shape
-                    if len(flat_shape) == 3:
-                        b, s, e = flat_shape
-                        flat_scores = scores.reshape(b * s, e)
-                    else:
-                        flat_scores = scores
-
-                    # Apply pruning: zero out experts below threshold
-                    pruned_scores, keep_mask = prune_experts(
-                        flat_scores,
-                        threshold=pruner_ref._current_threshold,
-                        min_experts=pruner_ref.config.min_experts,
-                    )
-
-                    if len(flat_shape) == 3:
-                        pruned_scores = pruned_scores.reshape(flat_shape)
-                        keep_mask = keep_mask.reshape(flat_shape)
-
-                    # Record stats
-                    pruned_count = int(mx.sum(~keep_mask).item())
-                    total_count = int(keep_mask.size)
-                    pruner_ref.record_decision(pruned_count, total_count)
-
-                    scores = pruned_scores
-
-                # Renormalize remaining scores
-                score_sum = scores.sum(axis=-1, keepdims=True)
-                scores = mx.where(score_sum > 0, scores / score_sum, scores)
-
-                # Compute expert outputs
-                y = self.switch_mlp(x, inds)
-                y = (y * scores[..., None]).sum(axis=-2)
-
-                # Handle shared experts (DeepSeek pattern)
-                if hasattr(self, "shared_expert"):
-                    shared = self.shared_expert(x)
-                    if hasattr(self, "shared_expert_gate"):
-                        shared = mx.sigmoid(self.shared_expert_gate(x)) * shared
-                    y = y + shared
-
-                return y
-
-            return patched_call
-
-        pruner._original_calls.append(original_call)
+        pruner._original_gates.append(gate)
         pruner._patched_mlps.append(mlp)
-        mlp.__call__ = types.MethodType(make_patched(original_call, pruner, top_k), mlp)
+        mlp.gate = _GateWrapper(gate, pruner)
 
     return pruner
+
+
+class _GateWrapper:
+    """Wrapper that replaces a gate module to intercept calls for expert pruning.
+
+    Python's call protocol resolves ``obj()`` via ``type(obj).__call__``,
+    so setting an instance ``__call__`` attribute doesn't intercept calls.
+    Instead we replace the gate object on the MLP and delegate attribute
+    access to the original gate via ``__getattr__``.
+    """
+
+    def __init__(self, original_gate, pruner: ExpertPruner):
+        self._original_gate = original_gate
+        self._pruner = pruner
+
+    def __call__(self, *args, **kwargs):
+        logits = self._original_gate(*args, **kwargs)
+
+        if self._pruner.in_warmup:
+            return logits
+
+        probs = mx.softmax(logits, axis=-1)
+
+        orig_shape = probs.shape
+        if len(orig_shape) == 3:
+            b, s, e = orig_shape
+            flat_probs = probs.reshape(b * s, e)
+        elif len(orig_shape) == 2:
+            flat_probs = probs
+        else:
+            return logits
+
+        _, keep_mask = prune_experts(
+            flat_probs,
+            threshold=self._pruner._current_threshold,
+            min_experts=self._pruner.config.min_experts,
+        )
+
+        if len(orig_shape) == 3:
+            keep_mask = keep_mask.reshape(orig_shape)
+
+        pruned_count = int(mx.sum(~keep_mask).item())
+        total_count = int(keep_mask.size)
+        self._pruner.record_decision(pruned_count, total_count)
+
+        neg_inf = mx.full(logits.shape, float("-inf"))
+        modified_logits = mx.where(keep_mask, logits, neg_inf)
+
+        return modified_logits
+
+    def __getattr__(self, name):
+        return getattr(self._original_gate, name)

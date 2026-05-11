@@ -77,6 +77,14 @@ LAZY_IMPORTS = {
     "ContinuousBatchingEngine": ("mlx_flash_compress.continuous_batching", "ContinuousBatchingEngine"),
     "BatchSchedulerConfig": ("mlx_flash_compress.continuous_batching", "BatchSchedulerConfig"),
     "create_batching_server": ("mlx_flash_compress.continuous_batching", "create_batching_server"),
+    # kv_cache_backend.py
+    "KVCacheBackend": ("mlx_flash_compress.kv_cache_backend", "KVCacheBackend"),
+    "PlainKVCache": ("mlx_flash_compress.kv_cache_backend", "PlainKVCache"),
+    "StreamingKVCache": ("mlx_flash_compress.kv_cache_backend", "StreamingKVCache"),
+    "QuantizedKVCache": ("mlx_flash_compress.kv_cache_backend", "QuantizedKVCache"),
+    "HybridKVCache": ("mlx_flash_compress.kv_cache_backend", "HybridKVCache"),
+    "create_kv_cache": ("mlx_flash_compress.kv_cache_backend", "create_kv_cache"),
+    "install_kv_cache": ("mlx_flash_compress.kv_cache_backend", "install_kv_cache"),
 }
 
 

@@ -197,4 +197,32 @@ def __getattr__(name):
         from mlx_flash_compress.continuous_batching import create_batching_server
 
         return create_batching_server
+    if name == "KVCacheBackend":
+        from mlx_flash_compress.kv_cache_backend import KVCacheBackend
+
+        return KVCacheBackend
+    if name == "PlainKVCache":
+        from mlx_flash_compress.kv_cache_backend import PlainKVCache
+
+        return PlainKVCache
+    if name == "StreamingKVCache":
+        from mlx_flash_compress.kv_cache_backend import StreamingKVCache
+
+        return StreamingKVCache
+    if name == "QuantizedKVCache":
+        from mlx_flash_compress.kv_cache_backend import QuantizedKVCache
+
+        return QuantizedKVCache
+    if name == "HybridKVCache":
+        from mlx_flash_compress.kv_cache_backend import HybridKVCache
+
+        return HybridKVCache
+    if name == "create_kv_cache":
+        from mlx_flash_compress.kv_cache_backend import create_kv_cache
+
+        return create_kv_cache
+    if name == "install_kv_cache":
+        from mlx_flash_compress.kv_cache_backend import install_kv_cache
+
+        return install_kv_cache
     raise AttributeError(f"module 'mlx_flash_compress' has no attribute {name!r}")
